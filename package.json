@@ -1,0 +1,88 @@
+{
+  "name": "labdeck-competition-2026",
+  "version": "0.5.0",
+  "description": "LabDeck 智能实验工作台 · 2026 仓颉杯参赛原型",
+  "main": "out/main/index.js",
+  "author": "Lab Server Manager",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "dist": "npm run build && electron-builder --win nsis portable",
+    "verify:intelligence": "electron scripts/verify-intelligence.cjs",
+    "dist:competition": "npm run build && electron-builder --win portable",
+    "verify:closure": "electron scripts/verify-closure.cjs",
+    "verify:research": "electron scripts/verify-research.cjs",
+    "verify:workflow": "electron scripts/verify-workflow.cjs",
+    "build:cangjie": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cangjie.ps1",
+    "verify:research:package": "node scripts/verify-research-package.cjs"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.17",
+    "@langchain/langgraph": "^1.4.21",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "echarts": "^6.0.0",
+    "fast-xml-parser": "^5.11.2",
+    "lucide-react": "^0.544.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "ssh2": "^1.17.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@types/ssh2": "^1.15.5",
+    "@vitejs/plugin-react": "^5.0.2",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.4",
+    "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "cn.labdeck.competition2026",
+    "productName": "LabDeck Competition",
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "!resources/cangjie/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/cangjie",
+        "to": "cangjie"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "win": {
+      "icon": "resources/labdock-icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "include": "build/installer.nsh"
+    }
+  }
+}

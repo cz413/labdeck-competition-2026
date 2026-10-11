@@ -1,0 +1,107 @@
+const {app, BrowserWindow, ipcMain}=require('electron')
+const fs=require('node:fs/promises'), path=require('node:path'), {randomUUID}=require('node:crypto'), {pathToFileURL}=require('node:url'), esbuild=require('esbuild')
+const root=path.resolve(__dirname,'..'), testData=path.resolve(root,'artifacts/workflow-ui-check')
+app.getAppPath=()=>root
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('labdeck-headless-check','workflow')
+const errors=[], calls={diagnose:0,retry:0,verify:0,tracking:0,plan:0,save:0,other:0,ssh:0}
+const delay=ms=>new Promise(r=>setTimeout(r,ms))
+app.on('browser-window-created',(_e,win)=>win.webContents.on('console-message',e=>{if(e.level==='error')errors.push(e.message)}))
+async function main(){
+ if(!testData.startsWith(root+path.sep))throw new Error('Unsafe test path')
+ await fs.rm(testData,{recursive:true,force:true})
+ const bundle=path.join(root,'artifacts/workflow-service-test.cjs')
+ esbuild.buildSync({entryPoints:[path.join(root,'src/main/intelligence-service.ts')],outfile:bundle,bundle:true,platform:'node',format:'cjs',packages:'external',target:'node22'})
+ await import(pathToFileURL(path.join(root,'out/main/index.js')).href)
+ let win
+ for(let i=0;i<160;i++){win=BrowserWindow.getAllWindows()[0];if(win&&!win.webContents.isLoading()&&await win.webContents.executeJavaScript('!!document.querySelector(".intel-page")'))break;await delay(100)}
+ if(!win||app.getPath('userData')!==testData)throw new Error('Isolated window missing')
+ const run=code=>win.webContents.executeJavaScript(code)
+ const waitFor=async code=>{for(let i=0;i<160;i++){if(await run(code))return;await delay(80)}throw new Error('Timed out: '+code)}
+ const click=async(label,scope='body')=>{if(!await run(`(()=>{const b=[...document.querySelectorAll(${JSON.stringify(scope+' button')})].find(b=>b.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)return false;b.click();return true})()`))throw new Error('Button unavailable: '+label)}
+ const capture=async name=>{await delay(350);await fs.mkdir(path.join(root,'docs/screenshots'),{recursive:true});await fs.writeFile(path.join(root,'docs/screenshots',name+'.png'),(await win.webContents.capturePage()).toPNG())}
+ const handle=(channel,fn)=>{ipcMain.removeHandler(channel);ipcMain.handle(channel,(_e,...args)=>fn(...args))}
+ const now=new Date().toISOString(), serverId=randomUUID(), taskId=randomUUID(), originalRun=randomUUID(), secondRun=randomUUID()
+ const server={id:serverId,name:'联动测试节点',host:'192.0.2.1',port:22,username:'user',authType:'password',hostFingerprint:'SHA256:fixture',mode:'real',monitorPolicy:'manual',hasSecret:false,tags:[],group:'测试',createdAt:now,updatedAt:now}
+ const fixture={id:taskId,title:'联动验证 · 归档实验',project:'测试',objective:'训练视觉模型',tags:[],priority:'normal',status:'failed',serverId,codePath:'/workspace/custom',dataPath:'/datasets/demo',launchCommand:'python train.py --batch-size 32',condaEnvironment:{manager:'conda',environmentName:'custom-env'},artifactPath:'',notes:'',resultSummary:'',archived:true,createdAt:now,updatedAt:now,runs:[{id:originalRun,number:1,status:'failed',serverId,accessRouteId:'direct',codePath:'/workspace/custom',launchCommand:'python train.py --batch-size 32',logPath:'/workspace/first/log.txt',resultSummary:'',notes:''},{id:secondRun,number:2,status:'failed',serverId,accessRouteId:'direct',codePath:'/workspace/custom',launchCommand:'python train.py --batch-size 16',logPath:'/workspace/second/log.txt',resultSummary:'',notes:''}]}
+ const tasks=[fixture], store={listExperimentTasks:()=>structuredClone(tasks),getServer:()=>server,getSecrets:()=>({})}
+ const ssh={connect:async()=>{calls.ssh++;return {client:{end(){}}}},exec:async()=>{calls.ssh++;return 'torch.OutOfMemoryError: CUDA out of memory.'}}
+ const monitor={snapshot:async()=>({status:'online',sampledAt:now,gpus:[]})}
+ const {IntelligenceService}=require(bundle)
+ const service=new IntelligenceService(store,ssh,monitor,{},()=>win.webContents.send('intelligence:changed'))
+ for(const c of ['settings','saveSettings','testModel','diagnose','cancel','history','tracking','plan','retry','verify','export'])ipcMain.removeHandler('intelligence:'+c)
+ service.registerIpc(()=>{})
+ handle('intelligence:settings',()=>({enabled:true,endpoint:'https://fixture.invalid',model:'UI fixture',hasApiKey:false}))
+ handle('intelligence:diagnose',async input=>{calls.diagnose++;return service.diagnose(input)})
+ for(const name of ['retry','verify','tracking'])handle('intelligence:'+name,()=>{calls[name]++;throw new Error('Unexpected real mutation in workflow test')})
+ handle('servers:list',()=>[server]);handle('experiments:list',()=>structuredClone(tasks))
+ handle('monitor:snapshot',()=>({serverId,status:'offline',error:'mock node',gpus:[],fileSystems:[],sampledAt:now,latencyMs:null,uptimeSeconds:null,loadAverage:null,cpuUsagePercent:null,memoryUsedBytes:null,memoryTotalBytes:null}))
+ let planInput
+ handle('intelligence:plan',input=>{calls.plan++;planInput=input;return {engine:'model',draft:{title:'新的计划草稿',project:'测试',objective:input.intent,tags:[],priority:'normal',status:'planned',serverId:input.serverId,codePath:input.codePath,dataPath:'',launchCommand:'python train.py --batch-size 8',artifactPath:'',resultSummary:'',notes:''},assumptions:['UI 测试返回预设计划；没有实际模型请求。'],checks:['检查代码目录']}})
+ handle('experiments:save',input=>{calls.save++;const saved={...input,id:randomUUID(),createdAt:now,updatedAt:now,archived:false,runs:[]};tasks.push(saved);win.webContents.send('experiments:changed');return structuredClone(saved)})
+ for(const c of ['startRun','deleteTask','deleteQueuedRun','cancelRun','cancelQueuedRun','setStatus','setArchived','finishRun'])handle('experiments:'+c,()=>{calls.other++;throw new Error('Unexpected task mutation')})
+ win.webContents.reload();await waitFor('!!document.querySelector(".intel-page")')
+ // Production diagnosis service with mock SSH, then actual UI navigates to an archived, exact run.
+ const diagnosis=await run(`window.labApi.intelligence.diagnose({taskId:${JSON.stringify(taskId)},runId:${JSON.stringify(originalRun)},useModel:false})`)
+ await waitFor('!!document.querySelector(".intel-history button")');await run('document.querySelector(".intel-history button").click()')
+ await click('查看原运行');await waitFor('!!document.querySelector(".workflow-selected-run")')
+ if(await run('document.querySelector(".workflow-selected-run").dataset.runId')!==originalRun)throw new Error('Wrong original run selected')
+ if(!await run('document.querySelector(".experiment-task-card").textContent.includes("归档实验")'))throw new Error('Archived task not revealed')
+ await click('诊断第 2 次运行');await waitFor(`document.querySelector('[aria-label="诊断运行"]').value===${JSON.stringify(secondRun)}`)
+ if(calls.diagnose!==1)throw new Error('Navigation triggered diagnosis automatically')
+ await click('收集证据并诊断','.intel-page');await waitFor('!!document.querySelector(".intel-report")')
+ await click('查看原运行');await waitFor(`document.querySelector('.workflow-selected-run').dataset.runId===${JSON.stringify(secondRun)}`)
+ await click('基于此任务生成计划');await waitFor('!!document.querySelector(".workflow-context")')
+ if(!await run('document.querySelector(".intel-plan-input").textContent.includes("保存为新草稿")'))throw new Error('Plan provenance missing')
+ await click('生成执行计划');await waitFor('!!document.querySelector(".intel-plan-output input")')
+ if(planInput.serverId!==serverId||planInput.codePath!=='/workspace/custom'||planInput.environmentName!=='custom-env')throw new Error('Plan context lost')
+ await click('确认配置并保存草稿');await waitFor('!!document.querySelector(".confirm-dialog")');await click('保存草稿','.confirm-dialog')
+ await waitFor('!![...document.querySelectorAll(".intel-page button")].find(b=>b.textContent.trim()==="打开已保存的实验任务")')
+ if(calls.save!==1||tasks[0].id!==taskId||tasks[0].launchCommand!=='python train.py --batch-size 32'||tasks[1].id===taskId)throw new Error('Source task overwritten')
+ await click('打开已保存的实验任务');await waitFor('document.querySelector(".experiment-task-card").textContent.includes("新的计划草稿")')
+ await click('智能实验','.workbench-modulebar');await click('演示入口','.intel-page');await click('载入预设演示计划')
+ await waitFor('!!document.querySelector(".workflow-demo")')
+ const baseline={...calls}, historyBefore=await service.history(), realTasksBefore=JSON.stringify(tasks)
+ await click('智能实验','.workbench-modulebar');await click('实验计划','.intel-page');if(await run('document.querySelector(".intel-plan-input select").textContent.includes("离线演示节点")'))throw new Error('Virtual demo node leaked into real planning');await click('查看演示任务','.workflow-demo')
+ const demoFirst=async()=>{
+   await click('模拟首次显存不足','.workflow-demo');await waitFor('!!document.querySelector(".workflow-selected-run")')
+   if(await run('[...document.querySelectorAll(".experiment-task-actions button")].some(b=>["编辑","加入队列","再次排队","删除任务","取消运行","基于此任务生成计划"].includes(b.textContent.trim()))'))throw new Error('Demo exposes real task actions')
+   await click('诊断第 1 次运行');await waitFor('!!document.querySelector(".intel-page")')
+   if(!await run('document.querySelector(".intel-checkbox input").disabled'))throw new Error('Demo allowed model calls')
+   await click('收集证据并诊断');await waitFor('!!document.querySelector(".intel-repair")')
+   if(!await run('document.querySelector(".intel-badges").textContent.includes("模拟数据")'))throw new Error('Demo report unlabelled')
+   await click('审查并创建修复运行');await waitFor('!!document.querySelector(".confirm-dialog")');await click('取消','.confirm-dialog')
+   if(await run('!!document.querySelector(".intel-closure")'))throw new Error('Cancelled demo approval still queued')
+   await click('审查并创建修复运行');await waitFor('!!document.querySelector(".confirm-dialog")');await click('确认模拟排队','.confirm-dialog')
+   await waitFor('!!document.querySelector(".intel-closure")')
+   await click('查看修复运行');await waitFor('!!document.querySelector(".workflow-selected-run")')
+   if(!await run('document.querySelector(".workflow-selected-run").textContent.includes("第 2 次运行")'))throw new Error('Wrong retry run selected')
+   await click('查看修复验收');await waitFor('!!document.querySelector(".intel-closure")')
+   await click('模拟修复开始','.workflow-demo')
+ }
+ await demoFirst();await click('模拟验收成功','.workflow-demo');await waitFor('document.querySelector(".intel-closure-status").textContent.includes("进程验收通过")')
+ await run('document.querySelector(".workbench-page").scrollTop=0');await capture('workflow-demo-success-dark')
+ await run('document.documentElement.dataset.theme="instrument"');await capture('workflow-demo-success-light')
+ if(await run('document.querySelector(".workbench-page").scrollWidth>document.querySelector(".workbench-page").clientWidth'))throw new Error('Workflow page overflows')
+ await click('重置演示','.workflow-demo');await demoFirst();await click('模拟再次失败','.workflow-demo')
+ await waitFor('document.querySelector(".intel-closure-status").textContent.includes("修复后仍失败")')
+ await click('查看新诊断','.intel-closure');await waitFor('document.querySelector(".intel-command-diff").textContent.includes("--batch-size 8")')
+ await click('查看原运行');await waitFor('document.querySelector(".workflow-selected-run").textContent.includes("第 2 次运行")');await waitFor('document.querySelector(".experiment-task-card").classList.contains("status-failed")')
+ if(await run('document.querySelectorAll(".experiment-run-record").length')!==2)throw new Error('Demo automatically launched extra repair')
+ await capture('workflow-demo-failure-task');win.setSize(1280,840);await delay(250);if(await run('document.querySelector(".workbench-page").scrollWidth>document.querySelector(".workbench-page").clientWidth'))throw new Error('Compact workflow page overflows');await capture('workflow-demo-compact');win.setSize(1728,1080)
+ await click('查看诊断报告');await waitFor('!!document.querySelector(".intel-report")')
+ await click('退出演示','.workflow-demo');await waitFor('!document.querySelector(".workflow-demo")&&!document.querySelector(".intel-report")')
+ if(JSON.stringify(calls)!==JSON.stringify(baseline))throw new Error('Demo called production IPC: '+JSON.stringify({baseline,calls}))
+ if(JSON.stringify(tasks)!==realTasksBefore||JSON.stringify(await service.history())!==JSON.stringify(historyBefore))throw new Error('Demo polluted real tasks or reports')
+ await click('实验任务','.workbench-modulebar');await waitFor('!!document.querySelector(".experiment-pool-table")')
+ if(await run('document.querySelector(".experiment-pool-table").textContent.includes("【模拟】")'))throw new Error('Demo task survives exit')
+ win.webContents.reload();await waitFor('!!document.querySelector(".intel-page")')
+ if(await run('!!document.querySelector(".workflow-demo")'))throw new Error('Demo persisted after reload')
+ service.stopTracking()
+ if(errors.length)throw new Error(errors.join('\n'))
+ const result={status:'passed',mockSSH:true,mockPlan:true,realModel:false,demoProductionCalls:0,checks:['archived exact run navigation','navigation does not trigger collection','task to diagnosis with selected run','task context to plan','plan saves new task','plan back to task','demo success and failure branches','cancel repair approval','model disabled for demo','retry run navigation','linked follow-up diagnosis','no automatic extra repair','virtual node excluded from real planning','zero production calls during demo','real data survives reset and exit','reload clears demo','dark/light screenshots'],screenshots:4,testData}
+ await fs.writeFile(path.join(root,'artifacts/workflow-ui-verification.json'),JSON.stringify(result,null,2)+'\n')
+ console.log(JSON.stringify(result,null,2));app.exit(0)
+}
+setTimeout(()=>{console.error('Workflow UI check timed out');app.exit(1)},90_000).unref()
+main().catch(e=>{console.error(e);app.exit(1)})

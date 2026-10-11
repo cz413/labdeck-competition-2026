@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.cj text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.docx binary

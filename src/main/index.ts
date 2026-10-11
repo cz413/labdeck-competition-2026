@@ -1,0 +1,773 @@
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from 'electron'
+import { writeFile } from 'node:fs/promises'
+import { basename, join, posix } from 'node:path'
+import type { AppSettings, CondaEnvironmentConfig, CondaManager, ExperimentRunFinishInput, ExperimentRunStartInput, ExperimentTaskDraft, ExperimentTaskStatus, GpuHistoryRange, GpuMetric, RemoteCondaResult, ServerProfile, ServerProfileInput, ServerSnapshot, SftpTransferProgress } from '../shared/types'
+import { isGpuBusy } from '../shared/gpu-status'
+import { applyAccessRoute, getDefaultAccessRouteId } from '../shared/access-routes'
+import { condaEnvironmentConfigSchema, experimentRunStartInputSchema } from '../shared/schemas'
+import { AppStore } from './store'
+import { MonitorService } from './monitor-service'
+import { SftpService } from './sftp-service'
+import { SshService } from './ssh-service'
+import { SshConfigService } from './ssh-config-service'
+import { TerminalManager } from './terminal-manager'
+import { VsCodeService } from './vscode-service'
+import { CondaService } from './conda-service'
+import { ExperimentScheduler } from './experiment-scheduler'
+import { TunnelManager } from './tunnel-manager'
+import { IntelligenceService } from './intelligence-service'
+import { ResearchService } from './research-service'
+import { ProcessWatchService } from './process-watch-service'
+import { TaskCompletionTracker } from './task-notifications'
+import type { ProcessWatchInput, TaskFinishedEvent } from '../shared/types'
+import type { TunnelConfigInput } from '../shared/types'
+
+app.setName('LabDeck Competition')
+app.setPath('userData', app.commandLine.hasSwitch('labdeck-headless-check')
+  ? join(app.getAppPath(), 'artifacts', app.commandLine.getSwitchValue('labdeck-headless-check')==='closure'?'closure-ui-check':app.commandLine.getSwitchValue('labdeck-headless-check')==='workflow'?'workflow-ui-check':app.commandLine.getSwitchValue('labdeck-headless-check')==='research'?'research-ui-check':'intelligence-ui-check')
+  : join(app.getPath('appData'), 'LabDeck-Competition-2026'))
+
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let terminalManager: TerminalManager | null = null
+let tunnelManager: TunnelManager | null = null
+let monitorService: MonitorService | null = null
+let experimentScheduler: ExperimentScheduler | null = null
+let intelligenceService: IntelligenceService | null = null
+let researchService: ResearchService | null = null
+let processWatchService: ProcessWatchService | null = null
+const taskNotifications = new Set<Notification>()
+const sftpWindows = new Map<string, BrowserWindow>()
+let quittingAfterTerminalCleanup = false
+let trayHintShown = false
+let closePromptVisible = false
+const gpuNotificationCooldown = new Map<string, number>()
+const pendingInitialGpuWatches = new Set<string>()
+
+const gpuWatchKey = (serverId: string, gpuUuid?: string): string =>
+  `${serverId}::${gpuUuid ?? '*'}`
+
+const appIconPath = join(app.getAppPath(), 'resources', 'labdock-icon.ico')
+
+process.on('uncaughtException', (error) => {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ETIMEDOUT') {
+    console.warn(`连接已中断（${code}），应用继续运行`)
+    return
+  }
+  console.error('主进程未捕获异常：', error)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('主进程未处理的异步异常：', reason)
+})
+
+function showMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function hideToTray(): void {
+  if (!mainWindow) return
+  mainWindow.hide()
+  if (!trayHintShown && tray && process.platform === 'win32') {
+    trayHintShown = true
+    tray.displayBalloon({
+      title: 'LabDeck 参赛版仍在后台运行',
+      content: '服务器监控、SSH 隧道与任务结束提醒将继续运行，双击托盘图标可恢复窗口。',
+      icon: appIconPath
+    })
+  }
+}
+
+function createTray(): void {
+  if (tray) return
+  tray = new Tray(appIconPath)
+  tray.setToolTip('LabDeck · 智能实验参赛版')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示 LabDeck 参赛版', click: showMainWindow },
+    { type: 'separator' },
+    { label: '退出 LabDeck 参赛版（前台任务可能中断）', click: () => app.quit() }
+  ]))
+  tray.on('double-click', showMainWindow)
+}
+
+function createWindow(store: AppStore): void {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1080,
+    minHeight: 700,
+    show: false,
+    frame: false,
+    thickFrame: true,
+    icon: appIconPath,
+    backgroundColor: '#202225',
+    title: 'LabDeck · 智能实验工作台（参赛版）',
+    webPreferences: {
+      offscreen: app.commandLine.hasSwitch('labdeck-headless-check'),
+      preload: join(__dirname, '../preload/index.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true
+    }
+  })
+
+  mainWindow.once('ready-to-show', () => {
+    if (!app.commandLine.hasSwitch('labdeck-headless-check')) mainWindow?.show()
+    const capturePath = process.env.LAB_DEMO_CAPTURE
+    if (capturePath) {
+      setTimeout(() => {
+        void (async () => {
+          const view = process.env.LAB_DEMO_CAPTURE_VIEW
+          if (view === 'gpus' || view === 'gpu-detail') {
+            await mainWindow?.webContents.executeJavaScript(
+              "[...document.querySelectorAll('button')].find((button) => button.textContent?.includes('GPU 资源'))?.click()"
+            )
+          }
+          if (view === 'gpu-detail') {
+            await new Promise((resolve) => setTimeout(resolve, 300))
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.gpu-overview-card')?.click()"
+            )
+          }
+          if (view === 'server-detail') {
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.sidebar-server-link')?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 350))
+          }
+          if (view === 'server-terminal') {
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.sidebar-server-link')?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 250))
+            await mainWindow?.webContents.executeJavaScript(
+              "[...document.querySelectorAll('.server-detail-tabs button')].find((button) => button.textContent?.includes('终端'))?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 500))
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.server-terminal-workspace .local-terminal-add')?.click()"
+            )
+          }
+          if (view === 'password') {
+            await mainWindow?.webContents.executeJavaScript(
+              "[...document.querySelectorAll('button')].find((button) => button.textContent?.includes('添加服务器'))?.click()"
+            )
+          }
+          if (view === 'terminal-drag') {
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.terminal-action')?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 300))
+            await mainWindow?.webContents.executeJavaScript(`(() => {
+              const handle = document.querySelector('.terminal-drag-handle')
+              if (!handle) return false
+              const rect = handle.getBoundingClientRect()
+              const options = { bubbles: true, pointerId: 7, clientX: rect.left + 120, clientY: rect.top + 24 }
+              handle.dispatchEvent(new PointerEvent('pointerdown', options))
+              window.dispatchEvent(new PointerEvent('pointermove', { ...options, clientX: window.innerWidth + 900, clientY: window.innerHeight + 700 }))
+              window.dispatchEvent(new PointerEvent('pointerup', { ...options, clientX: window.innerWidth + 900, clientY: window.innerHeight + 700 }))
+              return true
+            })()`)
+          }
+          if (view === 'local-terminal') {
+            await mainWindow?.webContents.executeJavaScript(
+              "[...document.querySelectorAll('button')].find((button) => button.textContent?.includes('本地终端'))?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 450))
+            await mainWindow?.webContents.executeJavaScript(
+              "document.querySelector('.local-terminal-add')?.click(); document.querySelector('.local-terminal-add')?.click()"
+            )
+            await new Promise((resolve) => setTimeout(resolve, 900))
+          }
+          if (view === 'settings') {
+            await mainWindow?.webContents.executeJavaScript(
+                "[...document.querySelectorAll('button')].find((button) => button.textContent?.includes('偏好设置'))?.click()"
+            )
+            const theme = process.env.LAB_DEMO_CAPTURE_THEME
+            if (theme) {
+              await new Promise((resolve) => setTimeout(resolve, 150))
+              await mainWindow?.webContents.executeJavaScript(
+                `[...document.querySelectorAll('.theme-option')].find((button) => button.textContent?.includes(${JSON.stringify(theme)}))?.click()`
+              )
+            }
+          }
+          if (view === 'close-prompt') {
+            await mainWindow?.webContents.executeJavaScript('window.labApi.windowControls.close()')
+            await new Promise((resolve) => setTimeout(resolve, 220))
+          }
+          const forcedTheme = process.env.LAB_DEMO_CAPTURE_THEME
+          if (forcedTheme && view !== 'settings') {
+            const theme = ['浅色工作台', '浅色仪器台'].includes(forcedTheme) ? 'instrument' : 'ocean'
+            await mainWindow?.webContents.executeJavaScript(
+              `document.documentElement.dataset.theme = ${JSON.stringify(theme)}`
+            )
+          }
+          await new Promise((resolve) => setTimeout(resolve, 350))
+          const image = await mainWindow?.webContents.capturePage()
+          if (image) await writeFile(capturePath, image.toPNG())
+          app.quit()
+        })()
+      }, 1500)
+    }
+  })
+  mainWindow.on('close', (event) => {
+    if (quittingAfterTerminalCleanup) return
+    const closeBehavior = store.getSettings().closeBehavior
+    if (closeBehavior === 'exit') return
+    event.preventDefault()
+    if (closeBehavior === 'tray') {
+      hideToTray()
+      return
+    }
+    if (closePromptVisible || !mainWindow) return
+    closePromptVisible = true
+    mainWindow.webContents.send('window:closeRequested')
+  })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  mainWindow.setMenuBarVisibility(false)
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  } else {
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+function resolveConnectionProfile(store: AppStore, serverId: string, accessRouteId?: string): ServerProfile {
+  return applyAccessRoute(store.getServer(serverId), accessRouteId)
+}
+
+async function withRemoteConda<T>(
+  store: AppStore,
+  ssh: SshService,
+  serverId: string,
+  accessRouteId: string,
+  operation: (profile: ServerProfile, secrets: ReturnType<AppStore['getSecrets']>) => Promise<T>
+): Promise<RemoteCondaResult<T>> {
+  const profile = resolveConnectionProfile(store, serverId, accessRouteId)
+  if (profile.mode !== 'real') throw new Error('演示节点不支持 Conda 远程操作')
+  const secrets = store.getSecrets(serverId)
+  if (!profile.hostFingerprint || (profile.jumpHost && !profile.jumpHost.hostFingerprint)) {
+    const required = await ssh.scanRequiredHostKey(profile, secrets)
+    return {
+      status: 'host-key-required',
+      fingerprint: required.fingerprint,
+      hostKeyTarget: required.target,
+      message: required.target === 'jumpHost'
+        ? '首次连接，请核对并信任跳板机主机指纹'
+        : '首次连接，请核对并信任目标服务器主机指纹'
+    }
+  }
+  return { status: 'success', value: await operation(profile, secrets) }
+}
+
+function createSftpWindow(store: AppStore, serverId: string, accessRouteId?: string, requestedPath?: string): BrowserWindow {
+  const routeId = accessRouteId ?? getDefaultAccessRouteId(store.getServer(serverId))
+  const profile = resolveConnectionProfile(store, serverId, routeId)
+  const homePath = `/home/${profile.username.trim() || 'user'}`
+  const initialPath = requestedPath?.startsWith('/') && !requestedPath.includes('\0')
+    ? posix.normalize(requestedPath)
+    : homePath
+  const windowKey = `${serverId}:${routeId}`
+  const existing = sftpWindows.get(windowKey)
+  if (existing && !existing.isDestroyed()) {
+    const navigate = (): void => {
+      if (!existing.isDestroyed() && !existing.webContents.isDestroyed()) existing.webContents.send('sftp:navigate', initialPath)
+    }
+    if (existing.webContents.isLoading()) existing.webContents.once('did-finish-load', navigate)
+    else navigate()
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return existing
+  }
+
+  const server = profile
+  const window = new BrowserWindow({
+    width: 1120,
+    height: 760,
+    minWidth: 760,
+    minHeight: 520,
+    show: false,
+    frame: false,
+    thickFrame: true,
+    icon: appIconPath,
+    backgroundColor: '#07111f',
+    title: `${server.name} · 文件管理`,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true
+    }
+  })
+  sftpWindows.set(windowKey, window)
+  window.once('ready-to-show', () => {
+    window.show()
+    window.focus()
+  })
+  window.on('closed', () => {
+    if (sftpWindows.get(windowKey) === window) sftpWindows.delete(windowKey)
+  })
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  window.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.setMenuBarVisibility(false)
+  const query = `?sftpServerId=${encodeURIComponent(serverId)}&sftpRouteId=${encodeURIComponent(routeId)}&sftpInitialPath=${encodeURIComponent(initialPath)}`
+  if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(`${process.env.ELECTRON_RENDERER_URL}${query}`)
+  else void window.loadFile(join(__dirname, '../renderer/index.html'), { search: query })
+  return window
+}
+
+function isGpuAvailable(gpu: GpuMetric): boolean {
+  return gpu.temperatureC < 80 && !isGpuBusy(gpu)
+}
+
+function notifyGpuAvailability(
+  store: AppStore,
+  server: ServerProfile,
+  previous: ServerSnapshot | undefined,
+  current: ServerSnapshot
+): void {
+  if (current.status === 'offline') return
+  const watches = store.getSettings().gpuWatches.filter((watch) => watch.serverId === server.id)
+  if (!watches.length) return
+  const watchesServer = watches.some((watch) => !watch.gpuUuid)
+  const pendingServerWatch = pendingInitialGpuWatches.has(gpuWatchKey(server.id))
+  const candidates: GpuMetric[] = []
+  for (const gpu of current.gpus) {
+    if (!watchesServer && !watches.some((watch) => watch.gpuUuid === gpu.uuid)) continue
+    const previousGpu = previous?.gpus.find((item) => item.uuid === gpu.uuid)
+    const pendingGpuWatch = pendingInitialGpuWatches.has(gpuWatchKey(server.id, gpu.uuid))
+    const becameAvailable = Boolean(previousGpu && !isGpuAvailable(previousGpu) && isGpuAvailable(gpu))
+    if (isGpuAvailable(gpu) && (pendingServerWatch || pendingGpuWatch || becameAvailable)) candidates.push(gpu)
+    pendingInitialGpuWatches.delete(gpuWatchKey(server.id, gpu.uuid))
+  }
+  pendingInitialGpuWatches.delete(gpuWatchKey(server.id))
+  if (!Notification.isSupported()) return
+  const currentTime = Date.now()
+  const notifyCandidates = candidates.filter((gpu) => {
+    const notificationKey = `${server.id}::${gpu.uuid}`
+    if (currentTime - (gpuNotificationCooldown.get(notificationKey) ?? 0) < 10 * 60_000) return false
+    gpuNotificationCooldown.set(notificationKey, currentTime)
+    return true
+  })
+  if (!notifyCandidates.length) return
+  const bestGpu = [...notifyCandidates].sort((left, right) =>
+    (right.memoryTotalMiB - right.memoryUsedMiB) - (left.memoryTotalMiB - left.memoryUsedMiB)
+  )[0]
+  const singleGpu = notifyCandidates.length === 1 ? notifyCandidates[0] : null
+  const body = singleGpu
+    ? `当前空闲显存 ${((singleGpu.memoryTotalMiB - singleGpu.memoryUsedMiB) / 1024).toFixed(1)} GB，点击查看 GPU 详情。`
+    : `${notifyCandidates.slice(0, 4).map((gpu) => `GPU ${gpu.index}（${((gpu.memoryTotalMiB - gpu.memoryUsedMiB) / 1024).toFixed(1)} GB）`).join('、')}${notifyCandidates.length > 4 ? ' 等' : ''}`
+  const notification = new Notification({
+    title: singleGpu
+      ? `${server.name} · GPU ${singleGpu.index} 已空闲`
+      : `${server.name} · ${notifyCandidates.length} 块 GPU 已空闲`,
+    body,
+    icon: appIconPath
+  })
+  notification.on('click', () => {
+    mainWindow?.show()
+    mainWindow?.focus()
+    mainWindow?.webContents.send('notifications:gpuAvailable', {
+      serverId: server.id,
+      gpuUuid: bestGpu.uuid,
+      gpuIndex: bestGpu.index
+    })
+  })
+  notification.show()
+}
+
+function trackGpuWatchChanges(previous: AppSettings, current: AppSettings): void {
+  const previousKeys = new Set(previous.gpuWatches.map((watch) => gpuWatchKey(watch.serverId, watch.gpuUuid)))
+  const currentKeys = new Set(current.gpuWatches.map((watch) => gpuWatchKey(watch.serverId, watch.gpuUuid)))
+  for (const key of currentKeys) {
+    if (previousKeys.has(key)) continue
+    pendingInitialGpuWatches.add(key)
+    if (key.endsWith('::*')) {
+      const serverPrefix = `${key.slice(0, -1)}`
+      for (const cooldownKey of gpuNotificationCooldown.keys()) {
+        if (cooldownKey.startsWith(serverPrefix)) gpuNotificationCooldown.delete(cooldownKey)
+      }
+    } else {
+      gpuNotificationCooldown.delete(key)
+    }
+  }
+  for (const key of previousKeys) {
+    if (!currentKeys.has(key)) pendingInitialGpuWatches.delete(key)
+  }
+}
+
+function showTaskNotification(event: TaskFinishedEvent): void {
+  if (!Notification.isSupported()) throw new Error('当前系统不支持桌面通知')
+  const label = { completed: '运行成功', failed: '运行失败', cancelled: '已取消', unknown: '已结束，结果未知' }[event.outcome]
+  const notification = new Notification({
+    title: `${event.serverName} · ${label}`,
+    body: `${event.title}\n${event.message || '点击查看任务详情'}`.slice(0, 500),
+    icon: appIconPath
+  })
+  taskNotifications.add(notification)
+  notification.on('close', () => taskNotifications.delete(notification))
+  notification.on('failed', (_event, error) => {
+    taskNotifications.delete(notification)
+    console.warn('Windows 任务通知发送失败：', error)
+  })
+  notification.on('click', () => {
+    showMainWindow()
+    mainWindow?.webContents.send('notifications:taskFinished', event)
+  })
+  notification.show()
+}
+
+function registerIpc(store: AppStore): void {
+  const ssh = new SshService()
+  const sshConfig = new SshConfigService(store)
+  const monitor = new MonitorService(ssh)
+  monitorService = monitor
+  monitor.setPollingInterval(store.getSettings().pollingIntervalSeconds)
+  const sftp = new SftpService(ssh)
+  const vscode = new VsCodeService(store)
+  const conda = new CondaService(ssh)
+  const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')})
+  intelligenceService=intelligence
+  intelligence.registerIpc(() => { experimentScheduler?.wake(); experimentsChanged() })
+  terminalManager = new TerminalManager(ssh, () => mainWindow?.webContents ?? null)
+  const tunnels = new TunnelManager(store, ssh, () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tunnels:changed')
+  })
+  tunnelManager = tunnels
+  void tunnels.autoStart().catch(error => console.error('自动启动隧道失败：', error))
+  const notifyTaskEnd = (event: TaskFinishedEvent): void => {
+    if (!store.getSettings().notifyOnTaskEnd) return
+    try { showTaskNotification(event) } catch (error) { console.warn('任务结束通知不可用：', error) }
+  }
+  const completionTracker = new TaskCompletionTracker(store.listExperimentTasks())
+  const experimentsChanged = (): void => {
+    intelligence.wakeTracking()
+    researchService?.wake()
+    completionTracker.collect(store.listExperimentTasks()).forEach(notifyTaskEnd)
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('experiments:changed')
+  }
+  const research = new ResearchService(store, intelligence, ssh,
+    () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('research:changed') },
+    () => { experimentScheduler?.wake(); experimentsChanged() })
+  researchService = research
+  research.registerIpc()
+  void research.start().catch(error => console.error('实验研究恢复失败：', error))
+  void intelligence.startTracking().catch(error=>console.error('修复闭环跟踪启动失败：',error))
+  experimentScheduler = new ExperimentScheduler(store, ssh, monitor, conda, experimentsChanged)
+  void experimentScheduler.start().catch((error) => console.error('实验任务调度器启动失败：', error))
+  const processWatches = new ProcessWatchService(store, ssh, notifyTaskEnd, () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('notifications:processWatchesChanged')
+  })
+  processWatchService = processWatches
+  processWatches.start()
+  ipcMain.handle('notifications:listProcessWatches', () => processWatches.list())
+  ipcMain.handle('notifications:watchProcess', (_event, input: ProcessWatchInput) => processWatches.watch(input))
+  ipcMain.handle('notifications:unwatchProcess', (_event, id: string) => processWatches.remove(id))
+  ipcMain.handle('notifications:test', () => showTaskNotification({ title: 'Windows 通知测试', serverName: 'LabDock', outcome: 'completed', message: '任务结束后将在这里提醒。请保持应用运行或留在系统托盘。' }))
+
+  ipcMain.on('window:minimize', (event) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!targetWindow) return
+    targetWindow.minimize()
+  })
+  ipcMain.handle('window:toggleMaximize', (event) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!targetWindow) return false
+    if (targetWindow.isMaximized()) targetWindow.unmaximize()
+    else targetWindow.maximize()
+    return targetWindow.isMaximized()
+  })
+  ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+  ipcMain.handle('window:resolveCloseAction', async (_event, action: 'tray' | 'exit' | 'cancel', remember: boolean) => {
+    if (!['tray', 'exit', 'cancel'].includes(action)) throw new Error('无效的关闭操作')
+    closePromptVisible = false
+    let settings = store.getSettings()
+    if (remember && action !== 'cancel') {
+      settings = await store.saveSettings({ closeBehavior: action })
+    }
+    if (action === 'tray') hideToTray()
+    if (action === 'exit') setTimeout(() => app.quit(), 50)
+    return settings
+  })
+  ipcMain.handle('clipboard:readText', () => clipboard.readText())
+  ipcMain.handle('clipboard:writeText', (_event, text: string) => clipboard.writeText(text))
+
+  ipcMain.handle('servers:list', () => store.listServers())
+  ipcMain.handle('servers:save', async (_event, input: ServerProfileInput) => {
+    const saved = await store.saveServer(input)
+    tunnels.stopForServer(saved.id)
+    monitor.invalidateServer(saved.id)
+    return saved
+  })
+  ipcMain.handle('servers:mergeAccessRoute', async (_event, serverId: string, sourceServerId: string) => {
+    const merged = await sshConfig.mergeAccessRoute(serverId, sourceServerId)
+    tunnels.stopForServer(serverId)
+    tunnels.stopForServer(sourceServerId)
+    monitor.invalidateServer(serverId)
+    monitor.invalidateServer(sourceServerId)
+    return merged
+  })
+  ipcMain.handle('servers:remove', async (_event, id: string) => {
+    tunnels.stopForServer(id)
+    await store.removeServer(id)
+    monitor.invalidateServer(id)
+  })
+  ipcMain.handle('servers:test', async (_event, id: string, accessRouteId?: string) => {
+    const profile = resolveConnectionProfile(store, id, accessRouteId)
+    return ssh.testConnection(profile, store.getSecrets(id))
+  })
+  ipcMain.handle('servers:trustHost', async (_event, id: string, fingerprint: string, target?: 'server' | 'jumpHost', accessRouteId?: string) => {
+    const trusted = await store.trustHost(id, fingerprint, target, accessRouteId)
+    monitor.invalidateServer(id)
+    return trusted
+  })
+  ipcMain.handle('servers:choosePrivateKey', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: '选择 SSH 私钥',
+      properties: ['openFile'],
+      filters: [{ name: 'SSH 私钥', extensions: ['pem', 'key', 'ppk', '*'] }]
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+  ipcMain.handle('sshConfig:importAll', async () => {
+    const result = await sshConfig.importAll()
+    for (const profile of result.imported) monitor.invalidateServer(profile.id)
+    return result
+  })
+
+  ipcMain.handle('monitor:snapshot', async (_event, id: string, accessRouteId?: string) => {
+    const profile = resolveConnectionProfile(store, id, accessRouteId)
+    const previous = store.getCachedSnapshots()[id]
+    const snapshot = await monitor.snapshot(profile, store.getSecrets(id))
+    await store.recordSnapshot(snapshot, profile.mode === 'demo')
+    notifyGpuAvailability(store, profile, previous, snapshot)
+    return snapshot
+  })
+  ipcMain.handle('monitor:cachedSnapshots', () => store.getCachedSnapshots())
+  ipcMain.handle('monitor:gpuHistory', (_event, id: string, gpuUuid: string, range: GpuHistoryRange) => {
+    store.getServer(id)
+    return store.getGpuHistory(id, gpuUuid, range)
+  })
+
+  ipcMain.handle('terminal:connect', async (_event, id: string, cols: number, rows: number, accessRouteId?: string) => {
+    const profile = resolveConnectionProfile(store, id, accessRouteId)
+    return terminalManager!.connect(profile, store.getSecrets(id), cols, rows)
+  })
+  ipcMain.handle('terminal:connectLocal', (_event, cols: number, rows: number) =>
+    terminalManager!.connectLocal(cols, rows)
+  )
+  ipcMain.on('terminal:write', (_event, sessionId: string, data: string) =>
+    terminalManager?.write(sessionId, data)
+  )
+  ipcMain.handle('terminal:autofillPassword', (_event, sessionId: string) =>
+    terminalManager?.autofillPassword(sessionId) ?? false
+  )
+  ipcMain.on('terminal:resize', (_event, sessionId: string, cols: number, rows: number) =>
+    terminalManager?.resize(sessionId, cols, rows)
+  )
+  ipcMain.on('terminal:close', (_event, sessionId: string) => terminalManager?.close(sessionId))
+
+  ipcMain.handle('sftp:list', async (_event, id: string, remotePath: string, accessRouteId?: string) => {
+    const profile = resolveConnectionProfile(store, id, accessRouteId)
+    return sftp.list(profile, store.getSecrets(id), remotePath)
+  })
+  ipcMain.handle('sftp:openWindow', (_event, id: string, accessRouteId?: string, initialPath?: string) => {
+    createSftpWindow(store, id, accessRouteId, initialPath)
+  })
+  ipcMain.handle('sftp:chooseUploadFile', async (event) => {
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow!, {
+      title: '选择要上传的文件',
+      properties: ['openFile']
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
+  ipcMain.handle(
+    'sftp:upload',
+    async (event, id: string, localPath: string, remotePath: string, transferId: string, accessRouteId?: string) => {
+      const profile = resolveConnectionProfile(store, id, accessRouteId)
+      const fileName = basename(localPath)
+      const sendProgress = (payload: SftpTransferProgress): void => {
+        if (!event.sender.isDestroyed()) event.sender.send('sftp:progress', payload)
+      }
+      let lastTransferredBytes = 0
+      let lastTotalBytes = 0
+      const update = (transferredBytes: number, totalBytes: number, status: SftpTransferProgress['status'], error?: string): void => {
+        lastTransferredBytes = transferredBytes
+        lastTotalBytes = totalBytes
+        sendProgress({ transferId, direction: 'upload', fileName, transferredBytes, totalBytes, status, ...(error ? { error } : {}) })
+      }
+      update(0, 0, 'running')
+      try {
+        await sftp.upload(profile, store.getSecrets(id), localPath, remotePath, (transferredBytes, totalBytes) => update(transferredBytes, totalBytes, 'running'))
+        update(lastTotalBytes || lastTransferredBytes, lastTotalBytes || lastTransferredBytes, 'completed')
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught)
+        update(0, 0, 'failed', message)
+        throw caught
+      }
+    }
+  )
+  ipcMain.handle('sftp:download', async (event, id: string, remotePath: string, transferId: string, accessRouteId?: string) => {
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow!, {
+      title: '保存远程文件',
+      defaultPath: basename(remotePath)
+    })
+    if (result.canceled || !result.filePath) return null
+    const profile = resolveConnectionProfile(store, id, accessRouteId)
+    const fileName = basename(remotePath)
+    const sendProgress = (payload: SftpTransferProgress): void => {
+      if (!event.sender.isDestroyed()) event.sender.send('sftp:progress', payload)
+    }
+    let lastTransferredBytes = 0
+    let lastTotalBytes = 0
+    const update = (transferredBytes: number, totalBytes: number, status: SftpTransferProgress['status'], error?: string): void => {
+      lastTransferredBytes = transferredBytes
+      lastTotalBytes = totalBytes
+      sendProgress({ transferId, direction: 'download', fileName, transferredBytes, totalBytes, status, ...(error ? { error } : {}) })
+    }
+    update(0, 0, 'running')
+    try {
+      await sftp.download(profile, store.getSecrets(id), remotePath, result.filePath, (transferredBytes, totalBytes) => update(transferredBytes, totalBytes, 'running'))
+      update(lastTotalBytes || lastTransferredBytes, lastTotalBytes || lastTransferredBytes, 'completed')
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught)
+      update(0, 0, 'failed', message)
+      throw caught
+    }
+    return result.filePath
+  })
+
+  ipcMain.handle('vscode:openRemote', (_event, id: string, accessRouteId?: string, remotePath?: string) => {
+    return vscode.openRemote(resolveConnectionProfile(store, id, accessRouteId), accessRouteId, remotePath)
+  })
+
+  ipcMain.handle('experiments:list', () => store.listExperimentTasks())
+  ipcMain.handle('experiments:save', (_event, input: ExperimentTaskDraft) => store.saveExperimentTask(input))
+  ipcMain.handle('experiments:setStatus', async (_event, taskId: string, status: ExperimentTaskStatus) => {
+    const task = await store.setExperimentTaskStatus(taskId, status)
+    experimentsChanged()
+    return task
+  })
+  ipcMain.handle('experiments:startRun', async (_event, taskId: string, input: ExperimentRunStartInput) => {
+    const task = await store.startExperimentRun(taskId, experimentRunStartInputSchema.parse(input))
+    experimentScheduler?.wake()
+    return task
+  })
+  ipcMain.handle('experiments:cancelQueuedRun', (_event, taskId: string, runId: string) => store.cancelQueuedExperimentRun(taskId, runId))
+  ipcMain.handle('experiments:cancelRun', (_event, taskId: string, runId: string) => {
+    if (!experimentScheduler) throw new Error('实验任务调度器尚未启动')
+    return experimentScheduler.cancelRun(taskId, runId)
+  })
+  ipcMain.handle('experiments:deleteQueuedRun', async (_event, taskId: string, runId: string) => {
+    const task = await store.deleteQueuedExperimentRun(taskId, runId)
+    if (!task && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('experiments:changed')
+    return task
+  })
+  ipcMain.handle('experiments:deleteTask', async (_event, taskId: string) => {
+    await store.deleteExperimentTask(taskId)
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('experiments:changed')
+  })
+  ipcMain.handle('experiments:finishRun', async (_event, taskId: string, runId: string, input: ExperimentRunFinishInput) => {
+    const task = await store.finishExperimentRun(taskId, runId, input)
+    experimentsChanged()
+    return task
+  })
+  ipcMain.handle('experiments:setArchived', (_event, taskId: string, archived: boolean) => store.setExperimentTaskArchived(taskId, archived))
+  ipcMain.handle('experiments:listCondaEnvironments', (_event, serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string) => {
+    if (!['conda', 'mamba', 'micromamba'].includes(manager)) throw new Error('Conda 管理器无效')
+    if (managerPath !== undefined && (typeof managerPath !== 'string' || managerPath.length > 4096 || managerPath.includes('\0'))) throw new Error('Conda 可执行文件路径无效')
+    return withRemoteConda(store, ssh, serverId, accessRouteId, (profile, secrets) =>
+      conda.listEnvironments(profile, secrets, manager, managerPath)
+    )
+  })
+  ipcMain.handle('experiments:checkCondaEnvironment', (_event, serverId: string, accessRouteId: string, rawConfig: CondaEnvironmentConfig) => {
+    const config = condaEnvironmentConfigSchema.parse(rawConfig)
+    return withRemoteConda(store, ssh, serverId, accessRouteId, (profile, secrets) =>
+      conda.checkEnvironment(profile, secrets, config)
+    )
+  })
+  ipcMain.handle('experiments:getCondaEnvironmentCommand', (_event, rawConfig: CondaEnvironmentConfig, updateExisting: boolean) => {
+    const config = condaEnvironmentConfigSchema.parse(rawConfig)
+    if (typeof updateExisting !== 'boolean') throw new Error('Conda 环境操作类型无效')
+    return conda.buildEnvironmentCommand(config, updateExisting)
+  })
+
+  ipcMain.handle('tunnels:list', () => tunnels.list())
+  ipcMain.handle('tunnels:save', async (_event, input: TunnelConfigInput) => {
+    tunnels.assertEditable(input?.id)
+    const saved = await store.saveTunnel(input)
+    tunnels.forget(saved.id)
+    return tunnels.list().find(item => item.id === saved.id)
+  })
+  ipcMain.handle('tunnels:remove', async (_event, id: string) => {
+    tunnels.stop(id)
+    await store.removeTunnel(id)
+    tunnels.forget(id)
+  })
+  ipcMain.handle('tunnels:start', (_event, id: string) => tunnels.start(id))
+  ipcMain.handle('tunnels:stop', (_event, id: string) => tunnels.stop(id))
+  ipcMain.handle('tunnels:checkTarget', (_event, id: string) => tunnels.checkTarget(id))
+  ipcMain.handle('tunnels:openBrowser', (_event, id: string) => shell.openExternal(tunnels.browserUrl(id)))
+
+  ipcMain.handle('settings:get', () => store.getSettings())
+  ipcMain.handle('settings:save', async (_event, settings: Partial<AppSettings>) => {
+    const previous = store.getSettings()
+    const saved = await store.saveSettings(settings)
+    monitor.setPollingInterval(saved.pollingIntervalSeconds)
+    trackGpuWatchChanges(previous, saved)
+    return saved
+  })
+}
+
+app.whenReady().then(async () => {
+  app.setAppUserModelId('cn.labdeck.competition2026')
+  const store = new AppStore()
+  await store.initialize()
+  for (const watch of store.getSettings().gpuWatches) {
+    pendingInitialGpuWatches.add(gpuWatchKey(watch.serverId, watch.gpuUuid))
+  }
+  registerIpc(store)
+  createWindow(store)
+  createTray()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(store)
+    else showMainWindow()
+  })
+})
+
+app.on('before-quit', (event) => {
+  tunnelManager?.closeAll()
+  experimentScheduler?.stop()
+  intelligenceService?.stopTracking()
+  researchService?.stop()
+  processWatchService?.stop()
+  monitorService?.closeAll()
+  if (quittingAfterTerminalCleanup || !terminalManager) return
+  event.preventDefault()
+  quittingAfterTerminalCleanup = true
+  void terminalManager.closeAll().finally(() => app.quit())
+})
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
+
+

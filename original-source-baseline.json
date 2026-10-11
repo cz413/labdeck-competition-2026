@@ -1,0 +1,246 @@
+[
+  {
+    "path": "src\\main\\conda-service.ts",
+    "hash": "D333DB816EBF55B93FBADB1D931AB51666FDCD5E0E076283C5D87E10BB18DC04"
+  },
+  {
+    "path": "src\\main\\experiment-scheduler.ts",
+    "hash": "178E82EBEBD0506F7537A77334351FE14FF962E1D4CFC9902C7897830B5C0CB6"
+  },
+  {
+    "path": "src\\main\\experiment-script.test.ts",
+    "hash": "B971E6E76F71B7102E07C417E9AD3F9229DC8E770A998F0FACF628736DC3F72B"
+  },
+  {
+    "path": "src\\main\\index.ts",
+    "hash": "C56612B49A62E3FFF4F5D416C71462FFCFFDE46DC5B4B03547EFCDEB59B757C4"
+  },
+  {
+    "path": "src\\main\\monitor-service.test.ts",
+    "hash": "97E5F1B375E3966CBF2E1C45493D40ED430C015E336947ADF20A04FCB0B58290"
+  },
+  {
+    "path": "src\\main\\monitor-service.ts",
+    "hash": "7F363EA416453BB9B911C08DD76CE7318F12D1958880DF52C2E75B3A1E1A3ECF"
+  },
+  {
+    "path": "src\\main\\nvidia-metrics.test.ts",
+    "hash": "92A37E6BEF8D6D814F19677689A91ABD039212743F10D41E3E69AF59DED97B74"
+  },
+  {
+    "path": "src\\main\\nvidia-metrics.ts",
+    "hash": "AC8AFA422B797092D00A1A1D3102D346D572C60C8699B7EE45F7C76D6279D0AA"
+  },
+  {
+    "path": "src\\main\\process-watch-service.test.ts",
+    "hash": "9CDEEF04464EC87537E2E8D82E0EBB3F461F3AADDA70393B645727E8429DA693"
+  },
+  {
+    "path": "src\\main\\process-watch-service.ts",
+    "hash": "29F39A658757142E764EA2DF2D41D7CFBC63AC14B01B5707F7932A1D31873AD0"
+  },
+  {
+    "path": "src\\main\\sftp-service.ts",
+    "hash": "83C8466D778843E3966F7585CE3B0D796F9CA4AA6220570A411EF44567626873"
+  },
+  {
+    "path": "src\\main\\ssh-config-service.test.ts",
+    "hash": "C39BE5F6413E2A71BFAD99A05CCADC21EF46B85ADF9F4362308F891E3B062FAE"
+  },
+  {
+    "path": "src\\main\\ssh-config-service.ts",
+    "hash": "590532378226C4C2C8AE82082A0C45C406E6D232380C3709B8C1745635C6554A"
+  },
+  {
+    "path": "src\\main\\ssh-service.test.ts",
+    "hash": "E3815F65347B20A3978299BFDA25A9A087BCAFA55829E266BE2F0597D2B62313"
+  },
+  {
+    "path": "src\\main\\ssh-service.ts",
+    "hash": "A5621EA6E1062F81019298C438767D817B9579FAE5314A4554293354DA476B5E"
+  },
+  {
+    "path": "src\\main\\store.test.ts",
+    "hash": "14488BF12DB50E9826838519D0A768CD4D2888AF90FB319BBF853F65D66A688E"
+  },
+  {
+    "path": "src\\main\\store.ts",
+    "hash": "1E954A54B6BBEA2A6C2B258257798DC8494F7BBCA2A6CA7C681CD07804672F47"
+  },
+  {
+    "path": "src\\main\\task-notifications.test.ts",
+    "hash": "C48840EA53D9FEC0BD821A67153A0795267D3655E6B43CB255FDC5E5706D3C36"
+  },
+  {
+    "path": "src\\main\\task-notifications.ts",
+    "hash": "F62339734C31B9D28BB49A7D563C3D0CA4BABCEA124B8C56B1E54276988BC18F"
+  },
+  {
+    "path": "src\\main\\terminal-manager.ts",
+    "hash": "CB6C8FF025251B21ED2312F08F5B5CF678C76ACDD9A24E2F440D31486E51F75C"
+  },
+  {
+    "path": "src\\main\\tunnel-manager.test.ts",
+    "hash": "AF61D99590ACFAB0EAB0A7B41EC9FA3268719628FDC47937DBE39378D3E50697"
+  },
+  {
+    "path": "src\\main\\tunnel-manager.ts",
+    "hash": "75F2146E1ED9510D92B39C3AD48955A28A499E44BE72550416C347326D295853"
+  },
+  {
+    "path": "src\\main\\vscode-service.test.ts",
+    "hash": "72A51CD87A0ED6603C2D4BCB55DE46E6A530F6C1C7A994FE468702D46830C9BD"
+  },
+  {
+    "path": "src\\main\\vscode-service.ts",
+    "hash": "AF548C9805D9DA08CBED658167FCE8FB573C35B29BAA3EA009AEC48E33B1E226"
+  },
+  {
+    "path": "src\\main\\test-fixtures\\nvidia.ts",
+    "hash": "CE487FA8F8F375C5B97CDE8674925C1A5A70D40B4C591E3D173C679FA5E5AC34"
+  },
+  {
+    "path": "src\\preload\\index.ts",
+    "hash": "490303CF1447AB63C5027B06DBB66A524B7AABF5D42D1749315076FBE1AE6DCC"
+  },
+  {
+    "path": "src\\renderer\\capture-drop.html",
+    "hash": "5F452ED27D3FB119979DD1CC0597D7007D95D57D0F10945E28B76B3BB2A3B291"
+  },
+  {
+    "path": "src\\renderer\\capture-drop.ts",
+    "hash": "A98152BCF3D7EDE0D0D8D11EBAD2A55F3F1901A74890132E8068D36BD7E7B92F"
+  },
+  {
+    "path": "src\\renderer\\index.html",
+    "hash": "EDDEC8755842140CA0434FC16B3A0464E587BE7137E5F1E19D71DA23EC87EDDB"
+  },
+  {
+    "path": "src\\renderer\\screenshot-harness.html",
+    "hash": "CDDD554524D882FFA2C82CEAEFCF3BD218BCFA0CB5DFB27469F3149DAF714D65"
+  },
+  {
+    "path": "src\\renderer\\screenshot-init.ts",
+    "hash": "613B3B6FAEA6BC191A694E5B49F8E8438BC16481DEB4BA27500A4B807CDDC4EA"
+  },
+  {
+    "path": "src\\renderer\\task-pool-preview.html",
+    "hash": "C78EC8CEAD9BE57D0E001EC077A5F5816740A58232C5BDCF8BAE5C69F294904E"
+  },
+  {
+    "path": "src\\renderer\\task-pool-preview.tsx",
+    "hash": "6220A040F4EAF3EBE3D885F7563665121EDA7EF6D6AA0205BB3546362C4ED105"
+  },
+  {
+    "path": "src\\renderer\\src\\App.tsx",
+    "hash": "703188F5F0452F8F87A3FA8BA6CF5EB140D80FA917E53B6EC8F0EBF81EB5EF2D"
+  },
+  {
+    "path": "src\\renderer\\src\\env.d.ts",
+    "hash": "48DB749ED6B9655477D9A71FB00C4EC208FF67A921BF08E29562C2DA6ADF7D33"
+  },
+  {
+    "path": "src\\renderer\\src\\main.tsx",
+    "hash": "D21EC78A9D238E7F63CE78FA852D471BF0296ADE88E2D8F2B1DE4BDD215EF34F"
+  },
+  {
+    "path": "src\\renderer\\src\\styles.css",
+    "hash": "F4A1915432874A1C4A83ECCC7167F9E81A22E9783564897D017B60C24866BE89"
+  },
+  {
+    "path": "src\\renderer\\src\\workbench.css",
+    "hash": "DEC2319DFDE2C5AE5B28E9A020ECD4B8B65C0E8E9C14ED7AA8CA52BE2A217D99"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\AccessRouteSelect.tsx",
+    "hash": "2F1D13631C9C8BB0CBBBE7D0C4B09DCADDD16370FB290625324F0801A0461528"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ConfirmDialog.tsx",
+    "hash": "0DFC4CDAD2039055F763ED0A5E4C72F87AF1B7ADDCCB220556B95AAC4898F0E7"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ExperimentTaskPool.tsx",
+    "hash": "F28357D95134839E5B38569CF95B14B012771C670F300EC4FA3BA55B1574D2C2"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\GpuDetailPanel.tsx",
+    "hash": "BABF9C834ABC6D08BCBD24066328DFC47FE962CCF41F663C406FFE7832B7951D"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\GpuHistoryChart.tsx",
+    "hash": "CC1FBAC101ABFF098265AD377EE6FAA1C4B088F0FA8F83B47B0F5108D1EE965F"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\GpuResourcePool.tsx",
+    "hash": "689F4BDF315B844B926E5525EF6989B89D7703F219598B6FF5A2F09227714BA2"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ResourceWorkbench.tsx",
+    "hash": "FCB6BB44C3D1904DEF40090FC32D759A0B291D58085C4D2FD2F0CC08D0922B37"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ServerDetailPage.tsx",
+    "hash": "64D795EF50D47BCC8A2E4E9639879D3D7CC7241AD3E4C6A92DCAB13DE7C3918A"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ServerDialog.tsx",
+    "hash": "8F6D7C54B4C5B6D82E9F8A1E638845895EE2841491ED883D6833FBA22F53A1D0"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\ServerTerminalWorkspace.tsx",
+    "hash": "C1A81E3325C1CF5996405E03893508B5664045F9F58BD4D86B39C2D21B46B2B0"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\SftpPanel.tsx",
+    "hash": "11952CCA765D4E902489CB853E053E7E8345EB48F15870F1EB8D3C5FBFD48B5F"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\TaskNotificationSettings.tsx",
+    "hash": "2140F43F553DD74E57EE8418F73536D745295293EAA69D05F9BFC4164DD519AD"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\TerminalDock.tsx",
+    "hash": "492BAC6130BE9BCB0740C28E63766A868A9E3A0053BD9E198662BC626B80D2AC"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\TerminalPanel.tsx",
+    "hash": "C381C7E1A3D569FFB4B1027CACBAD6E89615CAC666630EA77C62DB37320DEEF1"
+  },
+  {
+    "path": "src\\renderer\\src\\components\\TunnelPage.tsx",
+    "hash": "F963639C99F433384F98C82D253588159D3D2F44E6A128A5AFAE3A458C3B0A89"
+  },
+  {
+    "path": "src\\shared\\access-routes.ts",
+    "hash": "D1B1277404BD53D599D9C998AD9704EA3CA340790FE9ED380F6E832B35100FC6"
+  },
+  {
+    "path": "src\\shared\\experiment-launch.ts",
+    "hash": "8F3F7DBA83A5132C363F6C7C05A05DE4BAE88B8810989699E29F01F150BB4F30"
+  },
+  {
+    "path": "src\\shared\\gpu-memory.ts",
+    "hash": "9A532B1A86019805A5016A45FDAE928FCA14E60B6F3CE1E5A0F895643CE39D67"
+  },
+  {
+    "path": "src\\shared\\gpu-status.test.ts",
+    "hash": "4CFA4639104827BB97D6F3D414E5138155EEF54C9E8FCEABD8A96FEAE5130DC4"
+  },
+  {
+    "path": "src\\shared\\gpu-status.ts",
+    "hash": "49792C43EA2C052CD16538F8CFBB1B13EF62F907C51637539EE07F1513321723"
+  },
+  {
+    "path": "src\\shared\\schemas.test.ts",
+    "hash": "ABED86D67E503658B6139DA5D695ED1D6F3B0F19C83300287B4C872EB6FAE51D"
+  },
+  {
+    "path": "src\\shared\\schemas.ts",
+    "hash": "E38919EE921B18B4C8D53C0BD4A088C654A75A4DA73F084852C3E57D25A514D2"
+  },
+  {
+    "path": "src\\shared\\types.ts",
+    "hash": "59E73AEA3BDACA409DB76109543463D6BE4B26A857B5197EFCF7755032DB5C90"
+  }
+]

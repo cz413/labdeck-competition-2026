@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="32 16 200 232" role="img" aria-label="LabDock · 实验坞">
+  <g>
+    <path d="M65 28H74C87 28 94 36 94 49V179C94 192 101 199 114 199H201C213 199 220 207 220 219V221C220 231 213 236 201 236H64C51 236 44 228 44 215V49C44 36 52 28 65 28Z" fill="#E8EFED"/>
+    <rect x="112" y="36" width="90" height="72" rx="16" fill="#E8EFED"/>
+    <rect x="112" y="122" width="90" height="63" rx="14" fill="#50B9A7"/>
+    <circle cx="182" cy="55" r="8.5" fill="#238B80"/>
+  </g>
+</svg>
