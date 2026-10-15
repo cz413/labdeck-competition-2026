@@ -1,5 +1,6 @@
+import { dialog } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -15,7 +16,7 @@ const services:ResearchService[]=[]
 const serverId=randomUUID(),requestModel=vi.fn(),diagnose=vi.fn(),save=vi.fn(),start=vi.fn(),sshExec=vi.fn()
 let store:AppStore
 function service(){
-  const s=new ResearchService(store,{requestResearchModel:requestModel,history:async()=>[],diagnose} as unknown as IntelligenceService,{connect:async()=>({client:{end(){}}}),exec:sshExec} as unknown as SshService,()=>{},()=>{},{directory,engineDirectory:resolve('resources/cangjie')});services.push(s);return s
+  const s=new ResearchService(store,{requestResearchModel:requestModel,history:async()=>[],diagnose} as unknown as IntelligenceService,{connect:async()=>({client:{end(){}}}),exec:sshExec} as unknown as SshService,()=>{},()=>{},{directory,engineDirectory:resolve('artifacts/no-cangjie')});services.push(s);return s
 }
 async function create(s:ResearchService,useModel=false){return s.create({taskId:source.id,objective:'比较学习率',axes:[{flag:'--lr',values:['0.001','0.0001']}],maxRuns:2,useModel})}
 beforeEach(async()=>{
@@ -38,7 +39,7 @@ describe('persistent experiment research graph',()=>{
   })
   it('interrupts for approval and resumes the same checkpoint after a new service instance',async()=>{
     const initial=await create(service())
-    expect(initial.pending).toEqual(['review']);expect(initial.members).toHaveLength(2);expect(initial.expansionEngine).toBe('cangjie');expect(save).not.toHaveBeenCalled()
+    expect(initial.pending).toEqual(['review']);expect(initial.members).toHaveLength(2);expect(initial.expansionEngine).toBe('typescript');expect(save).not.toHaveBeenCalled()
     const reopened=service();const restored=(await reopened.list())[0]
     expect(restored.id).toBe(initial.id);expect(restored.members).toEqual(initial.members)
     await expect(reopened.approve(initial.id,false)).rejects.toThrow('确认')
@@ -79,7 +80,7 @@ describe('persistent experiment research graph',()=>{
     await s.refresh(initial.id);expect(requestModel).not.toHaveBeenCalled();expect(sshExec).not.toHaveBeenCalled()
     tasks.slice(1).forEach((t,i)=>{t.runs[0].status='completed';t.runs[0].logPath=`/workspace/run${i}/log`;t.runs[0].remoteRunDir=`/workspace/run${i}`})
     const result=await s.refresh(initial.id)
-    expect(result.stage).toBe('analysis');expect(result.pending).toEqual([]);expect(result.observations.map(o=>o.metrics.val_loss)).toEqual([1.8,1.8]);expect(result.analysis?.engine).toBe('rules');expect(result.analysis?.summary).toContain('2 项正常结束');expect(diagnose).not.toHaveBeenCalled();expect(requestModel).toHaveBeenCalledTimes(1)
+    expect(result.stage).toBe('analysis');expect(result.pending).toEqual([]);expect(result.observations.map(o=>o.metrics.val_loss)).toEqual([1.8,1.8]);expect(result.analysis?.engine).toBe('rules');expect(result.analysis?.summary).toContain('2 项已核对正常结束');expect(diagnose).not.toHaveBeenCalled();expect(requestModel).toHaveBeenCalledTimes(1)
     expect((await service().list())[0].analysis).toEqual(result.analysis)
   })
   it('links runtime failures to existing diagnosis and never retries a repair automatically',async()=>{
@@ -104,6 +105,49 @@ describe('persistent experiment research graph',()=>{
   it('checks suggestion budget before exposing model-generated axes',async()=>{
     requestModel.mockResolvedValue({axes:[{flag:'--lr',values:['1','2','3']}],assumptions:[],hypothesis:'compare'})
     await expect(service().suggest(source.id,'比较学习率',2)).rejects.toThrow('预算');expect(start).not.toHaveBeenCalled()
+  })
+  it('persists selected files and can reread missing results without requeueing or model calls',async()=>{
+    const s=service()
+    const selected=await s.create({taskId:source.id,objective:'比较学习率',axes:[{flag:'--lr',values:['0.001','0.0001']}],maxRuns:2,useModel:true,resultConfig:{metricsFile:'{runDir}/metrics.json',artifacts:['{runDir}/model.pt']}})
+    await s.approve(selected.id,true)
+    tasks.slice(1).forEach((task,i)=>Object.assign(task.runs[0],{status:'completed',remoteRunDir:`/workspace/run${i}`,logPath:`/workspace/run${i}/log`}))
+    let ready=false
+    sshExec.mockImplementation(async(_client,command:string)=>{
+      if(command.includes('__LABDECK_EXIT__'))return '__LABDECK_EXIT__0'
+      if(!command.includes('__LABDECK_RESULT_FILES__'))return 'val_accuracy=0.99'
+      const index=command.includes('/workspace/run0')?0:1
+      const child=tasks[index+1].runs[0],root=child.remoteRunDir!
+      const files=ready?[{path:root+'/metrics.json',resolvedPath:root+'/metrics.json',status:'available',kind:'file',sizeBytes:80,modifiedAt:'2026-10-15T01:00:00Z',content:Buffer.from(JSON.stringify({runId:child.id,dataset:'vision-v1',split:'validation',metrics:{accuracy:{value:0.01,unit:'ratio',direction:'maximize'}}})).toString('base64')},{path:root+'/model.pt',resolvedPath:root+'/model.pt',status:'available',kind:'file',sizeBytes:100,modifiedAt:'2026-10-15T01:00:00Z'}]:[{path:root+'/metrics.json',status:'missing'},{path:root+'/model.pt',status:'missing'}]
+      return '__LABDECK_RESULT_FILES__'+JSON.stringify(files)
+    })
+    const empty=await s.refresh(selected.id)
+    expect(empty.observations.every(o=>o.evidenceState==='missing'&&o.processState==='completed')).toBe(true)
+    const modelCalls=requestModel.mock.calls.length
+    const reopened=service();expect((await reopened.list())[0].resultConfig).toEqual(selected.resultConfig)
+    await reopened.setPaused(selected.id,true)
+    await expect(reopened.recollect(selected.id)).rejects.toThrow('恢复')
+    await reopened.setPaused(selected.id,false)
+    ready=true
+    const collected=await reopened.recollect(selected.id)
+    expect(collected.observations.every(o=>o.metrics.accuracy===0.01&&o.evidenceState==='complete')).toBe(true)
+    expect(collected.analysis?.engine).toBe('rules');expect(collected.pending).toEqual([])
+    expect(start).toHaveBeenCalledTimes(2);expect(save).toHaveBeenCalledTimes(2);expect(diagnose).not.toHaveBeenCalled()
+    expect(requestModel).toHaveBeenCalledTimes(modelCalls)
+    expect(collected.events.some(e=>e.node==='recollect')).toBe(true)
+    const outputPath=join(directory,'structured-export.json')
+    vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({canceled:false,filePath:outputPath})
+    await reopened.export(selected.id)
+    const exported=JSON.parse(await readFile(outputPath,'utf8'))
+    expect(exported.resultConfig.metricsFile).toBe('{runDir}/metrics.json')
+    expect(exported.observations[0].metricDetails[0]).toMatchObject({dataset:'vision-v1',unit:'ratio',source:'metrics_json'})
+    expect(exported.observations[0].files[1]).toMatchObject({role:'artifact',sizeBytes:100})
+    expect(exported.observations[0].files[0]).not.toHaveProperty('content')
+  })
+  it('does not recollect while waiting or paused, and warns about shared output paths',async()=>{
+    const s=service(),selected=await s.create({taskId:source.id,objective:'compare',axes:[{flag:'--lr',values:['1','2']}],maxRuns:2,useModel:false,resultConfig:{metricsFile:'results/metrics.json',artifacts:[]}})
+    expect(selected.warnings.some(w=>w.includes('可能被覆盖'))).toBe(true)
+    await expect(s.recollect(selected.id)).rejects.toThrow('运行结束')
+    expect(start).not.toHaveBeenCalled()
   })
 })
 

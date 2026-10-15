@@ -26,10 +26,19 @@ async function main(){
  const tasks=[base]
  const store={listExperimentTasks:()=>structuredClone(tasks),getServer:()=>server,getSecrets:()=>({}),saveExperimentTask:async draft=>{calls.save++;const task={...draft,id:randomUUID(),archived:false,createdAt:timestamp,updatedAt:timestamp,runs:[]};tasks.push(task);return structuredClone(task)},startExperimentRun:async(id,input)=>{calls.start++;const task=tasks.find(t=>t.id===id);task.runs.push({...input,id:randomUUID(),number:1,status:'queued',resultSummary:''});task.status='queued';return structuredClone(task)}}
  const intelligence={history:async()=>[],diagnose:async()=>{calls.diagnose++;return {id:randomUUID()}},requestResearchModel:async(_system,input)=>{calls.model++;if(!input.runs)return {axes:[{flag:'--lr',values:['0.001','0.0001']},{flag:'--seed',values:['42','43']}],hypothesis:'仅学习率和 seed 变化，其余变量固定。',assumptions:['模型接口在此验证中返回固定结构，不代表实际模型调用。']};return {summary:'两种学习率均正常运行；较小学习率的验证损失更高，科学结果仍有效。',observations:['四项运行均记录 val_loss。'],limitations:['仅有两个 seed，尚不足以确认统计显著性。'],evidenceIds:input.runs.map(r=>r.evidenceId),nextSuggestion:{objective:'增加随机种子复现观察',axes:[{flag:'--lr',values:['0.001']},{flag:'--seed',values:['44','45']}]}}}}
- const ssh={connect:async()=>{calls.ssh++;return {client:{end(){}}}},exec:async(_client,command)=>{calls.ssh++;return command.includes('__LABDECK_EXIT__')?'__LABDECK_EXIT__0':'epoch=2 val_loss=1.8 val_accuracy=0.51'}}
+ const ssh={connect:async()=>{calls.ssh++;return {client:{end(){}}}},exec:async(_client,command)=>{
+ calls.ssh++
+ if(command.includes('__LABDECK_EXIT__'))return '__LABDECK_EXIT__0'
+ if(command.includes('__LABDECK_RESULT_FILES__')){
+  const index=Number(command.match(/\/workspace\/run(\d+)/)?.[1]??0),run=tasks[index+1].runs[0],root=run.remoteRunDir
+  const content=JSON.stringify({schemaVersion:1,runId:run.id,dataset:'vision-v1',split:'validation',epoch:2,metrics:{val_loss:{value:[0.84,0.88,1.15,1.12][index],unit:'dimensionless',direction:'minimize'},val_accuracy:{value:[0.76,0.74,0.67,0.69][index],unit:'ratio',direction:'maximize'}}})
+  return '__LABDECK_RESULT_FILES__'+JSON.stringify([{path:root+'/metrics.json',resolvedPath:root+'/metrics.json',status:'available',kind:'file',sizeBytes:content.length,modifiedAt:new Date().toISOString(),content:Buffer.from(content).toString('base64')},{path:root+'/model.pt',resolvedPath:root+'/model.pt',status:index===3?'missing':'available',kind:'file',sizeBytes:100,modifiedAt:new Date().toISOString()}])
+ }
+ return 'epoch=2 val_loss=99 val_accuracy=0.99'
+}}
  const {ResearchService}=require(bundle)
  let service=new ResearchService(store,intelligence,ssh,()=>win.webContents.send('research:changed'),()=>win.webContents.send('experiments:changed'))
- for(const name of ['preview','list','engine','suggest','create','approve','refresh','analyze','paused','export'])ipcMain.removeHandler('research:'+name)
+ for(const name of ['preview','list','engine','suggest','create','approve','refresh','analyze','recollect','paused','export'])ipcMain.removeHandler('research:'+name)
  service.registerIpc()
  const previewChannel=async(command,axes,max)=>{calls.preview++;const {ParameterBridge}=require(path.join(root,'artifacts/parameter-bridge-test.cjs'));return new ParameterBridge(path.join(root,'resources/cangjie')).expand(command,axes,max)}
  esbuild.buildSync({entryPoints:[path.join(root,'src/main/parameter-bridge.ts')],outfile:path.join(root,'artifacts/parameter-bridge-test.cjs'),bundle:true,platform:'node',format:'cjs',packages:'external',target:'node22'})
@@ -43,6 +52,8 @@ async function main(){
  if(await run('document.querySelector("[aria-label=对照来源任务]").value')!==base.id)throw new Error('Source task not carried into research')
  await click('AI 设计范围');await waitFor('document.querySelector(".intel-assumptions")?.textContent.includes("其余变量固定")')
  await run('document.querySelector(".research-form .intel-checkbox input").click()')
+ await run(`(()=>{const el=document.querySelector('[aria-label="结构化指标文件"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'{runDir}/metrics.json');el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+ await run(`(()=>{const el=document.querySelector('[aria-label="预期产物路径"]');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,'{runDir}/model.pt');el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
  await click('生成待审查方案');await waitFor('document.querySelectorAll(".research-output .research-table tbody tr").length===4')
  if(calls.start!==0||calls.save!==0)throw new Error('Tasks started before approval')
  await capture('research-review-dark')
@@ -54,7 +65,7 @@ async function main(){
  if(calls.save!==4||calls.start!==4||base.runs.length)throw new Error('Queue linkage or baseline isolation failed')
  await click('检查进度');await delay(200);if(calls.model!==1||calls.ssh!==0)throw new Error('Waiting polled model or SSH logs')
  service.stop();service=new ResearchService(store,intelligence,ssh,()=>win.webContents.send('research:changed'),()=>win.webContents.send('experiments:changed'))
- for(const name of ['preview','list','engine','suggest','create','approve','refresh','analyze','paused','export'])ipcMain.removeHandler('research:'+name)
+ for(const name of ['preview','list','engine','suggest','create','approve','refresh','analyze','recollect','paused','export'])ipcMain.removeHandler('research:'+name)
  service.registerIpc();handle('research:preview',previewChannel)
  win.webContents.reload();await waitFor('!!document.querySelector(".intel-page")');await click('对照实验');await waitFor('document.querySelector(".research-campaign-heading")?.textContent.includes("等待本批运行结束")')
  if((await service.list())[0].id!==campaignId||calls.start!==4)throw new Error('Restart duplicated batch')
@@ -64,7 +75,18 @@ async function main(){
  if(!await run('document.querySelector(".research-analysis")?.textContent.includes("科学结果仍有效")'))throw new Error('Model analysis absent')
  await run('document.querySelector(".research-observations").scrollIntoView({block:"start"})');await capture('research-analysis-dark')
  await run('document.documentElement.dataset.theme="instrument"');await capture('research-analysis-light')
+ await run('(()=>{const detail=[...document.querySelectorAll(".research-evidence")].at(-1);detail.open=true;detail.scrollIntoView({block:"start"})})()')
+ if(!await run('[...document.querySelectorAll(".research-evidence")].at(-1)?.textContent.includes("不存在")'))throw new Error('Missing artifact evidence not visible')
+ await capture('research-evidence-light')
+ await run('document.documentElement.dataset.theme="observatory"');await capture('research-evidence-dark')
+ await run('document.documentElement.dataset.theme="instrument"')
  await click('载入下一批建议');if(await run('document.querySelectorAll(".research-axis input")[3].value')!=='44, 45'||calls.start!==4)throw new Error('Next proposal submitted automatically')
+ const engineStatus=await service.engine();if(!await run(`document.querySelector('.research-heading .research-engine')?.textContent.includes(${JSON.stringify(engineStatus.available?'仓颉':'TypeScript')})`))throw new Error('Displayed parameter engine does not match startup health')
+ if((await service.list())[0].observations.some((o,index)=>o.metrics.val_loss!==[0.84,0.88,1.15,1.12][index]))throw new Error('JSON result did not override conflicting log metrics')
+ if(!await run('document.querySelector(".research-observations")?.textContent.includes("vision-v1")&&document.querySelector(".research-observations")?.textContent.includes("证据部分缺失")'))throw new Error('Structured context or missing artifact state not shown')
+ const beforeReread={...calls}
+ await click('重新采集结果');await waitFor('document.querySelector(".research-analysis")?.textContent.includes("已核对正常结束")')
+ if(calls.start!==beforeReread.start||calls.save!==beforeReread.save||calls.model!==beforeReread.model||calls.diagnose!==beforeReread.diagnose)throw new Error('Evidence refresh started runs, repairs or model calls')
  const baselineCalls={...calls},bookBefore=JSON.stringify(await service.list()),tasksBefore=JSON.stringify(tasks)
  await click('载入对照演示');await waitFor('document.querySelector(".research-campaign-heading")?.textContent.includes("【模拟】")')
  await click('审查并确认本批入队');await waitFor('!!document.querySelector(".confirm-dialog")');await click('确认模拟入队','.confirm-dialog')
@@ -75,7 +97,7 @@ async function main(){
  for(const key of ['save','start','model','ssh','diagnose'])if(calls[key]!==baselineCalls[key])throw new Error('Demo invoked production operation: '+key)
  win.setSize(1280,840);await delay(200);if(await run('document.querySelector(".workbench-page").scrollWidth>document.querySelector(".workbench-page").clientWidth'))throw new Error('Compact page overflow');await capture('research-compact')
  service.stop();if(errors.length)throw new Error(errors.join('\n'))
- const result={status:'passed',realLangGraph:true,realCangjie:true,mockSSH:true,mockModel:true,calls,checks:['task source navigation','native parameter expansion','approval cancel without mutations','approved batch queue','waiting without model polling','disk checkpoint restart','no duplicate submission','poor metrics remain observations','next proposal review required','demo isolation','dark/light/compact UI']}
+ const result={status:'passed',realLangGraph:true,realCangjie:(await service.engine()).available,parameterEngineMessage:(await service.engine()).message,mockSSH:true,mockModel:true,calls,checks:['task source navigation','parameter expansion with reported engine','approval cancel without mutations','approved batch queue','waiting without model polling','disk checkpoint restart','no duplicate submission','poor metrics remain observations','structured metrics source/context','missing artifacts remain evidence gaps','read-only result recollection','next proposal review required','demo isolation','dark/light/compact UI']}
  await fs.writeFile(path.join(root,'artifacts/research-ui-verification.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));app.exit(0)
 }
 app.whenReady().then(main).catch(error=>{console.error(error);console.error(errors.join('\n'));app.exit(1)})
