@@ -27,6 +27,7 @@ const api: AppApi = {
     approve: (id, confirmed) => ipcRenderer.invoke('research:approve', id, confirmed),
     refresh: id => ipcRenderer.invoke('research:refresh', id),
     analyze: id => ipcRenderer.invoke('research:analyze', id),
+    recollect: (id) => ipcRenderer.invoke('research:recollect', id),
     setPaused: (id, paused) => ipcRenderer.invoke('research:paused', id, paused),
     export: id => ipcRenderer.invoke('research:export', id),
     onChanged: listener => { const handler = (): void => listener(); ipcRenderer.on('research:changed', handler); return () => ipcRenderer.removeListener('research:changed', handler) }

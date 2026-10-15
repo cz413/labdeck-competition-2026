@@ -6,7 +6,7 @@ describe('temporary research demo',()=>{
     const demo=createResearchDemo(expandParameters(researchDemoCommand,researchDemoAxes,4))
     expect(demo.members).toHaveLength(4);expect(demo.members.every(m=>!m.taskId&&!m.runId)).toBe(true)
     const done=finishResearchDemo(queueResearchDemo(demo),false)
-    expect(done.observations.every(o=>o.status==='completed')).toBe(true);expect(done.analysis?.summary).toContain('指标变差仍属于正常');expect(demo.stage).toBe('review')
+    expect(done.observations.every(o=>o.status==='completed')).toBe(true);expect(done.analysis?.summary).toContain('指标变差仍属于正常');expect(demo.stage).toBe('review');expect(done.observations[0].metricDetails?.[0].source).toBe('metrics_json');expect(done.observations[3].evidenceState).toBe('partial');expect(done.observations[3].processState).toBe('completed')
   })
   it('separates a simulated process failure from normal metric outcomes',()=>{
     const done=finishResearchDemo(queueResearchDemo(createResearchDemo(expandParameters(researchDemoCommand,researchDemoAxes,4))),true)
