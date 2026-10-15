@@ -1,6 +1,6 @@
 # LabDeck 智能实验工作台
 
-基于 LabDeck / LabDock 的实验室服务器管理桌面应用，当前比赛版 **0.5.0**。将 SSH / GPU 资源管理、实验任务队列与智能诊断、修复跟踪、对照实验连接起来，用于 2026「仓颉杯」参赛原型及团队开发。
+基于 LabDeck / LabDock 的实验室服务器管理桌面应用，当前比赛版 **0.6.0**。将 SSH / GPU 资源管理、实验任务队列与智能诊断、修复跟踪、对照实验连接起来，用于 2026「仓颉杯」参赛原型及团队开发。
 
 本仓库为独立比赛版，保留既有项目来源记录；Git 历史从本次源码快照开始。原项目说明见 [BASE_PROJECT_README.md](BASE_PROJECT_README.md)，快照来源及 AI 辅助开发说明见 [PROVENANCE.json](PROVENANCE.json)。
 
@@ -34,7 +34,7 @@ npm run dev
 | 故障诊断 | 规则识别 OOM、导入失败、路径和权限错误等信号；可选模型分析日志与受限只读工具的结果，展示证据引用及过程。 |
 | 确认修复后的闭环 | 对支持的 OOM 命令生成减半 batch size 方案，用户确认后建立新运行；自动跟踪结束状态、重新读取退出码，失败再诊断，下一次修复仍需确认。 |
 | 对照实验 | 手工或 AI 建议参数轴；仓颉展开组合、去重和检查预算；LangGraph 编排审查、入队、等待、采集、诊断和分析，支持磁盘检查点恢复。 |
-| 结果记录与比较 | 提取日志中的指标，比较配置和运行证据，生成下一批建议。指标未提升仍是有效实验观察，不自动当成运行故障。 |
+| 结果记录与比较 | 采集指定 metrics.json 及产物元信息，记录指标来源和口径；未指定时提取日志末值。进程状态、证据完整度和研究观察分开展示，支持重新采集。指标未提升仍是有效实验观察，不自动当成运行故障。 |
 | 离线演示 | 展示预设计划、模拟失败与修复、模拟对照结果。演示会话保存在窗口内存，不写入真实任务历史。 |
 
 当前没有实现 GPU 显存需求预测、通用模型产物解析或多人共享服务端。团队通过 GitHub 协作开发，但运行时的服务器配置、模型设置和实验记录仍保存在各自电脑。
@@ -79,11 +79,12 @@ npm run dev
 | `npm run verify:research` | 参数预览、预算审查、批量入队、磁盘恢复、指标比较及对照演示联调。 |
 | `npm run dist:competition` | 构建 Windows 便携版，输出到 `release/`。 |
 | `npm run dist` | 构建 Windows NSIS 安装包和便携版，输出到 `release/`。 |
+| `npm run verify:cangjie` | 严格验证原生仓颉，缺失或启动失败均报错，不能以 TypeScript 回退通过。 |
 | `npm run verify:research:package` | 检查已打包程序里的 LangGraph、仓颉引擎及文件一致性，先执行 `npm run dist` 或 `npm run dist:competition`。 |
 
 四项 `verify:*` Electron 页面验证使用 `out/`，运行之前先执行 `npm run build`；这些脚本需分别运行，不要并行。它们使用隔离的 `artifacts/*-ui-check` 数据目录及模拟模型 / SSH，并会更新 `docs/screenshots` 中的截图。运行后请检查截图差异，只提交与本次改动有关的截图。
 
-当前 Windows x64 环境已通过 24 个测试文件、217 项测试，以及类型检查与生产构建，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
+本次 Windows x64 检查为 26 个测试文件、247 项通过、1 项仓颉原生集成因启动自检失败跳过；类型检查、生产构建和相关 Electron 联调通过，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
 
 ```powershell
 npm run typecheck
@@ -138,7 +139,7 @@ docs/                   架构、设计、演示、验证记录、截图与项�
 
 ## 修改仓颉模块
 
-仓颉模块负责组合展开、去重、预算约束和命令生成，主进程通过子进程协议调用。可用状态和实际执行引擎会反映在预览结果中；引擎缺失时显式提示 TypeScript 回退，不能将回退结果声称为仓颉执行。
+仓颉模块负责组合展开、去重、预算约束和命令生成，主进程通过子进程协议调用。可用状态和实际执行引擎会反映在预览结果中；引擎缺失或启动自检失败时显式提示 TypeScript 回退及原因，不能将回退结果声称为仓颉执行。自检通过后实际请求若执行或协议校验失败，则阻止该次生成。重新编译后重启应用，以重新检查启动状态。
 
 要修改 `.cj`，安装 **仓颉 1.0.5 Windows x64 SDK**，找到包含 `envsetup.ps1` 的 SDK 根目录后执行：
 
@@ -153,7 +154,9 @@ npm run verify:research:package
 
 构建脚本重新生成 `resources/cangjie/parameter-engine.exe`，复制 SDK 的运行 DLL、许可和第三方声明。默认 SDK 路径为 `artifacts/cangjie-sdk/cangjie`；使用其他位置时需传 `-SdkRoot`。SDK 本体不纳入 Git。
 
-仓库保留预编译运行组件，是为了让成员无需完整 SDK 即可运行 Windows 原型；修改仓颉源代码时，应提交对应的新引擎与必要运行组件，并在 PR 中说明 SDK 版本和验证结果。不要提交编译中间文件 `*.cjo`。
+仓库保留预编译运行组件，是为了让成员无需完整 SDK 即可运行 Windows 原型；当前机器在 SDK 1.0.5 和另行验证的 1.1.0 最小程序上均复现原生初始化崩溃（退出码 3221225477）；仓库继续保留 1.0.5 组件，本次没有替换为未验证的 SDK。参数编排使用有标记的 TypeScript 回退。实际仓颉执行尚需在兼容环境通过 `npm run verify:cangjie`。
+
+修改仓颉源代码时，应提交对应的新引擎与必要运行组件，并在 PR 中说明 SDK 版本和验证结果。不要提交编译中间文件 `*.cjo`。
 
 ## 数据、密钥和 Git 忽略范围
 
@@ -211,6 +214,7 @@ PR 写清楚解决的问题、影响的任务 / 智能流程、验证命令与�
 - [任务与智能实验联动设计](docs/WORKFLOW-DESIGN.md)
 - [对照实验与 LangGraph 设计](docs/RESEARCH-DESIGN.md)
 - [基础演示步骤](docs/DEMO-GUIDE.md) / [对照实验使用指南](docs/RESEARCH-GUIDE.md)
+- [结构化结果采集与训练脚本输出协议](docs/RESULTS-GUIDE.md)
 - [验证记录及其实际范围](docs/VALIDATION.md)
 - [项目说明文档 0.5.0（Word）](docs/project/LabDeck智能实验工作台项目文档0.5.0.docx)
 - [版本功能记录](docs/CHANGELOG.md) / [后续路线](docs/ROADMAP.md)
