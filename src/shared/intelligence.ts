@@ -22,7 +22,7 @@ export interface DiagnosisReport {
 }
 export interface DiagnosisInput { taskId?: string; runId?: string; logText?: string; sample?: 'oom' | 'dependency' | 'path'; useModel: boolean; requestId?: string }
 export interface ExperimentPlan { draft: ExperimentTaskDraft; assumptions: string[]; checks: string[]; engine: 'model' }
-export interface PlanInput { intent: string; serverId: string; codePath: string; environmentName: string }
+export interface PlanInput { useReadme?: boolean; condaManagerPath?: string; accessRouteId?: string; readmePath?: string; intent: string; serverId: string; codePath: string; environmentName: string }
 export interface Verification { status: 'waiting' | 'running' | 'completed' | 'failed' | 'unknown'; message: string; runId?: string; diagnosis?: DiagnosisReport; exitCode?: number; checkedAt?: string }
 export interface IntelligenceApi {
   settings(): Promise<ModelSettings>;
@@ -34,6 +34,7 @@ export interface IntelligenceApi {
   setTracking(reportId: string, enabled: boolean): Promise<DiagnosisReport>;
   onHistoryChanged(listener: () => void): () => void;
   onDiagnosisProgress(listener: (event: DiagnosisProgress) => void): () => void;
+  detectReadme(input: PlanInput): Promise<{status: 'found'|'missing'|'unavailable'; name?: string}>;
   plan(input: PlanInput): Promise<ExperimentPlan>;
   retry(reportId: string, confirmed: boolean): Promise<ExperimentTask>;
   verify(reportId: string): Promise<Verification>;
