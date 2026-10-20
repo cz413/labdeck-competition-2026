@@ -1,6 +1,6 @@
 {
   "name": "labdeck-competition-2026",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "LabDeck 智能实验工作台 · 2026 仓颉杯参赛原型",
   "main": "out/main/index.js",
   "author": "Lab Server Manager",
@@ -19,6 +19,7 @@
     "verify:research": "electron scripts/verify-research.cjs",
     "verify:workflow": "electron scripts/verify-workflow.cjs",
     "build:cangjie": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cangjie.ps1",
+    "verify:cangjie": "node scripts/verify-cangjie.cjs",
     "verify:research:package": "node scripts/verify-research-package.cjs"
   },
   "dependencies": {

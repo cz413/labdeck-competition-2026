@@ -2,7 +2,7 @@ const fs=require('node:fs'),path=require('node:path'),{createRequire}=require('n
 async function main(){
  const root=path.resolve(__dirname,'..'),resources=path.join(root,'release/win-unpacked/resources'),asar=path.join(resources,'app.asar'),requirePack=createRequire(path.join(asar,'package.json'))
  const pkg=requirePack('./package.json')
- if(pkg.version!=='0.5.0')throw new Error('Wrong packaged version')
+ if(pkg.version!==JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version)throw new Error('Wrong packaged version')
  const graphPath=requirePack.resolve('@langchain/langgraph')
  if(!graphPath.startsWith(asar+path.sep))throw new Error('LangGraph loaded outside the package')
  const {StateGraph,Annotation,START,END}=requirePack('@langchain/langgraph')
