@@ -39,7 +39,7 @@ function Preview() {
     }
   } } })
   return <main style={{ height: '100%', overflow: 'auto', padding: '24px', background: 'var(--bg)' }}>
-    <h1 style={{ fontSize: 20, margin: '0 0 18px' }}>实验任务</h1>
+    <h1 style={{ fontSize: 23, margin: '0 0 18px' }}>实验任务</h1>
     <ExperimentTaskPool tasks={tasks} servers={[server]} snapshots={{}} liveTasks={null} liveTaskCount={0} vscodeConnectingId={null}
       onChanged={(updated) => setTasks((current) => current.map((task) => task.id === updated.id ? updated : task))}
       notify={setNotice} confirm={(request) => new Promise((resolve) => setConfirmation({ ...request, resolve }))}

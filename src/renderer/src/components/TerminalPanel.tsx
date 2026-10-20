@@ -147,7 +147,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'Cascadia Code, JetBrains Mono, Consolas, monospace',
-      fontSize: 14,
+      fontSize: 17,
       lineHeight: 1.25,
       scrollback: 8000,
       theme: currentTerminalTheme()
