@@ -46,6 +46,7 @@ const api: AppApi = {
       ipcRenderer.on('intelligence:progress', handler)
       return () => ipcRenderer.removeListener('intelligence:progress', handler)
     },
+    detectReadme: input => ipcRenderer.invoke('intelligence:detectReadme', input),
     plan: input => ipcRenderer.invoke('intelligence:plan', input),
     retry: (id, confirmed) => ipcRenderer.invoke('intelligence:retry', id, confirmed),
     verify: id => ipcRenderer.invoke('intelligence:verify', id),
