@@ -1,7 +1,7 @@
 import type { DiagnosisReport } from './intelligence'
 
 export interface IntelligenceRequest {
-  id: string; tab: 'diagnosis' | 'plan' | 'closure' | 'research'; taskId?: string; runId?: string; reportId?: string
+  id: string; tab: 'overview' | 'repository' | 'diagnosis' | 'plan' | 'closure' | 'research' | 'model' | 'demo'; taskId?: string; runId?: string; reportId?: string; campaignId?: string
 }
 
 // Match exact runs, never infer association from the task's latest status.

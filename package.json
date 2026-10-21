@@ -7,8 +7,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "dev": "node scripts/dev.cjs",
+    "dev:nosandbox": "node scripts/dev.cjs --noSandbox",
+    "build": "node scripts/build.cjs",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
@@ -20,7 +21,8 @@
     "verify:workflow": "electron scripts/verify-workflow.cjs",
     "build:cangjie": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cangjie.ps1",
     "verify:cangjie": "node scripts/verify-cangjie.cjs",
-    "verify:research:package": "node scripts/verify-research-package.cjs"
+    "verify:research:package": "node scripts/verify-research-package.cjs",
+    "verify:repository": "node scripts/run-electron-check.cjs scripts/verify-repository.cjs"
   },
   "dependencies": {
     "@langchain/core": "^1.2.17",

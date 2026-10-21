@@ -11,6 +11,10 @@ export function tokenizeTrainingCommand(command: string): string[] {
   if (tokens.some(t => !/^[a-zA-Z0-9_.,:/+=-]+$/.test(t))) throw new Error('第一版参数展开不支持引号或空格值，请在任务中使用简单脚本参数')
   return tokens
 }
+export function parameterExperimentReason(command:string,launchMode?:string):string {
+  if(launchMode==='script')return '参数对照目前仅支持单条 Python 脚本命令；脚本文件模式仍可作为普通任务运行。'
+  try {tokenizeTrainingCommand(command);return ''} catch(error) {return error instanceof Error?error.message:'此启动方式暂不支持参数展开'}
+}
 export function expandParameters(command: string, rawAxes: ParameterAxis[], maxRuns: number): ParameterExpansion {
   const tokens = tokenizeTrainingCommand(command), axes = normalizeAxes(rawAxes)
   z.number().int().min(1).max(32).parse(maxRuns)

@@ -1,3 +1,4 @@
+import { parameterExperimentReason } from '@shared/parameter-engine'
 import { useEffect, useState } from 'react'
 import { ArrowRight, FileDown, FlaskConical, LoaderCircle, Pause, Play, RefreshCw } from 'lucide-react'
 import type { ExperimentTask, ServerProfile } from '@shared/types'
@@ -6,17 +7,18 @@ import type { ConfirmationRequest } from './ConfirmDialog'
 import './research.css'
 import { ResearchResults } from './ResearchResults'
 import { createResearchDemo, finishResearchDemo, queueResearchDemo, researchDemoAxes, researchDemoCommand } from '@shared/research-demo'
-interface Props {tasks:ExperimentTask[];servers:ServerProfile[];modelEnabled:boolean;initialTaskId?:string;onChanged:(task:ExperimentTask)=>void;onOpenTask:(task:ExperimentTask,runId?:string)=>void;onOpenDiagnosis:(id:string)=>void;confirm:(request:ConfirmationRequest)=>Promise<boolean>;notify:(message:string,kind?:'success'|'error')=>void}
+interface Props {tasks:ExperimentTask[];servers:ServerProfile[];modelEnabled:boolean;initialTaskId?:string;initialCampaignId?:string;onChanged:(task:ExperimentTask)=>void;onOpenTask:(task:ExperimentTask,runId?:string)=>void;onOpenDiagnosis:(id:string)=>void;confirm:(request:ConfirmationRequest)=>Promise<boolean>;notify:(message:string,kind?:'success'|'error')=>void}
 const stageNames={review:'待审查',waiting:'等待本批运行结束',analysis:'已完成结果分析'}
 const runNames:Record<string,string>={planned:'草稿',queued:'排队中',preparing:'准备中',running:'运行中',paused:'运行暂停',completed:'正常结束',failed:'运行故障',cancelled:'已取消'}
 const nodes=[['expand','配置展开'],['review','人工确认'],['queue','任务入队'],['observe','运行跟踪'],['collect','证据采集'],['analyze','结果分析']]
 export function ResearchPage(props:Props):React.JSX.Element {
-  const eligible=props.tasks.filter(t=>t.launchMode!=='script'&&props.servers.some(s=>s.id===t.serverId&&s.mode==='real'))
+  const candidates=props.tasks.filter(t=>props.servers.some(s=>s.id===t.serverId&&s.mode==='real'))
+  const eligible=candidates.filter(t=>!parameterExperimentReason(t.launchCommand,t.launchMode))
   const [taskId,setTaskId]=useState(props.initialTaskId||eligible[0]?.id||'')
   const [objective,setObjective]=useState('比较学习率对训练稳定性的影响，保留其他配置。')
-  const [rows,setRows]=useState([{flag:'--lr',values:'0.001, 0.0003, 0.0001'},{flag:'--seed',values:'42, 43'}])
+  const [rows,setRows]=useState([{flag:'',values:''}])
   const [maxRuns,setMaxRuns]=useState(9),[useModel,setUseModel]=useState(false)
-  const [history,setHistory]=useState<ResearchView[]>([]),[selectedId,setSelectedId]=useState('')
+  const [history,setHistory]=useState<ResearchView[]>([]),[selectedId,setSelectedId]=useState(props.initialCampaignId||'')
   const [busy,setBusy]=useState(''),[error,setError]=useState(''),[assumptions,setAssumptions]=useState<string[]>([])
   const [engine,setEngine]=useState<{available:boolean;message:string}>({available:false,message:'正在检查参数引擎…'})
   const [ready,setReady]=useState(false)
@@ -24,10 +26,12 @@ export function ResearchPage(props:Props):React.JSX.Element {
   const [demo,setDemo]=useState<ResearchView|null>(null)
   const selected=demo?.id===selectedId?demo:history.find(c=>c.id===selectedId),task=props.tasks.find(t=>t.id===taskId)
   const simulated=!!demo&&selected?.id===demo.id
+  const unsupported=task?parameterExperimentReason(task.launchCommand,task.launchMode):''
+  const missingRequested=ready&&!!props.initialCampaignId&&selectedId===props.initialCampaignId&&!selected
   const axes:ParameterAxis[]=rows.filter(r=>r.flag.trim()).map(r=>({flag:r.flag.trim(),values:r.values.split(/[,，\n]/).map(v=>v.trim()).filter(Boolean)}))
   const resultConfig={metricsFile:metricsFile.trim(),artifacts:artifactFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean)}
   const count=axes.reduce((n,a)=>n*new Set(a.values).size,axes.length?1:0)
-  useEffect(()=>{if(props.initialTaskId&&eligible.some(t=>t.id===props.initialTaskId))setTaskId(props.initialTaskId)},[props.initialTaskId])
+  useEffect(()=>{if(props.initialTaskId&&candidates.some(t=>t.id===props.initialTaskId))setTaskId(props.initialTaskId)},[props.initialTaskId])
   useEffect(()=>{
     let live=true,revision=0
     const refresh=():void=>{const request=++revision;void window.labApi.research.list().then(items=>{if(live&&request===revision){setHistory(items);setSelectedId(id=>id||items[0]?.id||'');setReady(true)}}).catch(e=>{if(live){setError(e.message??String(e));setReady(true)}})}
@@ -35,6 +39,9 @@ export function ResearchPage(props:Props):React.JSX.Element {
     const unsubscribe=window.labApi.research.onChanged(refresh)
     return()=>{live=false;unsubscribe()}
   },[])
+  useEffect(()=>{
+    if(props.initialCampaignId){setDemo(null);setSelectedId(props.initialCampaignId)}
+  },[props.initialCampaignId])
   async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busy)return;setBusy(name);setError('');try{await fn();setHistory(await window.labApi.research.list())}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy('')}}
   async function reloadTasks():Promise<void>{for(const item of await window.labApi.experiments.list())props.onChanged(item)}
   async function approve():Promise<void>{
@@ -51,14 +58,15 @@ export function ResearchPage(props:Props):React.JSX.Element {
   const currentStep=selected?.pending[0]??(selected?.stage==='analysis'?'done':'expand')
   return <section className="research-page" aria-label="对照实验工作流">
     <header className="research-heading"><div><h2>围绕一个问题，组织一组实验</h2><p>配置展开 → 审查 → 排队 → 收集观察。指标不提升也会记录为正常实验结果。</p></div><span title={engine.message} className={`research-engine ${engine.available?'ready':''}`}>{engine.available?'仓颉参数引擎':'TypeScript 参数引擎'}</span></header>
-    <div className="research-demo-bar"><div><strong>离线对照演示</strong><p>实际展开参数，模拟运行和指标。无需服务器或 API 密钥，退出或离开页面会清除模拟状态。</p></div><div><button className="secondary-button" disabled={!!busy} onClick={()=>void action('demo',async()=>{const preview=await window.labApi.research.preview(researchDemoCommand,researchDemoAxes,4);const temporary=createResearchDemo(preview);setDemo(temporary);setSelectedId(temporary.id)})}>{demo?'重置对照演示':'载入对照演示'}</button>{demo&&<button className="secondary-button" onClick={()=>{setDemo(null);setSelectedId(history[0]?.id??'')}}>退出对照演示</button>}</div></div>
+    <details className="research-demo-options"><summary>离线演示</summary><div className="research-demo-bar"><div><strong>离线对照演示</strong><p>实际展开参数，模拟运行和指标。无需服务器或 API 密钥，退出或离开页面会清除模拟状态。</p></div><div><button className="secondary-button" disabled={!!busy} onClick={()=>void action('demo',async()=>{const preview=await window.labApi.research.preview(researchDemoCommand,researchDemoAxes,4);const temporary=createResearchDemo(preview);setDemo(temporary);setSelectedId(temporary.id)})}>{demo?'重置对照演示':'载入对照演示'}</button>{demo&&<button className="secondary-button" onClick={()=>{setDemo(null);setSelectedId(history[0]?.id??'')}}>退出对照演示</button>}</div></div></details>
     {!engine.available&&<p className="research-note" role="status">{engine.message}</p>}
-    {error&&<div className="intel-error" role="alert">{error}</div>}
+    {error&&<div className="intel-error" role="alert">{error}</div>}{missingRequested&&<div className="intel-error" role="alert">关联的对照批次已不存在，请在历史批次中重新选择。</div>}
     <div className="research-layout"><aside><section className="research-form"><h3>设计对照方案</h3><p className="research-note">左侧用于设计新批次，右侧展示已保存方案；输入修改不改变历史配置。</p>
-      <label>来源实验任务<select aria-label="对照来源任务" disabled={!!busy} value={taskId} onChange={e=>{setTaskId(e.target.value);setAssumptions([])}}><option value="">选择实际服务器上的 Python 命令任务</option>{eligible.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label>
+      <label>来源实验任务<select aria-label="对照来源任务" disabled={!!busy} value={taskId} onChange={e=>{setTaskId(e.target.value);setAssumptions([])}}><option value="">选择实际服务器上的 Python 命令任务</option>{candidates.map(t=><option key={t.id} value={t.id} disabled={!!parameterExperimentReason(t.launchCommand,t.launchMode)}>{t.title}{parameterExperimentReason(t.launchCommand,t.launchMode)?'（暂不支持参数展开）':''}</option>)}</select></label>
+      {unsupported&&<p className="intel-error" role="status">{unsupported}</p>}<p className="research-note">参数展开目前支持单条 python xxx.py 命令及简单参数；bash、torchrun、accelerate 和模块入口可正常进入任务池，尚不支持本页参数展开。</p>
       {task&&<div className="research-baseline"><span>基准命令</span><code>{task.launchCommand}</code><p>{props.servers.find(s=>s.id===task.serverId)?.name} · {task.codePath}</p></div>}
       <label>研究问题<textarea aria-label="研究问题" rows={3} disabled={!!busy} value={objective} onChange={e=>setObjective(e.target.value)}/></label>
-      <div className="research-axis-heading"><h3>参数与候选值</h3><button className="secondary-button" disabled={!!busy||!props.modelEnabled||!taskId||!objective.trim()} onClick={()=>void action('suggest',async()=>{const suggestion=await window.labApi.research.suggest(taskId,objective,maxRuns);setRows(suggestion.axes.map(a=>({flag:a.flag,values:a.values.join(', ')})));setAssumptions([suggestion.hypothesis,...suggestion.assumptions])})}>{busy==='suggest'?<LoaderCircle size={13} className="spin"/>:<FlaskConical size={13}/>}AI 设计范围</button></div>
+      <div className="research-axis-heading"><h3>参数与候选值</h3><button className="secondary-button" disabled={!!busy||!props.modelEnabled||!taskId||!!unsupported||!objective.trim()} onClick={()=>void action('suggest',async()=>{const suggestion=await window.labApi.research.suggest(taskId,objective,maxRuns);setRows(suggestion.axes.length?suggestion.axes.map(a=>({flag:a.flag,values:a.values.join(', ')})):[{flag:'',values:''}]);setAssumptions([suggestion.hypothesis,...suggestion.assumptions])})}>{busy==='suggest'?<LoaderCircle size={13} className="spin"/>:<FlaskConical size={13}/>}AI 设计范围</button></div>
       <p className="research-note">参数须由脚本支持；候选值用逗号分隔。第一版支持简单数值或无空格文本。</p>
       {rows.map((row,i)=><div className="research-axis" key={i}><input aria-label={`参数 ${i+1}`} disabled={!!busy} placeholder="--lr" value={row.flag} onChange={e=>{setRows(rows.map((r,j)=>i===j?{...r,flag:e.target.value}:r));setAssumptions([])}}/><input aria-label={`候选值 ${i+1}`} disabled={!!busy} placeholder="0.001, 0.0001" value={row.values} onChange={e=>{setRows(rows.map((r,j)=>i===j?{...r,values:e.target.value}:r));setAssumptions([])}}/><button aria-label={`移除参数 ${i+1}`} disabled={!!busy||rows.length===1} onClick={()=>setRows(rows.filter((_,j)=>j!==i))}>×</button></div>)}
       <button className="research-text-button" disabled={!!busy||rows.length>=5} onClick={()=>setRows([...rows,{flag:'',values:''}])}>添加参数</button>
@@ -73,8 +81,8 @@ export function ResearchPage(props:Props):React.JSX.Element {
       <label className="intel-checkbox"><input type="checkbox" disabled={!!busy||!props.modelEnabled} checked={useModel&&props.modelEnabled} onChange={e=>setUseModel(e.target.checked)}/>运行结束后使用模型分析观察和下一步建议</label>
       <p className="research-note">启用后，末尾日志、指标口径、文件元信息和运行配置会发送到已配置的模型。训练等待期间不调用模型。每批自动诊断最多 4 项故障，其余可在任务栏手动诊断。</p>
       {assumptions.length>0&&<div className="intel-assumptions"><h3>方案依据与待核对项</h3><ul>{assumptions.map((a,i)=><li key={i}>{a}</li>)}</ul></div>}
-      <button className="primary-button" disabled={!!busy||!ready||!taskId||!objective.trim()||!count||count>maxRuns||maxRuns<1||maxRuns>32} onClick={()=>void action('create',async()=>{const result=await window.labApi.research.create({taskId,objective,axes,maxRuns,useModel:useModel&&props.modelEnabled,resultConfig});setSelectedId(result.id);props.notify('对照方案已生成，等待审查')})}>{busy==='create'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成待审查方案</button>
-      <p className="research-note">生成方案会保存流程，确认前不创建运行。原任务保留。</p>
+      <button className="primary-button" disabled={!!busy||!ready||!taskId||!!unsupported||!objective.trim()||!count||count>maxRuns||maxRuns<1||maxRuns>32} onClick={()=>void action('create',async()=>{const result=await window.labApi.research.create({taskId,objective,axes,maxRuns,useModel:useModel&&props.modelEnabled,resultConfig});setSelectedId(result.id);props.notify('对照方案已生成，等待审查')})}>{busy==='create'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成待审查方案</button>
+      <p className="research-note">生成方案会保存流程，确认前不创建运行。故障自动诊断使用规则，不额外调用模型；本批模型开关用于结果分析，进一步诊断从具体运行手动发起。</p>
     </section><section className="research-history"><h3>实验研究记录</h3>{demo&&<button className={simulated?'active':''} onClick={()=>setSelectedId(demo.id)}><strong>{demo.objective}</strong><span>临时模拟 · {stageNames[demo.stage]}</span></button>}{history.length?history.map(c=><button key={c.id} className={selectedId===c.id?'active':''} onClick={()=>setSelectedId(c.id)}><strong>{c.objective}</strong><span>{c.error?'需要处理':c.paused?'跟踪已暂停':stageNames[c.stage]} · {c.members.length} 项配置</span></button>):<p className="research-note">确认前后的配置、运行编号和结果会保存在本机。</p>}</section></aside>
     <div className="research-output">{!selected?<div className="intel-empty"><FlaskConical size={34}/><h2>先明确问题，再展开配置</h2><p>选择已有实验任务，填写要比较的参数。这里会列出每份配置及修改内容，供你确认。</p></div>:<>
       <header className="research-campaign-heading"><div><h2>{selected.objective}</h2>{simulated&&<span className="research-engine">离线演示 · 模拟运行</span>}<p>{selected.baseline.title} · {stageNames[selected.stage]}{selected.paused?' · 跟踪已暂停':''}</p></div><button className="secondary-button" disabled={!!busy||simulated} onClick={()=>void action('export',async()=>{if(await window.labApi.research.export(selected.id))props.notify('实验研究记录已导出')})}><FileDown size={14}/>导出</button></header>

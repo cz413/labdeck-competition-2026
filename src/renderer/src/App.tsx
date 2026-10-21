@@ -52,6 +52,7 @@ import { IntelligencePage } from './components/IntelligencePage'
 import { DemoWorkflowBar } from './components/DemoWorkflowBar'
 import type { DiagnosisReport } from '@shared/intelligence'
 import type { IntelligenceRequest } from '@shared/experiment-workflow'
+import type { ResearchView } from '@shared/research'
 import { createDemoWorkflow, failDemoInitial, diagnoseDemoRun, retryDemoRun, startDemoRetry, finishDemoRetry, type DemoWorkflow } from '@shared/demo-workflow'
 import { ExperimentTaskPool } from './components/ExperimentTaskPool'
 import { ResourceWorkbench } from './components/ResourceWorkbench'
@@ -132,6 +133,7 @@ export function App(): React.JSX.Element {
   const [servers, setServers] = useState<ServerProfile[]>([])
   const [experimentTasks, setExperimentTasks] = useState<ExperimentTask[]>([])
   const [diagnosisHistory, setDiagnosisHistory] = useState<DiagnosisReport[]>([])
+  const [researchHistory, setResearchHistory] = useState<ResearchView[]>([])
   const [intelligenceRequest, setIntelligenceRequest] = useState<IntelligenceRequest | null>(null)
   const [demo, setDemo] = useState<DemoWorkflow | null>(null)
   const demoRef = useRef(demo)
@@ -150,6 +152,17 @@ export function App(): React.JSX.Element {
     const unsubscribe = window.labApi.intelligence.onHistoryChanged(reload)
     return () => { live = false; unsubscribe() }
   }, [])
+  useEffect(() => {
+    let live = true, revision = 0
+    const reload = (): void => {
+      const request = ++revision
+      void window.labApi.research.list().then(items => { if (live && request === revision) setResearchHistory(items) })
+        .catch(error => { if (live) notify(`对照实验记录读取失败：${error.message ?? error}`, 'error') })
+    }
+    reload()
+    const unsubscribe = window.labApi.research.onChanged(reload)
+    return () => { live = false; unsubscribe() }
+  }, [])
   const [tunnels, setTunnels] = useState<TunnelView[]>([])
   const [tunnelRequest, setTunnelRequest] = useState<TunnelRequest | null>(null)
   const [snapshots, setSnapshots] = useState<Record<string, ServerSnapshot>>({})
@@ -161,7 +174,7 @@ export function App(): React.JSX.Element {
   const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null)
   const [terminalDockOpen, setTerminalDockOpen] = useState(false)
   const [fileTarget, setFileTarget] = useState<{ serverId: string; routeId: string; path?: string } | null>(null)
-  const [taskRequest, setTaskRequest] = useState<{ id: number; taskId?: string; runId?: string; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null>(null)
+  const [taskRequest, setTaskRequest] = useState<{ id: number; taskId?: string; runId?: string; start?: boolean; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
   const [gpuSelection, setGpuSelection] = useState<GpuSelection>(null)
@@ -836,8 +849,8 @@ export function App(): React.JSX.Element {
     setTaskRequest({ id: Date.now(), taskId: task?.id, serverId: selectedServer?.id, accessRouteId: selectedServer ? accessRouteIdFor(selectedServer) : undefined, gpu })
     setPage('tasks')
   }
-  const openTaskRun = (task: ExperimentTask, runId?: string): void => {
-    setTaskRequest({id: Date.now(), taskId: task.id, runId})
+  const openTaskRun = (task: ExperimentTask, runId?: string, start?: boolean): void => {
+    setTaskRequest({id: Date.now(), taskId: task.id, runId, start})
     setPage('tasks')
   }
   const openIntelligence = (context: Omit<IntelligenceRequest, 'id'>): void => {
@@ -862,9 +875,11 @@ export function App(): React.JSX.Element {
   }
   const taskPool = <ExperimentTaskPool
     tasks={workflowTasks} servers={workflowServers} snapshots={snapshots}
-    reports={workflowReports} demoTaskId={demo?.task.id}
+    reports={workflowReports} demoTaskId={demo?.task.id} campaigns={researchHistory}
+    onReadRepository={(task) => openIntelligence({tab: 'repository', taskId: task?.id})}
+    onOpenTask={openTaskRun}
+    onOpenCampaign={(campaign) => openIntelligence({tab: 'research', taskId: campaign.sourceTaskId, campaignId: campaign.id})}
     onDiagnose={(task, runId) => openIntelligence({tab: 'diagnosis', taskId: task.id, runId})}
-    onPlan={(task) => openIntelligence({tab: 'plan', taskId: task.id})}
     onResearch={(task) => openIntelligence({tab: 'research', taskId: task.id})}
     onOpenReport={(report) => openIntelligence({tab: 'diagnosis', reportId: report.id, taskId: report.taskId, runId: report.runId})}
     liveTasks={<MyTasksPage tasks={myTasks} onOpenGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} />}
@@ -937,7 +952,7 @@ export function App(): React.JSX.Element {
               onTask={(task) => openTask(task)} onNewTask={(gpu) => openTask(undefined, gpu)} onGpuDetail={(gpuIndex) => openGpu(selectedServer, gpuIndex)}
               onToggleWatch={(gpuUuid) => void toggleGpuWatch({ serverId: selectedServer.id, gpuUuid })}
               onTunnel={() => openTunnel(selectedServer, accessRouteIdFor(selectedServer))}
-            /> : <div className="workbench-welcome"><ServerIcon size={28} /><h1>还没有服务器</h1><p>导入 SSH Config 或添加服务器，查看 GPU 并调度实验。</p><button className="secondary-button" onClick={() => setDialogServer(null)}><Plus size={15} />添加服务器</button><button className="wb-text-button" onClick={() => void importSshConfig()}>导入 SSH Config</button></div>) : page === 'gpuDetail' && gpuSelection ? <GpuDetailPanel key={gpuSelection.server.id} server={servers.find(server => server.id === gpuSelection.server.id) ?? gpuSelection.server} snapshot={snapshots[gpuSelection.server.id]} initialGpuIndex={gpuSelection.gpuIndex} watches={settings.gpuWatches} accessRouteId={accessRouteIdFor(gpuSelection.server)} onToggleWatch={(gpuUuid) => void toggleGpuWatch({ serverId: gpuSelection.server.id, gpuUuid })} onClose={() => setPage(gpuReturnPage.current)} refreshing={refreshing} onRefresh={() => void refreshSnapshots([gpuSelection.server], { force: true })} onTerminal={() => openServerTerminal(gpuSelection.server)} onRun={(gpu) => openTask(undefined, gpu)} onSelectGpu={(gpuIndex) => setGpuSelection({ server: gpuSelection.server, gpuIndex })} /> : page === 'tunnels' ? <TunnelPage tunnels={tunnels} servers={servers} request={tunnelRequest} onRequestHandled={() => setTunnelRequest(null)} onChanged={reloadTunnels} onTrusted={async () => { await loadServers() }} notify={notify} confirm={requestConfirmation} /> : page === 'tasks' ? <><header className="workbench-page-heading"><h1 className="experiment-page-title">实验任务</h1><span>任务配置、排队与运行记录</span></header>{taskPool}</> : page === 'files' ? (fileServer && fileRouteId ? <div className="workbench-files"><div className="workbench-file-route"><AccessRouteSelect server={fileServer} value={fileRouteId} onChange={(id) => openSftp(fileServer, id)} /></div><SftpPanel key={`${fileServer.id}:${fileRouteId}`} server={fileServer} accessRouteId={fileRouteId} initialPath={filePath} onClose={() => goToPage('serverDetail')} onMessage={notify} /></div> : <div className="workbench-welcome"><FolderOpen size={28} /><h1>选择一台服务器</h1><p>从左侧服务器列表打开远程文件。</p></div>) : page === 'terminals' ? null : page === 'servers' ? <><header className="workbench-page-heading"><h1>全部服务器</h1><button className="secondary-button" onClick={() => void refreshSnapshots(servers, { force: true })}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />刷新全部</button></header><ServerTable servers={filteredServers} snapshots={snapshots} testingId={testingId} vscodeConnectingId={vscodeConnectingId} accessRouteId={accessRouteIdFor} onAccessRouteChange={selectAccessRoute} onOverview={openServerDetail} onTest={testServer} onTerminal={openServerTerminal} onSftp={openSftp} onVsCode={(server) => void openVsCode(server)} onGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} onEdit={(server) => setDialogServer(server)} onRemove={removeServer} onMerge={mergeServerPath} /></> : page === 'gpus' ? <GpuResourcePool servers={filteredServers} snapshots={snapshots} watches={settings.gpuWatches} refreshing={refreshing} onRefresh={() => void refreshSnapshots(servers, { force: true })} onToggleWatch={(target) => void toggleGpuWatch(target)} onSelect={openGpu} filters={gpuPoolFilters} onFiltersChange={setGpuPoolFilters} /> : page === 'alerts' ? <><header className="workbench-page-heading"><h1>告警</h1><span>{alerts.length} 条活动告警</span></header><AlertsPage alerts={alerts} /></> : <><header className="workbench-page-heading"><h1>设置</h1></header><SettingsPage settings={settings} onChange={setSettings} onThemeChange={(theme) => void changeTheme(theme)} onSave={saveSettings} /></>}
+            /> : <div className="workbench-welcome"><ServerIcon size={28} /><h1>还没有服务器</h1><p>导入 SSH Config 或添加服务器，查看 GPU 并调度实验。</p><button className="secondary-button" onClick={() => setDialogServer(null)}><Plus size={15} />添加服务器</button><button className="wb-text-button" onClick={() => void importSshConfig()}>导入 SSH Config</button></div>) : page === 'gpuDetail' && gpuSelection ? <GpuDetailPanel key={gpuSelection.server.id} server={servers.find(server => server.id === gpuSelection.server.id) ?? gpuSelection.server} snapshot={snapshots[gpuSelection.server.id]} initialGpuIndex={gpuSelection.gpuIndex} watches={settings.gpuWatches} accessRouteId={accessRouteIdFor(gpuSelection.server)} onToggleWatch={(gpuUuid) => void toggleGpuWatch({ serverId: gpuSelection.server.id, gpuUuid })} onClose={() => setPage(gpuReturnPage.current)} refreshing={refreshing} onRefresh={() => void refreshSnapshots([gpuSelection.server], { force: true })} onTerminal={() => openServerTerminal(gpuSelection.server)} onRun={(gpu) => openTask(undefined, gpu)} onSelectGpu={(gpuIndex) => setGpuSelection({ server: gpuSelection.server, gpuIndex })} /> : page === 'tunnels' ? <TunnelPage tunnels={tunnels} servers={servers} request={tunnelRequest} onRequestHandled={() => setTunnelRequest(null)} onChanged={reloadTunnels} onTrusted={async () => { await loadServers() }} notify={notify} confirm={requestConfirmation} /> : page === 'tasks' ? <><header className="workbench-page-heading"><h1 className="experiment-page-title">实验任务</h1><span>任务配置、排队与运行记录</span></header>{taskPool}</> : page === 'files' ? (fileServer && fileRouteId ? <div className="workbench-files"><div className="workbench-file-route"><AccessRouteSelect server={fileServer} value={fileRouteId} onChange={(id) => openSftp(fileServer, id)} /></div><SftpPanel key={`${fileServer.id}:${fileRouteId}`} server={fileServer} accessRouteId={fileRouteId} initialPath={filePath} onClose={() => goToPage('serverDetail')} onMessage={notify} /></div> : <div className="workbench-welcome"><FolderOpen size={28} /><h1>选择一台服务器</h1><p>从左侧服务器列表打开远程文件。</p></div>) : page === 'terminals' ? null : page === 'servers' ? <><header className="workbench-page-heading"><h1>全部服务器</h1><button className="secondary-button" onClick={() => void refreshSnapshots(servers, { force: true })}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />刷新全部</button></header><ServerTable servers={filteredServers} snapshots={snapshots} testingId={testingId} vscodeConnectingId={vscodeConnectingId} accessRouteId={accessRouteIdFor} onAccessRouteChange={selectAccessRoute} onOverview={openServerDetail} onTest={testServer} onTerminal={openServerTerminal} onSftp={openSftp} onVsCode={(server) => void openVsCode(server)} onGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} onEdit={(server) => setDialogServer(server)} onRemove={removeServer} onMerge={mergeServerPath} /></> : page === 'gpus' ? <GpuResourcePool servers={filteredServers} snapshots={snapshots} watches={settings.gpuWatches} refreshing={refreshing} onRefresh={() => void refreshSnapshots(servers, { force: true })} onToggleWatch={(target) => void toggleGpuWatch(target)} onSelect={openGpu} filters={gpuPoolFilters} onFiltersChange={setGpuPoolFilters} /> : page === 'alerts' ? <><header className="workbench-page-heading"><h1>告警</h1><span>{alerts.length} 条活动告警</span></header><AlertsPage alerts={alerts} /></> : <><header className="workbench-page-heading"><h1>设置</h1></header><SettingsPage onModelSettings={() => openIntelligence({tab: 'model'})} settings={settings} onChange={setSettings} onThemeChange={(theme) => void changeTheme(theme)} onSave={saveSettings} /></>}
           </div>
           <TerminalDock expanded={showTerminal} fullscreen={page === 'terminals'}>
             <header className="workbench-dock-heading"><button onClick={() => { if (page === 'terminals') { setPage(terminalReturnPage.current); setTerminalDockOpen(false) } else setTerminalDockOpen((open) => !open) }} aria-expanded={showTerminal} title={showTerminal ? '收起终端，会话继续运行' : '展开终端'}><SquareTerminal size={13} />终端<span>{terminalSessions.length ? `${terminalSessions.length} 个会话` : '未打开会话'}</span>{showTerminal ? <ChevronDown size={13} /> : <ChevronUp size={13} />}</button><div>{showTerminal && (page === 'terminals' ? <button onClick={() => { setPage(terminalReturnPage.current); setTerminalDockOpen(true) }} aria-label="返回底部终端" title="返回底部终端"><Copy size={12} />返回底部</button> : <button onClick={() => goToPage('terminals')} aria-label="全屏终端" title="展开到完整终端页"><Square size={12} />展开终端</button>)}<button onClick={addLocalTerminalSession}><Plus size={13} />本地终端</button></div></header>
@@ -1064,8 +1079,9 @@ function ClosePrompt({ remember, onRememberChange, onChoose }: { remember: boole
   </div>
 }
 
-function SettingsPage({ settings, onChange, onThemeChange, onSave }: { settings: AppSettings; onChange(settings: AppSettings): void; onThemeChange(theme: AppTheme): void; onSave(): void }): React.JSX.Element {
+function SettingsPage({ settings, onChange, onThemeChange, onSave, onModelSettings }: { onModelSettings(): void; settings: AppSettings; onChange(settings: AppSettings): void; onThemeChange(theme: AppTheme): void; onSave(): void }): React.JSX.Element {
   return <div className="settings-page-stack">
+    <section className="panel settings-panel"><div className="panel-title"><div><h3>智能实验模型</h3><p>配置 API 地址、模型与密钥；模型调用由各功能明确触发。</p></div><button className="secondary-button" onClick={onModelSettings}>配置模型</button></div></section>
     <TaskNotificationSettings settings={settings} onChange={onChange} />
     <section className="panel appearance-panel">
       <div className="panel-title"><div><h3>界面主题</h3><p>选择适合当前环境的控制台外观，切换后立即生效并自动保存</p></div><LayoutDashboard size={19} /></div>

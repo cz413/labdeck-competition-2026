@@ -38,6 +38,7 @@ const api: AppApi = {
     testModel: () => ipcRenderer.invoke('intelligence:testModel'),
     diagnose: input => ipcRenderer.invoke('intelligence:diagnose', input),
     history: () => ipcRenderer.invoke('intelligence:history'),
+    saveExternalDraft: (id,input) => ipcRenderer.invoke('intelligence:external-draft',id,input),
     setTracking: (id,enabled) => ipcRenderer.invoke('intelligence:tracking',id,enabled),
     onHistoryChanged: listener => {const handler=():void=>listener();ipcRenderer.on('intelligence:changed',handler);return()=>ipcRenderer.removeListener('intelligence:changed',handler)},
     cancelDiagnosis: id => ipcRenderer.invoke('intelligence:cancel', id),
@@ -47,8 +48,22 @@ const api: AppApi = {
       return () => ipcRenderer.removeListener('intelligence:progress', handler)
     },
     detectReadme: input => ipcRenderer.invoke('intelligence:detectReadme', input),
+    repositoryWorkflows: () => ipcRenderer.invoke('intelligence:repository-workflows'),
+    createRepositoryWorkflow: (input,id) => ipcRenderer.invoke('intelligence:repository-create',input,id),
+    actRepositoryWorkflow: (id,action) => ipcRenderer.invoke('intelligence:repository-action',id,action),
+    cancelRepositoryWorkflow: id => ipcRenderer.invoke('intelligence:repository-cancel',id),
+    onRepositoryChanged: listener => {const handler=():void=>listener();ipcRenderer.on('intelligence:changed',handler);return()=>ipcRenderer.removeListener('intelligence:changed',handler)},
+    onRepositoryProgress: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]): void => listener(progress)
+      ipcRenderer.on('intelligence:repository-progress', handler)
+      return () => ipcRenderer.removeListener('intelligence:repository-progress', handler)
+    },
+    inspectRepository: input => ipcRenderer.invoke('intelligence:repository-inspect', input),
+    discoverRepositories: input => ipcRenderer.invoke('intelligence:repository-discover', input),
+    browseRepositoryDirectory: input => ipcRenderer.invoke('intelligence:repository-browse', input),
+    analyzeRepository: input => ipcRenderer.invoke('intelligence:repository-analyze', input),
     plan: input => ipcRenderer.invoke('intelligence:plan', input),
-    retry: (id, confirmed) => ipcRenderer.invoke('intelligence:retry', id, confirmed),
+    retry: (id, confirmed, useModelOnFailure) => ipcRenderer.invoke('intelligence:retry', id, confirmed, useModelOnFailure),
     verify: id => ipcRenderer.invoke('intelligence:verify', id),
     exportReport: id => ipcRenderer.invoke('intelligence:export', id)
   },

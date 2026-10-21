@@ -12,8 +12,8 @@ interface RepairTrackerOptions {
   cancelDiagnosis: (requestId:string) => void;
   now?: () => number;
 }
-export function initialClosure(enabled=true):RepairClosure {
- return {enabled,status:enabled?'waiting':'paused',message:enabled?'已启用自动跟踪，等待资源与运行前检查':'自动跟踪已暂停；远程任务按原计划继续',updatedAt:new Date().toISOString(),attempts:0}
+export function initialClosure(enabled=true,useModelOnFailure=false):RepairClosure {
+ return {enabled,useModelOnFailure,status:enabled?'waiting':'paused',message:enabled?'已启用自动跟踪，等待资源与运行前检查':'自动跟踪已暂停；远程任务按原计划继续',updatedAt:new Date().toISOString(),attempts:0}
 }
 export class RepairTracker {
  private timer:NodeJS.Timeout|undefined
@@ -47,7 +47,7 @@ export class RepairTracker {
     if(this.stopped)break
     if(!report.retryRunId||!report.closure?.enabled)continue
     if(report.closure.attempts>=MAX_VERIFICATION_ATTEMPTS){
-      await this.options.patch(report.id,current=>({...current!,enabled:false,status:'attention',message:'上次核验已到自动次数上限，当前证据仍待确认；可手动验收或继续跟踪',updatedAt:new Date(this.now()).toISOString(),nextCheckAt:undefined}))
+      await this.options.patch(report.id,current=>({...current!,enabled:false,status:'attention',message:'上次核验已到自动次数上限，当前证据仍待确认；可手动状态确认或继续跟踪',updatedAt:new Date(this.now()).toISOString(),nextCheckAt:undefined}))
       continue
     }
     if(report.closure.nextCheckAt&&Date.parse(report.closure.nextCheckAt)>this.now())continue
@@ -64,7 +64,7 @@ export class RepairTracker {
   if(report.closure?.status==='passed'||report.closure?.status==='failed')return report
   const active=this.checking.get(id)
   if(active){active.controller.abort();this.options.cancelDiagnosis(active.requestId);await active.promise.catch(()=>{})}
-  const next=await this.options.patch(id,previous=>({...initialClosure(enabled),...(previous?.checkedAt?{checkedAt:previous.checkedAt}:{}),updatedAt:new Date(this.now()).toISOString()}))
+  const next=await this.options.patch(id,previous=>({...initialClosure(enabled,previous?.useModelOnFailure??!!report.useModel),...(previous?.checkedAt?{checkedAt:previous.checkedAt}:{}),updatedAt:new Date(this.now()).toISOString()}))
   if(enabled)this.wake()
   return next
  }
@@ -90,7 +90,7 @@ export class RepairTracker {
    return {status:running?'running':'waiting',message,runId:report.retryRunId}
   }
   if(!runStatus||runStatus==='cancelled'||runStatus==='paused'){
-   const message=!runStatus?'修复运行记录不存在，请检查任务历史':runStatus==='cancelled'?'修复运行已取消，验收未完成':'修复运行已暂停，验收未完成'
+   const message=!runStatus?'修复运行记录不存在，请检查任务历史':runStatus==='cancelled'?'修复运行已取消，运行状态尚未确认':'修复运行已暂停，运行状态尚未确认'
    await patch(current=>({...current,enabled:false,status:'attention',message,updatedAt:time(),nextCheckAt:undefined}))
    return {status:'unknown',message,runId:report.retryRunId}
   }
@@ -98,7 +98,7 @@ export class RepairTracker {
   signal.throwIfAborted()
   let result:Verification
   try{result=await this.options.verify(id,requestId,signal)}
-  catch{signal.throwIfAborted();result={status:'unknown',message:'验收或后续诊断未完成；连接与证据仍待确认',runId:report.retryRunId}}
+  catch{signal.throwIfAborted();result={status:'unknown',message:'状态确认或后续诊断未完成；连接与证据仍待确认',runId:report.retryRunId}}
   signal.throwIfAborted()
   await patch(current=>{
    const status=result.status==='completed'?'passed':result.status==='failed'?'failed':result.status==='running'?'running':result.status==='waiting'?'waiting':'attention'

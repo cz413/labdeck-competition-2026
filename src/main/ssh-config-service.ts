@@ -29,9 +29,10 @@ export class SshConfigService {
 
   constructor(private readonly store: AppStore) {}
 
-  async scan(): Promise<{ configPath: string; candidates: SshConfigCandidate[] }> {
+  async scan(): Promise<{ configPath: string; candidates: SshConfigCandidate[]; generatedAliases: Set<string> }> {
     await access(this.configPath)
-    const aliases = await this.collectAliases(this.configPath)
+    const generatedAliases = new Set<string>()
+    const aliases = await this.collectAliases(this.configPath, generatedAliases)
     const resolved = await Promise.allSettled(aliases.map((alias) => this.resolveAlias(alias)))
     const existing = this.store.listServers()
     const candidates = resolved.flatMap((result): SshConfigCandidate[] => {
@@ -54,20 +55,19 @@ export class SshConfigService {
         )
       }]
     })
-    return { configPath: this.configPath, candidates }
+    return { configPath: this.configPath, candidates, generatedAliases }
   }
 
   async importAll(): Promise<SshConfigImportResult> {
-    const { candidates } = await this.scan()
+    const { candidates, generatedAliases } = await this.scan()
     const imported = []
     const skipped: string[] = []
 
     for (const candidate of candidates) {
       try {
         const servers = this.store.listServers()
-        const sameNameOrEndpoint = servers.find((server) =>
-          server.name === candidate.alias ||
-          (server.host === candidate.host && server.port === candidate.port && server.username === candidate.username)
+        const sameNameOrEndpoint = servers.find((server) => server.name === candidate.alias) ?? servers.find((server) =>
+          server.host === candidate.host && server.port === candidate.port && server.username === candidate.username
         )
         const routeOwner = sameNameOrEndpoint ?? servers.find((server) =>
           getAccessRoutes(server).some((route) =>
@@ -82,13 +82,27 @@ export class SshConfigService {
         if (routeOwner) {
           const sameEndpoint = routeOwner.host === candidate.host && routeOwner.port === candidate.port && routeOwner.username === candidate.username
           const existingJumpRoute = matchingRoute?.kind === 'jump'
+          let updated = routeOwner
+          let changed = false
           if (hasJumpConfiguration && (sameEndpoint || existingJumpRoute)) {
             const jumpHost = await this.resolveJumpHostForAlias(candidate.alias)
             if (!jumpHost) throw new Error('未能解析 ProxyJump 或 ProxyCommand 中的跳板机')
-            imported.push(await this.store.mergeSshConfigJumpHost(routeOwner.id, jumpHost, existingJumpRoute ? matchingRoute?.id : undefined))
-          } else {
-            skipped.push(candidate.alias)
+            updated = await this.store.mergeSshConfigJumpHost(routeOwner.id, jumpHost, existingJumpRoute ? matchingRoute?.id : undefined)
+            changed = true
           }
+          if (sameEndpoint && routeOwner.mode === 'real' && routeOwner.group === 'SSH Config' && generatedAliases.has(routeOwner.name)) {
+            // Prefer the original direct alias even when a jump alias appears first.
+            const matchingCandidates = candidates.filter((item) =>
+              item.host === routeOwner.host && item.port === routeOwner.port && item.username === routeOwner.username
+            )
+            const preferred = matchingCandidates.find((item) => !item.proxyJump && !item.proxyCommand) ?? matchingCandidates[0]
+            if (preferred?.alias === candidate.alias) {
+              updated = await this.store.renameServer(routeOwner.id, candidate.alias)
+              changed = true
+            }
+          }
+          if (changed) imported.push(updated)
+          else skipped.push(candidate.alias)
           continue
         }
 
@@ -138,7 +152,7 @@ export class SshConfigService {
     return this.store.mergeAccessRoute(serverId, sourceServerId, jumpHost)
   }
 
-  async collectAliases(configPath: string): Promise<string[]> {
+  async collectAliases(configPath: string, generatedAliases = new Set<string>()): Promise<string[]> {
     const visited = new Set<string>()
     const aliases = new Set<string>()
 
@@ -152,7 +166,19 @@ export class SshConfigService {
       } catch {
         return
       }
-      for (const rawLine of content.split(/\r?\n/)) {
+      const lines = content.split(/\r?\n/)
+      // VS Code targets are app output, not new user servers to import.
+      if (lines.some((line) => line.trim().startsWith('# This file is managed by LabDeck.'))) {
+        for (const line of lines) {
+          const hostMatch = line.trim().match(/^Host\s+(.+)$/i)
+          if (!hostMatch) continue
+          for (const alias of this.splitArguments(hostMatch[1])) {
+            if (!alias.startsWith('!') && !/[?*]/.test(alias)) generatedAliases.add(alias)
+          }
+        }
+        return
+      }
+      for (const rawLine of lines) {
         const line = rawLine.replace(/\s+#.*$/, '').trim()
         if (!line) continue
         const hostMatch = line.match(/^Host\s+(.+)$/i)

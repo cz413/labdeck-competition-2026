@@ -1,3 +1,29 @@
+# 2026-10-21 仓颉兼容修复与智能实验优化验证
+
+环境：Windows x64（10.0.26200）、Node.js 22。
+
+- `npm test`：34 个测试文件，324 项全部通过，无跳过。包括真实仓颉桥接、运行时文件完整性、未知修改拒绝、模型请求预算/取消、勾选范围读取边界、问题自动回答和按目标选命令。
+- `npm run build:cangjie`：官方 1.0.5 配套组件在项目暂存目录重编，应用固定哈希的本地未签名 Windows loader 兼容回移，脱离 SDK 自检通过后才复制到正式资源目录。
+- `npm run verify:cangjie`：运行时校验、无 SDK 搜索路径的原生展开/去重/替换/预算/无效输入检查、实际桥接集成均通过。
+- `npm run build`：类型检查和生产构建通过。构建临时文件使用 `.tmp-build`，清除继承的 Electron Node 模式。
+- `npm run verify:repository -- --no-sandbox`：真实 Electron 页面、preload/IPC 与 LangGraph；模型和 SSH 使用夹具。验证取消（一次取消、无自动重试）、显式重试、两次补充复检不调用模型、数据目录不代答预处理要求、深浅/紧凑布局、只保存一份草稿且不启动运行。截图与机器报告在 `artifacts/repository-ui-verification.json`。
+- `npm run dist:competition -- --publish never` 已生成本轮便携版；NSIS 安装包未重建。发布目录验证通过：包内 LangGraph 实际运行、无 SDK 的仓颉原生展开和预算拒绝通过；5 个构建文件与源码构建结果一致，运行时 DLL SHA256 与正式资源一致。
+- 本轮未连接真实模型或实验服务器，未启动 GPU 训练；界面和本地测试不能替代真实模型质量或科研效果评测。
+
+运行时回移方案、哈希与复现命令见 [CANGJIE-WINDOWS-FIX.md](CANGJIE-WINDOWS-FIX.md)。原先失败与跳过的记录保留在下方作为历史。
+
+---
+# 0.6.0 仓库启动体验优化验证
+
+日期：2026-10-21；环境：Windows x64、Node.js 22.14.0。
+
+- `npm run typecheck` 与 `npm run build` 通过。
+- `npm test`：31 个测试文件，312 项通过、1 项原生仓颉集成因启动自检失败跳过。
+- 覆盖仓库侦察 agent（种子读取、按需工具调用、最后一轮不再执行工具）、README 引用补读、README 命令回退、预填数据/环境自动回答、仓库候选解析、强制保存草稿的命令与占位符校验。
+- 本轮未重新运行 Electron 页面联调，未连接真实模型、SSH 服务器或 GPU 训练；仓库侦察的模型质量、真实仓库路径与启动效果仍需在实际环境验证。
+
+---
+
 # 0.6.0 结构化结果采集验证
 
 日期：2026-10-15；环境：Windows x64、Node.js 22.14.0。

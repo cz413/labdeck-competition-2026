@@ -35,3 +35,38 @@ describe('model transport',()=>{
     await expect(requestModel(settings,'provider-secret','system',{})).rejects.toThrow('HTTP 401')
   })
 })
+
+// Structured calls must leave enough room for the JSON body and never hide retries.
+describe('structured model output budgets',()=>{
+  it('leaves repository analysis uncapped and adapts only the official DeepSeek API',async()=>{
+    const fetch=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'{"ready":true}'},finish_reason:'stop'}]}),{status:200}))
+    vi.stubGlobal('fetch',fetch)
+    await requestModel({enabled:true,endpoint:'https://api.deepseek.com',model:'deepseek-flash'},'','JSON',{},undefined,undefined,{purpose:'repository'})
+    const body=JSON.parse((fetch.mock.calls[0] as unknown as [string,RequestInit])[1].body as string)
+    expect(body).toMatchObject({thinking:{type:'disabled'},response_format:{type:'json_object'}})
+    expect(body).not.toHaveProperty('max_tokens')
+    await requestModel({...settings,model:'deepseek-flash'},'','JSON',{})
+    const other=JSON.parse((fetch.mock.calls[1] as unknown as [string,RequestInit])[1].body as string)
+    expect(other.max_tokens).toBe(4096)
+    expect(other).not.toHaveProperty('thinking')
+    expect(other).not.toHaveProperty('response_format')
+  })
+  it('reports truncation even when reasoning consumed the whole response and content is null',async()=>{
+    const fetch=vi.fn(async()=>new Response(JSON.stringify({usage:{completion_tokens:8192,total_tokens:9000},choices:[{message:{content:null,reasoning_content:'not a final answer'},finish_reason:'length'}]}),{status:200}))
+    vi.stubGlobal('fetch',fetch)
+    const usage=vi.fn()
+    await expect(requestModel(settings,'','JSON',{},undefined,usage,{purpose:'repository'})).rejects.toThrow('服务端截断')
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(usage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({requests:1,completionTokens:8192,totalTokens:9000}))
+  })
+  it('never accepts or repairs a truncated JSON object as a valid result',async()=>{
+    const fetch=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'{"ready":true}'},finish_reason:'length'}]}),{status:200}))
+    vi.stubGlobal('fetch',fetch)
+    await expect(requestModel(settings,'','JSON',{})).rejects.toThrow('截断')
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+  it('explains empty final output without exposing reasoning content',async()=>{
+    vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'',reasoning_content:'private reasoning'},finish_reason:'stop'}]}),{status:200})))
+    await expect(requestModel(settings,'','JSON',{})).rejects.toThrow('没有返回可用的 JSON')
+  })
+})

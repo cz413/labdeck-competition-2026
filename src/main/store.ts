@@ -320,6 +320,17 @@ export class AppStore {
     return structuredClone(profile)
   }
 
+  async renameServer(id: string, name: string): Promise<ServerProfile> {
+    const parsedName = serverProfileInputSchema.shape.name.parse(name)
+    const data = this.ensureData()
+    const index = data.servers.findIndex((server) => server.id === id)
+    if (index < 0) throw new Error('服务器不存在或已被删除')
+    const server = { ...data.servers[index], name: parsedName, updatedAt: now() }
+    data.servers[index] = server
+    await this.persist()
+    return structuredClone(server)
+  }
+
   async removeServer(id: string): Promise<void> {
     const data = this.ensureData()
     data.servers = data.servers.filter((item) => item.id !== id)
