@@ -150,3 +150,25 @@ describe('SSH import display-name repair', () => {
     expect(persist).toHaveBeenCalledOnce()
   })
 })
+
+describe('task project evidence persistence',()=>{
+  it('saves an incomplete draft, edits it in place, and reloads its compact project evidence',async()=>{
+    const directory=await mkdtemp(join(tmpdir(),'labdeck-project-evidence-'))
+    const resolved=await import('node:path').then(p=>p.resolve(directory)),parent=await import('node:path').then(p=>p.resolve(tmpdir()))
+    const filePath=join(directory,'lab-server-manager.json'),store=new AppStore()
+    Object.assign(store,{filePath})
+    try{
+      await store.initialize()
+      const context={rootPath:'/repo',serverId:'22222222-2222-4222-8222-222222222222',generatedAt:new Date().toISOString(),summary:'尚需数据目录',configurationKey:'[]',warnings:[],questions:['数据目录在哪里？'],citations:[],checks:[],steps:[]}
+      const saved=await store.saveExperimentTask((await import('../shared/schemas')).experimentTaskDraftSchema.parse({title:'项目草稿',projectPreparation:context}))
+      expect(saved.status).toBe('planned');expect(saved.runs).toEqual([])
+      await store.saveExperimentTask({...saved,title:'补充后的草稿',launchCommand:'python train.py'})
+      const restarted=new AppStore();Object.assign(restarted,{filePath});await restarted.initialize()
+      expect(restarted.listExperimentTasks()).toHaveLength(1)
+      expect(restarted.listExperimentTasks()[0]).toMatchObject({id:saved.id,title:'补充后的草稿',projectPreparation:context,runs:[]})
+    }finally{
+      if(!resolved.startsWith(parent+'\\')&&!resolved.startsWith(parent+'/'))throw new Error('Unsafe temporary test path')
+      await rm(resolved,{recursive:true,force:true})
+    }
+  })
+})

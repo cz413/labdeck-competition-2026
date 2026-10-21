@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { taskProjectContextSchema } from './project-task'
 
 const hostSchema = z.string().trim().min(1).max(253)
 
@@ -163,6 +164,7 @@ const experimentRunSchema = z.object({
 })
 
 export const experimentTaskSchema = z.object({
+  projectPreparation: taskProjectContextSchema.optional(),
   id: z.string().uuid(),
   title: z.string().trim().min(1).max(160),
   project: z.string().trim().max(160).default(''),

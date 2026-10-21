@@ -1,3 +1,4 @@
+import type { TaskProjectContext } from './project-task'
 import type { IntelligenceApi } from './intelligence'
 import type { ResearchApi } from './research'
 export type AuthType = 'password' | 'privateKey'
@@ -365,6 +366,7 @@ export interface ExperimentRunStartInput {
 }
 
 export interface ExperimentTask {
+  projectPreparation?: TaskProjectContext
   id: string
   title: string
   project: string

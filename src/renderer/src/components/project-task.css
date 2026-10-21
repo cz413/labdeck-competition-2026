@@ -1,0 +1,42 @@
+.project-model-settings fieldset { border:0; padding:0; margin:0; min-width:0; }
+.project-model-settings .form-grid { margin:14px 0; }
+.project-editor-mode { display:flex; align-items:center; gap:4px; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:18px; }
+.project-editor-mode button { background:transparent; border:0; border-radius:5px; color:var(--muted); padding:7px 12px; cursor:pointer; font:inherit; }
+.project-editor-mode button.active { background:var(--panel); color:var(--text); box-shadow:inset 0 0 0 1px var(--border); }
+.project-editor-mode>span { margin-left:auto; color:var(--muted); font-size:11px; }
+.project-source-fields { margin-bottom:16px; }
+.project-task-assistant { padding:16px; border:1px solid var(--border); border-left:3px solid var(--accent, #4d8ab8); border-radius:7px; margin-bottom:22px; background:var(--panel); font-size:12px; }
+.project-task-assistant>header,.project-task-assistant>header>div { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.project-task-assistant>header { justify-content:space-between; }
+.project-task-assistant>header>span,.project-task-assistant>p { color:var(--muted); font-size:11px; line-height:1.7; }
+.project-path-row { display:flex; gap:8px; min-width:0; }
+.project-path-row input { flex:1; min-width:0; }
+.project-path-row button { flex-shrink:0; }
+.project-assistant-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0 0; }
+.project-reading-scope { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; }
+.project-reading-scope summary,.project-task-evidence summary { cursor:pointer; color:var(--text); }
+.project-file-list { display:grid; gap:6px; max-height:190px; overflow:auto; margin:12px 0; }
+.project-file-list label { display:flex; gap:8px; align-items:start; overflow-wrap:anywhere; font:11px/1.5 var(--font-mono,monospace); }
+.project-file-list input[type=checkbox] { width:14px; height:14px; flex-shrink:0; }
+.project-directory-browser { border:1px solid var(--border); border-radius:5px; padding:10px; margin:12px 0; max-height:220px; overflow:auto; display:grid; gap:8px; }
+.project-directory-browser>div { display:flex; gap:12px; align-items:center; }
+.project-directory-browser>button { display:flex; align-items:center; gap:8px; text-align:left; }
+.project-config-heading { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; }
+.project-config-heading h3 { margin:0; font-size:13px; }
+.project-config-heading span { font-size:11px; color:var(--muted); }
+.project-suggestion { margin-top:16px; border-top:1px solid var(--border); padding-top:14px; }
+.project-suggestion dl { display:grid; grid-template-columns:70px minmax(0,1fr); gap:8px; }
+.project-suggestion dt { color:var(--muted); }
+.project-suggestion dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.project-inline-warning { color:var(--amber,#b5813b); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.project-task-evidence { border:1px solid var(--border); border-radius:6px; margin:14px 0; padding:12px; font-size:11px; line-height:1.7; overflow-wrap:anywhere; }
+.project-task-evidence summary>span { margin-left:8px; color:var(--muted); }
+.project-task-evidence pre { font:11px/1.6 var(--font-mono,monospace); white-space:pre-wrap; overflow-wrap:anywhere; padding:8px; background:var(--panel); border:1px solid var(--border); border-radius:4px; }
+.project-task-evidence h4 { font-size:12px; margin-bottom:4px; }
+.project-research-heading { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+.project-research-heading h2 { margin:0; font-size:16px; }
+.project-research-heading span { font-size:12px; color:var(--muted); }
+@media(max-width:760px) { .project-editor-mode>span { display:none; } .project-task-assistant>header { align-items:start; flex-direction:column; } .project-suggestion dl { grid-template-columns:1fr; gap:4px; } }
+
+.project-task-assistant .secondary-button { background:var(--control-bg); color:var(--text); border-color:var(--border); }
+.project-task-assistant .secondary-button:hover { background:var(--control-hover); }

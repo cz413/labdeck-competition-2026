@@ -51,6 +51,8 @@ export interface IntelligenceApi {
   browseRepositoryDirectory(input:{serverId:string;accessRouteId?:string;path?:string}):Promise<RepositoryDirectoryView>;
   inspectRepository(input: RepositoryInput): Promise<RepositorySnapshot>;
   analyzeRepository(input: RepositoryAnalysisInput): Promise<RepositoryGuide>;
+  prepareProject(input: RepositoryAnalysisInput, requestId: string): Promise<RepositoryGuide>;
+  cancelProjectPreparation(requestId: string): Promise<void>;
   plan(input: PlanInput): Promise<ExperimentPlan>;
   retry(reportId: string, confirmed: boolean, useModelOnFailure?: boolean): Promise<ExperimentTask>;
   verify(reportId: string): Promise<Verification>;

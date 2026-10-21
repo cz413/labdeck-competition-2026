@@ -50,6 +50,7 @@ export class IntelligenceService {
   private loadPromise: Promise<void> | undefined
   private writes: Promise<void> = Promise.resolve()
   private reportWrites: Promise<void> = Promise.resolve()
+  private readonly projectPreparations = new Map<string, AbortController>()
   private readonly diagnoses = new Map<string, AbortController>()
   private readonly retrying = new Set<string>()
   private readonly externalDrafting = new Set<string>()
@@ -71,7 +72,7 @@ export class IntelligenceService {
     }
     await this.tracker.start()
   }
-  stopTracking():void{this.tracker.stop();for(const controller of this.diagnoses.values())controller.abort()}
+  stopTracking():void{this.tracker.stop();for(const controller of this.projectPreparations.values())controller.abort();for(const controller of this.diagnoses.values())controller.abort()}
   wakeTracking():void{this.tracker.wake()}
   async checkTrackedRepairs():Promise<void>{await this.tracker.sweep()}
   async setTracking(id:string,enabled:boolean):Promise<DiagnosisReport>{await this.ready();return this.tracker.setEnabled(z.string().uuid().parse(id),z.boolean().parse(enabled))}
@@ -312,6 +313,19 @@ export class IntelligenceService {
     const result=await this.readPlanReadme({...input,intent:'',environmentName:''})
     return {status:result.status,name:result.name}
   }
+  async prepareProject(input:RepositoryAnalysisInput,requestId:string):Promise<RepositoryGuide> {
+    const id=z.string().uuid().parse(requestId)
+    if(this.projectPreparations.has(id))throw new Error('此项目分析正在进行中')
+    if(this.projectPreparations.size>=4)throw new Error('请先结束当前项目分析')
+    const controller=new AbortController()
+    this.projectPreparations.set(id,controller)
+    try{
+      const guide=await this.analyzeRepository(input,event=>this.onRepositoryProgress(id,event),controller.signal)
+      controller.signal.throwIfAborted()
+      return guide
+    }finally{this.projectPreparations.delete(id)}
+  }
+  cancelProjectPreparation(requestId:string):void{this.projectPreparations.get(z.string().uuid().parse(requestId))?.abort(new Error('已取消项目分析'))}
   async analyzeRepository(raw:RepositoryAnalysisInput, progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
     await this.ready()
     const input=z.object({source:z.literal('remote'),path:z.string().min(1).max(4096),serverId:z.string().uuid(),accessRouteId:z.string().max(80).optional(),filePaths:z.array(z.string().max(512)).min(1),goal:z.string().trim().min(1).max(2000)}).parse(raw)
@@ -569,6 +583,8 @@ export class IntelligenceService {
     ipcMain.handle('intelligence:repository-discover',(_e,input)=>this.discoverRepositories(input))
     ipcMain.handle('intelligence:repository-browse',(_e,input)=>this.browseRepositoryDirectory(input))
     ipcMain.handle('intelligence:repository-analyze',(_e,input)=>this.analyzeRepository(input))
+    ipcMain.handle('intelligence:project-prepare',(_e,input,id)=>this.prepareProject(input,id))
+    ipcMain.handle('intelligence:project-cancel',(_e,id)=>this.cancelProjectPreparation(id))
     ipcMain.handle('intelligence:plan',(_e,input)=>this.plan(input))
     ipcMain.handle('intelligence:retry',async(_e,id,confirmed,useModelOnFailure)=>{const task=await this.retry(id,confirmed,useModelOnFailure);onRetry();return task})
     ipcMain.handle('intelligence:verify',(_e,id)=>this.verify(z.string().uuid().parse(id)))

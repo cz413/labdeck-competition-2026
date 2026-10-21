@@ -22,7 +22,9 @@
     "build:cangjie": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cangjie.ps1",
     "verify:cangjie": "node scripts/verify-cangjie.cjs",
     "verify:research:package": "node scripts/verify-research-package.cjs",
-    "verify:repository": "node scripts/run-electron-check.cjs scripts/verify-repository.cjs"
+    "verify:repository": "node scripts/run-electron-check.cjs scripts/verify-repository.cjs",
+    "verify:smart-create": "node scripts/run-electron-check.cjs scripts/verify-smart-create.cjs --no-sandbox",
+    "verify:task-creation": "node scripts/run-electron-check.cjs scripts/verify-task-creation.cjs --no-sandbox"
   },
   "dependencies": {
     "@langchain/core": "^1.2.17",
