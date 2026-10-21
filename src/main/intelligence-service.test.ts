@@ -221,6 +221,18 @@ describe('intelligent experiment lifecycle',()=>{
     expect((await ssh.connect.mock.results[0].value).client.end).toHaveBeenCalledOnce()
     expect(startRun).not.toHaveBeenCalled()
   })
+  it('uses an absolute detected README path when the UI requests a plan',async()=>{
+    ssh.exec.mockResolvedValue('__LABDECK_README__README.md\npython train.py --batch-size 16')
+    state.request.mockResolvedValue({title:'Train',launchCommand:'python train.py --batch-size 16',dataPath:'',minimumFreeVramGiB:null,assumptions:[]})
+    const s=service()
+    const input={intent:'train',serverId,codePath:'/workspace/vision/',environmentName:'vision'}
+    const detected=await s.detectReadme(input)
+    expect(detected).toEqual({status:'found',name:'/workspace/vision/README.md'})
+    const plan=await s.plan({...input,useReadme:true,readmePath:detected.name})
+    expect(plan.draft.codePath).toBe(input.codePath)
+    expect(state.request.mock.calls[0][3]).toMatchObject({projectReadme:{status:'found',name:detected.name}})
+    expect(startRun).not.toHaveBeenCalled()
+  })
   it('continues planning with an explicit warning when README access fails',async()=>{
     ssh.exec.mockRejectedValue(new Error('connection failed'))
     state.request.mockResolvedValue({title:'Train',launchCommand:'python main.py',dataPath:'',minimumFreeVramGiB:null,assumptions:[]})

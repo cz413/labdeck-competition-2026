@@ -253,7 +253,7 @@ export class IntelligenceService {
         : `root=$(realpath -e -- ${quote(input.codePath)}) || exit 1; [ -d "$root" ] || exit 1; for name in README.md README.rst README.txt README readme.md readme.rst readme.txt readme; do candidate="$root/$name"; [ -e "$candidate" ] || continue; file=$(realpath -e -- "$candidate") || exit 1; case "$file" in "$root"/*) ;; *) exit 1 ;; esac; [ -f "$file" ] && [ -r "$file" ] || exit 1; printf '__LABDECK_README__%s\\n' "$name"; head -c 24576 -- "$file"; exit; done; printf '__LABDECK_NO_README__'`
       const text = await this.ssh.exec(client,command,15_000)
       const match = /__LABDECK_README__([^\n]+)\n([\s\S]*)$/.exec(text)
-      if (match) return {status:'found',name:input.readmePath||match[1],content:redactSecrets(match[2]).slice(0,24576),warning:'已参考 README（最多前 24 KiB）；尚未验证脚本和参数。'}
+      if (match) return {status:'found',name:input.readmePath||`${input.codePath.replace(/\/+$/,'')}/${match[1]}`,content:redactSecrets(match[2]).slice(0,24576),warning:'已参考 README（最多前 24 KiB）；尚未验证脚本和参数。'}
       if (text.trim() === '__LABDECK_NO_README__') return {status:'missing',warning:'所选代码目录中未找到 README，本次仅根据实验需求生成。'}
       throw new Error('README 读取返回格式无效：'+text.slice(0,200))
     } catch (error) {
