@@ -25,6 +25,7 @@ export interface DiagnosisReport {
   taskId?: string; runId?: string; logExcerpt: string; evidence: Evidence[]; findings: Finding[]; warnings: string[];
   summary?: string; investigation?: AgentInvestigation; repair?: BatchRepair; retryRunId?: string; useModel?: boolean; closure?: RepairClosure;
 }
+export interface TaskDiagnosisInput {taskId:string;runId:string;requestId:string;refresh?:boolean;inspect?:boolean}
 export interface DiagnosisInput { force?:boolean; external?: ExternalExperimentContext; taskId?: string; runId?: string; logText?: string; sample?: 'oom' | 'dependency' | 'path'; useModel: boolean; depth?: 'quick' | 'inspect'; requestId?: string }
 export interface ExperimentPlan { draft: ExperimentTaskDraft; assumptions: string[]; checks: string[]; engine: 'model' }
 export interface PlanInput { useReadme?: boolean; condaManagerPath?: string; accessRouteId?: string; readmePath?: string; intent: string; serverId: string; codePath: string; environmentName: string }
@@ -33,6 +34,7 @@ export interface IntelligenceApi {
   settings(): Promise<ModelSettings>;
   saveSettings(input: ModelSettingsInput): Promise<ModelSettings>;
   testModel(): Promise<string>;
+  diagnoseTask(input:TaskDiagnosisInput):Promise<DiagnosisReport>;
   diagnose(input: DiagnosisInput): Promise<DiagnosisReport>;
   history(): Promise<DiagnosisReport[]>;
   saveExternalDraft(reportId:string,input:ExternalDraftInput):Promise<ExperimentTask>;

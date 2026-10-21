@@ -36,6 +36,7 @@ const api: AppApi = {
     settings: () => ipcRenderer.invoke('intelligence:settings'),
     saveSettings: input => ipcRenderer.invoke('intelligence:saveSettings', input),
     testModel: () => ipcRenderer.invoke('intelligence:testModel'),
+    diagnoseTask: input => ipcRenderer.invoke('intelligence:task-diagnose', input),
     diagnose: input => ipcRenderer.invoke('intelligence:diagnose', input),
     history: () => ipcRenderer.invoke('intelligence:history'),
     saveExternalDraft: (id,input) => ipcRenderer.invoke('intelligence:external-draft',id,input),
