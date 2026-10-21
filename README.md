@@ -4,6 +4,8 @@
 
 本仓库为独立比赛版，保留既有项目来源记录；Git 历史从本次源码快照开始。原项目说明见 [BASE_PROJECT_README.md](BASE_PROJECT_README.md)，快照来源及 AI 辅助开发说明见 [PROVENANCE.json](PROVENANCE.json)。
 
+![智能创建方案卡片](docs/screenshots/smart-create-plan-dark.png)
+
 ![对照实验结果分析界面](docs/screenshots/research-analysis-dark.png)
 
 ## 团队第一次启动
@@ -21,8 +23,7 @@ npm run dev
 ```
 
 - `npm ci` 按 `package-lock.json` 安装依赖，仓库不包含 `node_modules`。安装阶段需要访问 npm 和 Electron 下载源。
-- 首次启动可以直接体验离线演示，无需 GPU、SSH 服务器和模型 API Key。
-- “智能实验 → 演示入口 → 载入预设演示计划”演示失败诊断与确认修复；“智能实验 → 对照实验 → 载入对照演示”演示参数展开、预算审查与结果对比。
+- 默认进入“实验任务”。选择“智能创建”时只需给出项目位置和实验目的，系统完成文件选择、入口识别、环境核对并生成方案卡片；熟悉配置的成员可直接“手动创建”。已保存的真实服务器 Python 命令任务可通过“创建对照组”进入对照设计与离线演示。
 - 开发启动使用独立比赛版应用数据目录。如果该电脑已运行比赛版安装包，两者会读取同一比赛版数据；开发调试请使用测试服务器，或使用下文自带隔离数据的验证脚本。应用检测到默认数据目录不可写时，会自动改用仓库内的 `.labdeck-data` 并复制现有数据（包括 `safeStorage` 依赖的 `Local State`）；dev 脚本在 Chromium 沙箱初始化失败时会自动用 `--noSandbox` 重试一次。也可以手动设置绝对路径环境变量 `LABDECK_DATA_DIR`，或传入 `--labdeck-data-dir=...`。
 
 ## 已实现的主要功能
@@ -30,13 +31,13 @@ npm run dev
 | 功能 | 实现与使用边界 |
 | --- | --- |
 | 服务器与资源管理 | SSH 连接、终端、SFTP、端口隧道、Conda 环境查看、GPU 状态与实验任务队列，延续原项目能力。 |
-| 实验计划 | 指定服务器、连接路径与 Conda 环境，按实验需求生成待审查草稿；可选参考自动发现或手动指定的 README。切换模块保留计划，保存草稿后仍需在任务池确认入队。 |
-| 仓库启动助手 | 模型先读 README/依赖/入口，再按需只读侦察引用的脚本与配置（单次约 30 万字符），界面显示侦察轨迹；生成带行号依据的启动方案，环境与数据目录自动预填并只读核对；仓库路径支持最近记录、服务器扫描和目录浏览，审查后直接选择 GPU 入队。 |
-| 故障诊断 | 规则识别 OOM、导入失败、路径和权限错误等信号；可选模型分析日志与受限只读工具的结果，展示证据引用及过程。 |
-| 确认修复后的闭环 | 对支持的 OOM 命令生成减半 batch size 方案，用户确认后建立新运行；自动跟踪结束状态、重新读取退出码，失败再诊断，下一次修复仍需确认。 |
+| 实验任务 | 智能创建使用独立准备视图，手动创建保留完整配置编辑器；两条路径共用任务草稿、GPU 选择与调度队列。 |
+| 智能创建 | 首屏只填写项目位置与实验目的；系统自动选择相关文件、识别训练/评估入口、读取服务器环境并生成“本次实验 / 运行方式 / 环境与数据 / 输出与观察”方案卡片。支持缺口追问、自然语言修改、撤销、完整配置编辑和来源区分，详见 [操作流程](docs/TASK-CREATION.md)。 |
+| 故障诊断（历史能力） | 底层规则、分析和报告接口保留；本轮移除独立智能实验页面，暂不设计诊断入口。 |
+| 修复闭环（历史能力） | 原服务和历史记录保留，当前页面调整未重做此流程。 |
 | 对照实验 | 手工或 AI 建议参数轴；仓颉展开组合、去重和检查预算；LangGraph 编排审查、入队、等待、采集、诊断和分析，支持磁盘检查点恢复。 |
 | 结果记录与比较 | 采集指定 metrics.json 及产物元信息，记录指标来源和口径；未指定时提取日志末值。进程状态、证据完整度和研究观察分开展示，支持重新采集。指标未提升仍是有效实验观察，不自动当成运行故障。 |
-| 离线演示 | 展示预设计划、模拟失败与修复、模拟对照结果。演示会话保存在窗口内存，不写入真实任务历史。 |
+| 对照演示 | 从任务详情进入对照设计，展开“离线演示”；模拟结果不写入真实任务历史。 |
 
 当前没有实现 GPU 显存需求预测、通用模型产物解析或多人共享服务端。团队通过 GitHub 协作开发，但运行时的服务器配置、模型设置和实验记录仍保存在各自电脑。
 
@@ -50,7 +51,7 @@ npm run dev
 
 ### 大模型
 
-进入 **智能实验 → 模型设置**，填写基础地址、模型 ID 和 API Key，启用后保存并测试。配置从应用界面填写，不需要创建 `.env`。
+进入 **设置 → 模型服务**，填写基础地址、模型 ID 和 API Key，启用后保存并测试。配置从应用界面填写，不需要创建 `.env`。
 
 | 字段 | 填写方式 |
 | --- | --- |
@@ -75,19 +76,21 @@ npm run dev
 | `npm test` | 运行 Vitest，包括实际仓颉二进制的集成测试；需要 Windows x64 及 `resources/cangjie` 完整。 |
 | `npm run build` | 类型检查并生成生产构建，输出到 `out/`。 |
 | `npm run preview` | 预览已构建应用，先执行 `npm run build`。 |
-| `npm run verify:intelligence` | 示例诊断、模型传输、证据定位、多轮检查和取消的 Electron 联调。 |
+| `npm run verify:intelligence` | 针对旧独立诊断页面的历史联调脚本，当前入口已撤下。 |
 | `npm run verify:closure` | 确认修复、自动跟踪、退出码核验、失败再诊断及恢复的 Electron 联调。 |
-| `npm run verify:workflow` | 实验任务与智能实验之间的准确运行定位、计划草稿及离线演示联调。 |
-| `npm run verify:research` | 参数预览、预算审查、批量入队、磁盘恢复、指标比较及对照演示联调。 |
+| `npm run verify:workflow` | 针对旧智能实验页面的历史联调脚本，当前入口已撤下。 |
+| `node scripts/run-electron-check.cjs scripts/verify-research.cjs --no-sandbox` | 任务内对照方案、参数展开、确认入队和结果比较的 Electron 联调。 |
 | `npm run dist:competition` | 构建 Windows 便携版，输出到 `release/`。 |
 | `npm run dist` | 构建 Windows NSIS 安装包和便携版，输出到 `release/`。 |
-| `npm run verify:repository` | 验证仓库启动的真实 Electron 界面，使用隔离模型/SSH 夹具。 |
+| `npm run verify:smart-create` | 智能创建准备视图的 Electron 联调：首屏输入、方案卡片、缺口追问、增量修改与保存/选资源。使用隔离模型/SSH 夹具。 |
+| `npm run verify:task-creation` | 手动创建、完整配置编辑、排队任务新配置与任务内对照入口的 Electron 回归联调。 |
+| `npm run verify:repository` | 指向智能创建联调（历史命令名保留）。 |
 | `npm run verify:cangjie` | 严格验证原生仓颉，缺失或启动失败均报错，不能以 TypeScript 回退通过。 |
 | `npm run verify:research:package` | 检查已打包程序里的 LangGraph、仓颉引擎及文件一致性，先执行 `npm run dist` 或 `npm run dist:competition`。 |
 
-四项 `verify:*` Electron 页面验证使用 `out/`，运行之前先执行 `npm run build`；这些脚本需分别运行，不要并行。它们使用隔离的 `artifacts/*-ui-check` 数据目录及模拟模型 / SSH，并会更新 `docs/screenshots` 中的截图。运行后请检查截图差异，只提交与本次改动有关的截图。
+当前任务创建与对照实验的 Electron 验证使用 `out/`，先运行 `npm run build`，两个页面脚本分别运行。它们使用隔离数据目录及模拟模型 / SSH，截图和机器报告保存在 `artifacts/`，对照流程还更新 `docs/screenshots/`。
 
-本次 Windows x64 检查为 34 个测试文件、324 项通过，仓颉原生专项实际执行通过；类型检查、生产构建通过。仓库启动改动已进行隔离 Electron 页面联调，未连接真实模型、SSH 服务器或 GPU 训练，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
+本轮源码检查为 37 个测试文件、355 项通过，类型检查和源码构建通过；智能创建增加了纯函数测试与首屏渲染测试。另使用 headless Chrome 155 + CDP 完成了从真实任务池入口到 GPU 弹窗的隔离界面联调（模拟模型 / SSH）：首屏、理解进度、四张方案卡片、数据 / 环境缺口、冲突选择、撤销、重新核对路径、完整配置往返、保存草稿与资源交接均通过，截图见 `docs/screenshots/smart-create-*.png`。官方 Electron 联调脚本 `verify:smart-create` / `verify-task-creation` 仍保留，需在可启动 Electron 窗口的桌面环境执行；本环境 Electron 主进程无法启动。本轮没有打包，未连接真实模型、SSH 服务器或 GPU 训练，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
 
 ```powershell
 npm run typecheck
@@ -116,13 +119,13 @@ docs/                   架构、设计、演示、验证记录、截图与项�
 | --- | --- |
 | 应用启动与 IPC 注册 | [`src/main/index.ts`](src/main/index.ts)、[`src/preload/index.ts`](src/preload/index.ts) |
 | 实验任务栏和运行调度 | [`ExperimentTaskPool.tsx`](src/renderer/src/components/ExperimentTaskPool.tsx)、[`experiment-scheduler.ts`](src/main/experiment-scheduler.ts)、[`experiment-workflow.ts`](src/shared/experiment-workflow.ts) |
-| 智能实验页面及计划 / 诊断服务 | [`IntelligencePage.tsx`](src/renderer/src/components/IntelligencePage.tsx)、[`intelligence-service.ts`](src/main/intelligence-service.ts)、[`intelligence.ts`](src/shared/intelligence.ts) |
+| 任务内项目创建、全局模型设置 | [`SmartCreatePage.tsx`](src/renderer/src/components/SmartCreatePage.tsx)、[`experiment-plan.ts`](src/shared/experiment-plan.ts)、[`ExperimentTaskPool.tsx`](src/renderer/src/components/ExperimentTaskPool.tsx)、[`ModelSettingsPanel.tsx`](src/renderer/src/components/ModelSettingsPanel.tsx) |
 | 规则诊断、模型协议与只读工具 | [`diagnosis-engine.ts`](src/shared/diagnosis-engine.ts)、[`model-provider.ts`](src/main/model-provider.ts)、[`diagnostic-agent.ts`](src/main/diagnostic-agent.ts)、[`diagnostic-tools.ts`](src/main/diagnostic-tools.ts) |
 | 修复后的自动跟踪 | [`repair-tracker.ts`](src/main/repair-tracker.ts)、[`RepairClosurePanel.tsx`](src/renderer/src/components/RepairClosurePanel.tsx) |
 | 对照实验和 LangGraph | [`research-service.ts`](src/main/research-service.ts)、[`research-checkpointer.ts`](src/main/research-checkpointer.ts)、[`ResearchPage.tsx`](src/renderer/src/components/ResearchPage.tsx)、[`research.ts`](src/shared/research.ts) |
 | 仓颉参数引擎和回退实现 | [`main.cj`](cangjie/parameter-engine/main.cj)、[`parameter-bridge.ts`](src/main/parameter-bridge.ts)、[`parameter-engine.ts`](src/shared/parameter-engine.ts) |
 | 应用存储与迁移 | [`store.ts`](src/main/store.ts)；改动时关注历史配置与实验运行的兼容性。 |
-| 离线演示 | [`demo-workflow.ts`](src/shared/demo-workflow.ts)、[`research-demo.ts`](src/shared/research-demo.ts) |
+| 对照演示 | 从任务详情进入对照设计，展开“离线演示”；模拟结果不写入真实任务历史。 |
 | 测试 | 与服务同目录的 `*.test.ts` 和 `scripts/verify-*.cjs`。 |
 
 通常按 **shared 类型 / Schema → main 服务 → preload 接口 → renderer 页面** 的顺序实现跨进程功能。渲染进程不得直接执行 SSH、访问模型密钥或绕过主进程启动远程任务。
@@ -228,25 +231,10 @@ PR 写清楚解决的问题、影响的任务 / 智能流程、验证命令与�
 
 `package.json` 沿用既有项目的 MIT 声明。本仓库同时包含第三方组件，仓颉运行组件的许可与声明保存在 [CANGJIE-LICENSE](resources/cangjie/CANGJIE-LICENSE) 和 [Open_Source_Software_Notice.docx](resources/cangjie/Open_Source_Software_Notice.docx)。参赛和对外发布时应如实说明既有代码基础、新增模块及 AI 辅助开发范围，并保留适用的第三方声明。
 
-### 从新仓库启动第一次实验
+### 从项目创建实验
 
-“智能实验”首页并列提供“启动新实验”和“诊断已有实验”。选择启动新实验后进入仓库启动助手：选择服务器上已经克隆的目录并填写本次目标，点击“分析启动方式”，模型先读说明、依赖与训练/评估入口，再按需只读侦察引用的脚本与配置（单次约 30 万字符），生成启动配置和准备事项。Conda 环境会从服务器读取候选，数据目录会从仓库内 `data/`、`checkpoints/` 等目录或启动参数预填。文件选择可在“阅读范围”展开调整；未勾选文件不会发送或补读。单次分析最多四次模型请求，不自动重试，可以取消；审核后保存并直接打开 GPU 选择，确认入队。未提供完整依据的信息会提示补充；环境安装与下载命令由用户手动核对执行。完整操作与读取范围见 [结果与工作流指南](docs/RESULTS-GUIDE.md)。
+进入“实验任务 → 从项目创建”，选择服务器、填写目标和项目根目录，查看文件范围，再生成配置建议。审阅后应用到当前草稿，继续手动补充；保存草稿不会启动运行。“保存并选择资源”进入 GPU 配置，最终确认后才入队。
 
+已保存任务的“完善配置”复用同一编辑器；“创建对照组”进入任务内的参数设计与结果比较。模型连接统一在“设置 → 模型服务”配置。完整交互、草稿保存边界和源码验证命令见 [任务创建流程](docs/TASK-CREATION.md)。
 
-### 智能实验入口与调用预算
-
-主入口收敛为仓库启动、对照实验、故障诊断；原自然语言计划保留在“仓库启动”的“快捷计划”入口，重试状态留在对应任务和诊断中。模型配置从“设置 → 智能实验模型”或智能实验“更多”进入，演示模式默认收起。
-
-仓库启动指南提供行号原文、文档/建议分类、每步工作目录和环境，并只读核对启动目录与入口文件；信息不足时先补充资料。快速模型诊断默认一次请求，深入检查需手动选择。新建重试默认只在失败后进行规则诊断，额外模型快速分析由用户显式开启。参数对照暂限简单 Python 脚本命令，界面提前说明兼容范围。
-
-
-### 接手已有失败实验
-
-首页可直接打开任务池的指定失败运行，或选择服务器上手动运行产生的现有日志，也可粘贴错误文本。手动实验不需要先建任务或重跑：只读采集日志与用户提供的上下文，生成可追溯的独立诊断，保留原进程状态未核验的限制。需要重跑时审核后保存到任务池，保存只产生一个待开始草稿，不执行原命令、不伪造原失败运行。具体步骤见 [结果与工作流指南](docs/RESULTS-GUIDE.md)。
-
-
-### 可恢复的仓库启动编排
-
-仓库启动现在复用 LangGraph 的分析、状态评估、人工等待和操作处理节点，保存磁盘检查点。指南按准备、启动和结果查看分步展示；用户确认与系统只读核对分别标注，训练状态来自任务池。补齐信息后可直接复检路径，后续步骤不重复请求模型；创建草稿后仍需在任务池确认入队。可从“已保存的分析”恢复指南、答复、确认状态和对应任务。
-
-日志采集在固定范围中优先保留 traceback/错误上下文及末尾状态。相同证据和配置的已完成诊断可复用，支持明确强制重分析；界面展示服务返回的 token 用量，缺失时显示未知。具体预算、恢复与来源边界见 [结果与工作流指南](docs/RESULTS-GUIDE.md)。
+本轮撤下独立的“智能实验”导航，原计划、仓库编排、诊断及闭环服务保留兼容，不作为当前新建实验的前置步骤。

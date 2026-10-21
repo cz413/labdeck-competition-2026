@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, Ban, CheckCircle2, ChevronDown, CircleAlert, Code2, Cpu, FolderOpen, ListTodo, LoaderCircle, MoreHorizontal, Play, Plus, RotateCcw, Server, SquareTerminal, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Ban, CheckCircle2, ChevronDown, CircleAlert, Code2, Cpu, FolderOpen, ListTodo, LoaderCircle, MoreHorizontal, Play, Plus, RotateCcw, Server, SlidersHorizontal, Sparkles, SquareTerminal, Trash2 } from 'lucide-react'
 import type {
   CondaEnvironmentConfig,
   CondaEnvironmentInfo,
@@ -24,19 +24,23 @@ import { closureNames } from './RepairClosurePanel'
 import type { ResearchView } from '@shared/research'
 import { parameterExperimentReason } from '@shared/parameter-engine'
 import { TaskResearchPanel } from './TaskResearchPanel'
+import { ResearchPage } from './ResearchPage'
+import { ProjectTaskEvidence } from './ProjectTaskAssistant'
+import { SmartCreatePage } from './SmartCreatePage'
+import { commandDataPath, syncCommandDataPath, projectLaunchIssue } from '@shared/project-task'
+import './project-task.css'
 
 type PoolTab = 'pool' | 'live'
 
 interface ExperimentTaskPoolProps {
+  active: boolean
+  onModelSettings(): void
   tasks: ExperimentTask[]
   reports?: DiagnosisReport[]
   campaigns?: ResearchView[]
-  onReadRepository?(task?: ExperimentTask): void
-  onOpenCampaign?(campaign: ResearchView): void
   onOpenTask?(task: ExperimentTask, runId?: string): void
   demoTaskId?: string
   onDiagnose?(task: ExperimentTask, runId: string): void
-  onResearch?(task: ExperimentTask): void
   onOpenReport?(report: DiagnosisReport): void
   servers: ServerProfile[]
   snapshots: Record<string, ServerSnapshot>
@@ -70,6 +74,12 @@ const initialDraft = (): ExperimentTaskDraft => ({
 
 export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.Element {
   const [tab, setTab] = useState<PoolTab>('pool')
+  const [smart, setSmart] = useState<{ serverId?: string; accessRouteId?: string; path?: string; goal?: string } | null>(null)
+  const [fullConfig, setFullConfig] = useState(false)
+  const fullConfigApply = useRef<((draft: ExperimentTaskDraft) => void) | null>(null)
+  const [research,setResearch]=useState<{taskId?:string;campaignId?:string}|null>(null)
+  const [modelEnabled,setModelEnabled]=useState(false)
+  useEffect(()=>{void window.labApi.intelligence.settings().then(s=>setModelEnabled(s.enabled)).catch(()=>{})},[research,props.active])
   const [showArchived, setShowArchived] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -119,8 +129,9 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   const tagOptions = [...new Set(filterTasks.flatMap((task) => task.tags))].sort()
   const activeRun = (task: ExperimentTask) => task.runs.find((run) => run.status === 'queued' || run.status === 'preparing' || run.status === 'running') ?? (task.status === 'paused' ? [...task.runs].reverse().find((run) => run.status === 'paused') : undefined)
 
-  const openEditor = (task?: ExperimentTask): void => {
+  const openEditor = (task?: ExperimentTask, asNewConfig = false): void => {
     const next = task ? structuredClone({
+      projectPreparation:task.projectPreparation,
       id: task.id, title: task.title, project: task.project, objective: task.objective,
       tags: task.tags, priority: task.priority, status: task.status, serverId: task.serverId,
       serverNameSnapshot: task.serverNameSnapshot, accessRouteId: task.accessRouteId,
@@ -131,18 +142,59 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       maximumGpuUtilizationPercent: task.maximumGpuUtilizationPercent,
       artifactPath: task.artifactPath, resultSummary: task.resultSummary, notes: task.notes
     }) : { ...initialDraft(), serverId: props.defaultServerId }
+    if (asNewConfig && task && ['queued', 'preparing', 'running'].includes(task.status)) {
+      next.id = undefined
+      next.status = 'planned'
+      next.title = `${task.title.slice(0, 150)} · 新配置`
+    }
     setEditor(next)
     setTagsText(next.tags.join(', '))
     setCondaEnabled(Boolean(next.condaEnvironment))
     setEnvs([])
+    setFullConfig(false)
+    fullConfigApply.current = null
+  }
+  const openFullConfig = (draft: ExperimentTaskDraft, apply: (draft: ExperimentTaskDraft) => void): void => {
+    fullConfigApply.current = apply
+    setFullConfig(true)
+    setEditor(structuredClone(draft))
+    setTagsText(draft.tags.join(', '))
+    setCondaEnabled(Boolean(draft.condaEnvironment))
+    setEnvs([])
+  }
+  const closeEditor = (): void => {
+    setEditor(null)
+    setFullConfig(false)
+    fullConfigApply.current = null
+  }
+  const finishFullConfig = (): void => {
+    if (editor && fullConfigApply.current) {
+      const next: ExperimentTaskDraft = {
+        ...editor,
+        tags: [...new Set(tagsText.split(',').map(tag => tag.trim()).filter(Boolean))],
+        condaEnvironment: condaEnabled ? {
+          ...(editor.condaEnvironment ?? { manager: 'conda' as CondaManager }),
+          managerPath: editor.condaEnvironment?.managerPath?.trim() || undefined,
+          environmentName: editor.condaEnvironment?.environmentName?.trim() || undefined,
+          environmentPrefix: editor.condaEnvironment?.environmentPrefix?.trim() || undefined,
+          environmentFilePath: editor.condaEnvironment?.environmentFilePath?.trim() || undefined,
+          pythonInterpreterPath: editor.condaEnvironment?.pythonInterpreterPath?.trim() || undefined,
+          pythonVersion: editor.condaEnvironment?.pythonVersion?.trim() || undefined
+        } : undefined
+      }
+      fullConfigApply.current(structuredClone(next))
+    }
+    closeEditor()
   }
 
   useEffect(() => {
     const request = props.request
     if (!request) return
     setTab('pool')
+    setResearch(null)
     setSelectedRunId(request.runId ?? null)
     if (request.taskId) {
+      setSmart(null)
       const task = props.tasks.find((item) => item.id === request.taskId)
       setShowArchived(task?.archived ?? false)
       setQuery('')
@@ -154,10 +206,13 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       setInspectedTaskId(request.taskId)
       setExpandedTaskId(request.taskId)
       if (request.start) setPendingStartId(request.taskId)
-    } else {
+    } else if (request.gpu) {
+      setSmart(null)
       openEditor()
       setEditor({ ...initialDraft(), serverId: request.serverId, accessRouteId: request.accessRouteId,
-        gpuUuid: request.gpu?.uuid, gpuIndex: request.gpu?.index, gpuNameSnapshot: request.gpu?.name })
+        gpuUuid: request.gpu.uuid, gpuIndex: request.gpu.index, gpuNameSnapshot: request.gpu.name })
+    } else {
+      setSmart({ serverId: request.serverId, accessRouteId: request.accessRouteId })
     }
     props.onRequestHandled?.()
   }, [props.request?.id])
@@ -274,7 +329,6 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
         throw new Error('Conda 环境名和前缀路径只能填写一项')
       }
       if (draft.launchMode === 'script' && draft.scriptPath) validateExperimentScriptPath(draft.scriptPath)
-      let queueInput: ExperimentRunStartInput | undefined
       if (queueAfterSave) {
         const server = draft.serverId ? props.servers.find((item) => item.id === draft.serverId) : undefined
         if (!server || server.mode !== 'real') throw new Error('加入队列前请选择一台真实服务器')
@@ -283,34 +337,13 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
         if (draft.condaEnvironment && !draft.condaEnvironment.environmentName?.trim() && !draft.condaEnvironment.environmentPrefix?.trim()) {
           throw new Error('请填写 Conda 环境名或环境前缀路径')
         }
-        queueInput = {
-          serverId: server.id,
-          accessRouteId: selectedRouteId,
-          gpuUuid: draft.gpuUuid ?? null,
-          gpuIndex: draft.gpuIndex ?? null,
-          gpuNameSnapshot: draft.gpuNameSnapshot ?? null,
-          codePath: draft.codePath.trim(),
-          dataPath: draft.dataPath.trim(),
-          launchCommand: draft.launchCommand.trim(),
-          launchMode: draft.launchMode,
-          scriptPath: draft.scriptPath,
-          condaEnvironment: draft.condaEnvironment ? structuredClone(draft.condaEnvironment) : null,
-          artifactPath: draft.artifactPath.trim(),
-          minimumFreeVramGiB: draft.gpuUuid ? null : draft.minimumFreeVramGiB ?? null,
-          maximumGpuUtilizationPercent: draft.gpuUuid ? null : draft.maximumGpuUtilizationPercent ?? null,
-          notes: draft.notes.trim()
-        }
       }
       const saved = await window.labApi.experiments.save(draft)
-      if (queueInput) {
-        const queued = await window.labApi.experiments.startRun(saved.id, queueInput)
-        props.onChanged(queued)
-        props.notify(queueInput.gpuUuid ? `已请求在 GPU ${queueInput.gpuIndex} 上启动任务` : '任务已加入队列；系统会按显存和 GPU 利用率条件自动分配')
-      } else {
-        props.onChanged(saved)
-        props.notify('实验任务已保存')
-      }
-      setEditor(null)
+      props.onChanged(saved)
+      closeEditor()
+      setInspectedTaskId(saved.id)
+      props.notify('实验草稿已保存')
+      if (queueAfterSave) await startTask(saved)
     } catch (error) {
       props.notify(error instanceof Error ? error.message : '无法保存实验任务', 'error')
     } finally {
@@ -464,6 +497,8 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       return
     }
     try {
+      const issue=projectLaunchIssue(runDraft)
+      if(issue)throw new Error(issue)
       resolveExperimentLaunch(runDraft)
     } catch (error) {
       props.notify(error instanceof Error ? error.message : '启动配置无效', 'error')
@@ -658,11 +693,38 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   }
 
   return <div className="experiment-pool-page">
+    {smart ? <SmartCreatePage
+      active={props.active}
+      tasks={props.tasks}
+      servers={props.servers}
+      modelEnabled={modelEnabled}
+      seed={smart}
+      onModelSettings={props.onModelSettings}
+      onExit={() => setSmart(null)}
+      onManualCreate={() => {
+        const seedServer = smart.serverId, seedRoute = smart.accessRouteId
+        setSmart(null)
+        openEditor()
+        if (seedServer) setEditor(current => current ? { ...current, serverId: seedServer, accessRouteId: seedRoute } : current)
+      }}
+      onChanged={props.onChanged}
+      onCreated={(task, start) => {
+        setSmart(null)
+        setInspectedTaskId(task.id)
+        setExpandedTaskId(task.id)
+        if (start) void startTask(task)
+      }}
+      onOpenTask={(task) => { setSmart(null); setInspectedTaskId(task.id); setExpandedTaskId(task.id) }}
+      onEditFullConfig={openFullConfig}
+      notify={props.notify} confirm={props.confirm} onTrusted={props.onTrusted}
+    /> : <>
     <div className="experiment-pool-tabs" role="tablist" aria-label="我的任务视图">
       <button type="button" role="tab" aria-selected={tab === 'pool'} className={tab === 'pool' ? 'active' : ''} onClick={() => setTab('pool')}><ListTodo size={16} />实验任务池<span>{props.tasks.filter((task) => !task.archived).length}</span></button>
       <button type="button" role="tab" aria-selected={tab === 'live'} className={tab === 'live' ? 'active' : ''} onClick={() => setTab('live')}><Cpu size={16} />GPU 实时进程<span>{props.liveTaskCount}</span></button>
     </div>
     {tab === 'live' ? props.liveTasks : <>
+    {research ? <section className="task-research-workspace"><header className="project-research-heading"><button className="secondary-button" onClick={()=>setResearch(null)}>返回实验任务</button><h2>对照实验</h2><span>基于任务配置展开参数，确认后创建对照组。</span></header><ResearchPage key={research.taskId+':'+research.campaignId} tasks={props.tasks} servers={props.servers} modelEnabled={modelEnabled} initialTaskId={research.taskId} initialCampaignId={research.campaignId} onChanged={props.onChanged} onOpenTask={(task,runId)=>{setResearch(null);setInspectedTaskId(task.id);setSelectedRunId(runId??null);props.onOpenTask?.(task,runId)}} confirm={props.confirm} notify={props.notify}/></section> : <>
+
       <section className="experiment-pool-overview">
         <div><div className="experiment-pool-icon"><ListTodo size={19} /></div><span>待开始<strong>{props.tasks.filter((task) => !task.archived && task.status === 'planned').length}</strong></span></div>
         <div><div className="experiment-pool-icon running"><Play size={18} /></div><span>排队 / 运行 / 暂停<strong>{activeCount}</strong></span></div>
@@ -687,8 +749,8 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               </div>
             </details>
             <button type="button" className="secondary-button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{showArchived ? '返回任务池' : '已归档'}</button>
-            {!showArchived && props.onReadRepository && <button type="button" className="secondary-button" onClick={() => props.onReadRepository?.()}>AI 阅读实验仓库</button>}
-            {!showArchived && <button type="button" className="primary-button" onClick={() => openEditor()}><Plus size={16} />添加实验任务</button>}
+            {!showArchived && <button type="button" className="primary-button" onClick={() => setSmart({ serverId: props.defaultServerId })}><Sparkles size={16} />智能创建</button>}
+            {!showArchived && <button type="button" className="secondary-button" onClick={() => openEditor()}><Plus size={16} />手动创建</button>}
           </div>
         </div>
         {visibleTasks.length ? <div className="experiment-task-list">
@@ -753,14 +815,15 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
 
                     </div>
                   </details>
+                  <ProjectTaskEvidence draft={task}/>
                   {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次 · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{run.message}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
                   {task.status === 'failed' && failureRun && <div className="experiment-run-failure"><strong><CircleAlert size={14} />本次运行异常</strong><span>{failureRun.message || '任务进程异常结束'}</span>{failureRun.logPath && <span className="experiment-path" title={failureRun.logPath}>远程日志 · {failureRun.logPath}</span>}</div>}
                 </div>
                 <div className="experiment-task-actions">
                   {props.onDiagnose && failureRun && <button className="primary-button" onClick={() => props.onDiagnose?.(task, failureRun.id)}>诊断失败运行</button>}
-                  {props.onResearch && task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => props.onResearch?.(task)}>设计对照实验</button>}
-                  {props.onResearch && task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
-                  {props.onReadRepository && task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => props.onReadRepository?.(task)}>分析仓库启动方式</button>}
+                  {task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}
+                  {task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
+                  {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => openEditor(task, true)}>完善配置</button>}
                   {task.id === props.demoTaskId ? <p className="workflow-sim-note">模拟任务 · 使用上方演示控制条推进运行。</p> : <>
 
                   {!showArchived && !['queued', 'preparing', 'running'].includes(task.status) && <button type="button" className="primary-button" onClick={() => void startTask(task)} disabled={startingTaskId === task.id}><Play size={15} />{task.status === 'paused' ? '再次排队' : task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed' ? '再次排队' : '加入队列'}</button>}
@@ -787,28 +850,28 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                 </div>
               </div>
               <footer className="experiment-task-card-footer"><span>{task.runs.length} 次运行记录</span>{task.runs.length > 0 && <button type="button" onClick={() => setExpandedTaskId((current) => current === task.id ? null : task.id)}>{expandedTaskId === task.id ? '收起运行记录' : '查看运行记录'}</button>}</footer>
-              <TaskResearchPanel task={task} tasks={props.tasks} campaigns={props.campaigns ?? []} onOpenCampaign={props.onOpenCampaign} onOpenTask={props.onOpenTask} />
+              <TaskResearchPanel task={task} tasks={props.tasks} campaigns={props.campaigns ?? []} onOpenCampaign={campaign=>setResearch({taskId:campaign.sourceTaskId,campaignId:campaign.id})} onOpenTask={props.onOpenTask} />
               {expandedTaskId === task.id && <div className="experiment-run-history">{[...task.runs].reverse().map((item) => { const linked = reportForRun(props.reports ?? [], task.id, item.id); return <section data-run-id={item.id} className={`experiment-run-record ${item.status === 'failed' ? 'failed' : ''} ${selectedRunId === item.id ? 'workflow-selected-run' : ''}`} key={item.id}><header><strong>{item.status === 'failed' && <CircleAlert size={13} />}第 {item.number} 次运行</strong><span className={`experiment-status-pill ${item.status}`}>{statusNames[item.status]}</span><time>{item.startedAt ? new Date(item.startedAt).toLocaleString('zh-CN') : item.queuedAt ? `排队于 ${new Date(item.queuedAt).toLocaleString('zh-CN')}` : '时间未知'}{item.finishedAt ? ` — ${new Date(item.finishedAt).toLocaleString('zh-CN')}` : item.status === 'paused' ? ' — 已暂停' : item.status === 'queued' ? ' — 等待 GPU' : item.status === 'preparing' ? ' — 准备运行' : item.status === 'running' ? ' — 进行中' : ''}</time></header>{item.message && <p className={`experiment-run-message ${item.status === 'failed' ? 'failed' : ''}`}>{item.message}</p>}<div className="experiment-run-snapshot">{item.serverNameSnapshot && <span>服务器：{item.serverNameSnapshot}</span>}{item.gpuNameSnapshot && <span>GPU：{item.gpuNameSnapshot}{item.gpuIndex !== undefined ? ` · ${item.gpuIndex}` : ''}</span>}{item.codePath && <span>代码：{item.codePath}</span>}{item.dataPath && <span>数据：{item.dataPath}</span>}{item.condaEnvironment && <span>管理器：{item.condaEnvironment.manager}</span>}{item.condaEnvironment?.environmentName && <span>Conda：{item.condaEnvironment.environmentName}</span>}{item.condaEnvironment?.environmentPrefix && <span>Conda：{item.condaEnvironment.environmentPrefix}</span>}{item.condaEnvironment?.pythonVersion && <span>Python：{item.condaEnvironment.pythonVersion}</span>}{item.condaEnvironment?.pythonInterpreterPath && <span>解释器：{item.condaEnvironment.pythonInterpreterPath}</span>}{item.condaEnvironment?.environmentFilePath && <span>环境文件：{item.condaEnvironment.environmentFilePath}</span>}{item.artifactPath && <span>日志/模型：{item.artifactPath}</span>}{item.logPath && <span>运行日志：{item.logPath}</span>}</div>{item.launchMode === 'script' ? <p><strong>运行脚本：</strong>{item.scriptPath}</p> : item.launchCommand && <code className="experiment-run-command">{item.launchCommand}</code>}{item.resultSummary && <p><strong>结果：</strong>{item.resultSummary}</p>}{item.notes && <p><strong>备注：</strong>{item.notes}</p>}<div className="workflow-run-links">
                   {props.onDiagnose && item.status === 'failed' && <button className="secondary-button" onClick={() => props.onDiagnose?.(task, item.id)}>诊断第 {item.number} 次运行</button>}
                   {linked && <><span>{linked.retryRunId === item.id ? '修复运行 · ' : '已有诊断 · '}{linked.closure ? closureNames[linked.closure.status] : linked.findings[0]?.title}</span><button className="secondary-button" onClick={() => props.onOpenReport?.(linked)}>{linked.retryRunId === item.id ? '查看重试状态' : '查看诊断报告'}</button></>}
                 </div></section>})}</div>}
             </article>
           })}
-        </div> : <div className="experiment-task-empty"><ListTodo size={34} /><strong>{showArchived ? '还没有归档的任务' : '任务池还是空的'}</strong><span>先添加一个实验任务，再记录代码目录、数据位置和运行命令。</span>{!showArchived && <button type="button" className="primary-button" onClick={() => openEditor()}><Plus size={15} />创建第一个任务</button>}</div>}
+        </div> : <div className="experiment-task-empty"><ListTodo size={34} /><strong>{showArchived ? '还没有归档的任务' : '任务池还是空的'}</strong><span>用「智能创建」说明项目和目标，系统会准备一份可审查的实验方案；也可以直接手动填写配置。</span>{!showArchived && <div className="experiment-task-empty-actions"><button type="button" className="primary-button" onClick={() => setSmart({ serverId: props.defaultServerId })}><Sparkles size={15} />智能创建</button><button type="button" className="secondary-button" onClick={() => openEditor()}><Plus size={15} />手动创建</button></div>}</div>}
       </section>
     </>}
 
-    {editor && <div className="app-modal-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !condaBusy) setEditor(null) }}>
+    </>}
+
+    </>}
+
+    {editor && <div className="app-modal-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !condaBusy) closeEditor() }}>
       <section className="app-modal experiment-editor" role="dialog" aria-modal="true" aria-labelledby="experiment-editor-title">
-        <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><ListTodo size={19} /></div><div><h2 id="experiment-editor-title">{editor.id ? '编辑实验任务' : '添加实验任务'}</h2><p>填写服务器、代码目录、启动命令和可选 Conda 环境</p></div></div><button type="button" className="icon-button" onClick={() => setEditor(null)} aria-label="关闭" disabled={condaBusy}>×</button></header>
+        <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon">{fullConfig ? <SlidersHorizontal size={19} /> : <ListTodo size={19} />}</div><div><h2 id="experiment-editor-title">{fullConfig ? '编辑完整配置' : editor.id ? '编辑实验任务' : '手动创建实验'}</h2><p>{fullConfig ? '调整全部字段后返回方案；不会在这里创建任务' : '先完善配置并保存草稿，再选择资源启动实验'}</p></div></div><button type="button" className="icon-button" onClick={closeEditor} aria-label="关闭" disabled={condaBusy}>×</button></header>
         <div className="experiment-editor-body">
           {editor.gpuUuid && <div className="experiment-auto-gpu-note">指定运行设备：GPU {editor.gpuIndex} · {editor.gpuNameSnapshot}<button type="button" className="wb-text-button" onClick={() => updateDraft({ gpuUuid: undefined, gpuIndex: undefined, gpuNameSnapshot: undefined })}>改为自动分配</button></div>}
-          <div className="form-grid">
-            <label className="field field-wide"><span>任务名称 *</span><input autoFocus value={editor.title} maxLength={160} onChange={(event) => updateDraft({ title: event.target.value })} placeholder="例如：ResNet50 消融实验" /></label>
-            <label className="field"><span>项目/课题</span><input value={editor.project ?? ''} onChange={(event) => updateDraft({ project: event.target.value })} placeholder="项目名称" /></label>
-            <label className="field"><span>优先级</span><select value={editor.priority} onChange={(event) => updateDraft({ priority: event.target.value as ExperimentTaskDraft['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label>
-            <label className="field field-wide"><span>实验目标</span><textarea value={editor.objective ?? ''} onChange={(event) => updateDraft({ objective: event.target.value })} placeholder="记录假设、对比项或预期指标" rows={2} /></label>
-            <label className="field"><span>目标服务器</span><select value={editor.serverId ?? ''} disabled={condaBusy} onChange={async (event) => {
+          <div className="form-grid project-source-fields">            <label className="field field-wide"><span>实验目标</span><textarea value={editor.objective ?? ''} onChange={(event) => updateDraft({ objective: event.target.value })} placeholder="记录假设、对比项或预期指标" rows={2} /></label>
+            <label className="field"><span>目标服务器</span><select value={editor.serverId ?? ''} disabled={condaBusy || fullConfig} onChange={async (event) => {
               const server = props.servers.find((item) => item.id === event.target.value)
               if (editor.serverId !== server?.id && (editor.codePath || editor.dataPath)) {
                 const accepted = await props.confirm({
@@ -829,10 +892,8 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               updateDraft({ serverId: server?.id, serverNameSnapshot: server?.name, accessRouteId: server ? getDefaultAccessRouteId(server) : undefined, gpuUuid: undefined, gpuIndex: undefined, gpuNameSnapshot: undefined, condaEnvironment })
               setEnvs([])
             }}><option value="">暂不指定</option>{editor.serverId && !props.servers.some((server) => server.id === editor.serverId) && <option value={editor.serverId} disabled>{editor.serverNameSnapshot ?? '已删除的服务器'} · 已删除（仅保留历史）</option>}{props.servers.map((server) => <option key={server.id} value={server.id}>{server.name}{server.mode === 'demo' ? ' · 演示' : ''}</option>)}</select></label>
-            <div className="field"><span>GPU 分配方式</span><div className="experiment-auto-gpu-note"><Cpu size={15} /><span>开始运行时可指定 GPU 立即启动；自动队列按显存与利用率筛选</span></div></div>
-            <label className="field"><span>最低空闲显存（GiB，可选）</span><input type="number" min="0.1" max="1024" step="0.5" value={editor.minimumFreeVramGiB ?? ''} onChange={(event) => updateDraft({ minimumFreeVramGiB: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动分配时，仅选择空闲显存达到此值的 GPU。</small></label>
-            <label className="field"><span>最高 GPU 利用率（%，可选）</span><input type="number" min="0" max="100" step="1" value={editor.maximumGpuUtilizationPercent ?? ''} onChange={(event) => updateDraft({ maximumGpuUtilizationPercent: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动分配时，只选当前利用率不高于此值的 GPU；可与显存条件同时使用。</small></label>
-            {selectedServer && selectedRouteId && <div className="field field-wide"><span>连接路径</span><AccessRouteSelect server={selectedServer} value={selectedRouteId} onChange={(routeId) => {
+            {fullConfig && <small className="field-help field-wide">完整配置保留本次项目分析使用的服务器与连接路径；需要更换请返回任务池重新智能创建。</small>}
+            {selectedServer && selectedRouteId && getAccessRoutes(selectedServer).length>1 && <div className="field field-wide"><span>连接路径</span><AccessRouteSelect server={selectedServer} value={selectedRouteId} disabled={fullConfig} onChange={(routeId) => {
               if (routeId !== selectedRouteId) {
                 const condaEnvironment = editor.condaEnvironment ? {
                   ...editor.condaEnvironment,
@@ -846,16 +907,27 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                 setEnvs([])
               }
             }} /></div>}
+</div>
+          <div className="project-config-heading"><h3>实验配置</h3><span>可在这里直接修改；保存时才创建任务</span></div>
+          <div className="form-grid">
+            <label className="field field-wide"><span>任务名称 *</span><input autoFocus={!fullConfig} value={editor.title} maxLength={160} onChange={(event) => updateDraft({ title: event.target.value })} placeholder="例如：ResNet50 消融实验" /></label>
+            <label className="field"><span>项目/课题</span><input value={editor.project ?? ''} onChange={(event) => updateDraft({ project: event.target.value })} placeholder="项目名称" /></label>
+            <label className="field"><span>优先级</span><select value={editor.priority} onChange={(event) => updateDraft({ priority: event.target.value as ExperimentTaskDraft['priority'] })}><option value="low">低</option><option value="normal">普通</option><option value="high">高</option></select></label>
             <label className="field field-wide"><span>启动方式</span><select aria-label="任务启动方式" value={editor.launchMode ?? 'command'} onChange={(event) => updateDraft({ launchMode: event.target.value as 'command' | 'script' })}><option value="command">输入命令</option><option value="script">运行 .sh 脚本</option></select></label>
             <label className="field field-wide"><span>{editor.launchMode === 'script' ? '代码目录（可选，默认脚本所在目录）' : '代码目录（远程绝对路径）'}</span><input value={editor.codePath} onChange={(event) => updateDraft({ codePath: event.target.value })} placeholder={editor.launchMode === 'script' ? '留空使用脚本所在目录' : '/home/user/project'} /></label>
-            <label className="field field-wide"><span>数据目录（远程绝对路径，可在 NAS）</span><input value={editor.dataPath} onChange={(event) => updateDraft({ dataPath: event.target.value })} placeholder="/mnt/nas/datasets/experiment" /></label>
+            {commandDataPath(editor.launchCommand) && editor.dataPath.trim() && commandDataPath(editor.launchCommand)!.path!==editor.dataPath.trim() && <div className="project-inline-warning field-wide">数据目录与命令参数不同：<code>{commandDataPath(editor.launchCommand)!.path}</code><div className="project-assistant-actions"><button type="button" className="wb-text-button" onClick={()=>updateDraft({launchCommand:syncCommandDataPath(editor.launchCommand,editor.dataPath.trim())})}>同步数据目录到命令</button><button type="button" className="wb-text-button" onClick={()=>updateDraft({dataPath:commandDataPath(editor.launchCommand)!.path})}>使用命令中的路径</button></div></div>}
+            <label className="field field-wide"><span>数据目录（远程绝对路径，可在 NAS）</span><input value={editor.dataPath} onChange={(event) => updateDraft({ dataPath: event.target.value })} placeholder="/mnt/nas/datasets/experiment" />{editor.projectPreparation?.questions.filter(q=>/数据|dataset/i.test(q)).map((q,i)=><small className="project-inline-warning" key={i}>{q}</small>)}</label>
             {editor.launchMode === 'script'
               ? <label className="field field-wide"><span>.sh 脚本（服务器上的绝对路径）</span><input aria-label="任务脚本路径" value={editor.scriptPath ?? ''} onChange={(event) => updateDraft({ scriptPath: event.target.value })} placeholder="/home/user/project/train.sh" /></label>
-              : <label className="field field-wide"><span>启动命令</span><textarea className="experiment-command-input" value={editor.launchCommand} onChange={(event) => updateDraft({ launchCommand: event.target.value })} placeholder="python train.py --config configs/base.yaml" rows={3} /></label>}
+              : <label className="field field-wide"><span>启动命令</span><textarea className="experiment-command-input" value={editor.launchCommand} onChange={(event) => updateDraft({ launchCommand: event.target.value })} placeholder="python train.py --config configs/base.yaml" rows={3} /><small className="field-help">{!editor.launchCommand.trim()?'启动命令尚未填写，可以先保存草稿。':projectLaunchIssue(editor)||'保存后选择资源，确认后才会运行。'}</small>{editor.projectPreparation?.questions.filter(q=>/入口|命令|参数|配置/.test(q)).map((q,i)=><small className="project-inline-warning" key={i}>{q}</small>)}</label>}
             <label className="field field-wide"><span>结果摘要</span><textarea value={editor.resultSummary ?? ''} onChange={(event) => updateDraft({ resultSummary: event.target.value })} placeholder="记录任务最近的结论" rows={2} /></label>
             <label className="field field-wide"><span>日志/模型文件路径（服务器上的绝对路径）</span><input value={editor.artifactPath ?? ''} onChange={(event) => updateDraft({ artifactPath: event.target.value })} placeholder="/home/user/project/runs/exp-01" /></label>
             <label className="field field-wide"><span>标签（逗号分隔）</span><input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="baseline, ablation, paper" /></label>
           </div>
+          <details className="project-task-evidence"><summary>运行资源偏好（可选）</summary><div className="form-grid">            <div className="field"><span>GPU 分配方式</span><div className="experiment-auto-gpu-note"><Cpu size={15} /><span>开始运行时可指定 GPU 立即启动；自动队列按显存与利用率筛选</span></div></div>
+            <label className="field"><span>最低空闲显存（GiB，可选）</span><input type="number" min="0.1" max="1024" step="0.5" value={editor.minimumFreeVramGiB ?? ''} onChange={(event) => updateDraft({ minimumFreeVramGiB: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动分配时，仅选择空闲显存达到此值的 GPU。</small></label>
+            <label className="field"><span>最高 GPU 利用率（%，可选）</span><input type="number" min="0" max="100" step="1" value={editor.maximumGpuUtilizationPercent ?? ''} onChange={(event) => updateDraft({ maximumGpuUtilizationPercent: event.target.value === '' ? undefined : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动分配时，只选当前利用率不高于此值的 GPU；可与显存条件同时使用。</small></label>
+</div></details>
           <section className="experiment-conda-section">
             <label className="experiment-conda-toggle"><input type="checkbox" checked={condaEnabled} disabled={condaBusy} onChange={(event) => { setCondaEnabled(event.target.checked); if (event.target.checked && !editor.condaEnvironment) updateConda({ manager: 'conda' }) }} /><span><strong>配置 Conda 环境</strong><small>自动读取服务器上已有的环境，选择后运行任务会使用该环境。</small></span></label>
             {condaEnabled && <div className="experiment-conda-fields form-grid">
@@ -873,9 +945,10 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               {editor.condaEnvironment?.lastCheckStatus && <p className="experiment-conda-python field-wide">最近检查：{editor.condaEnvironment.lastCheckStatus === 'found' ? '环境存在' : editor.condaEnvironment.lastCheckStatus === 'missing' ? '环境不存在' : '状态未知'}{editor.condaEnvironment.lastCheckedAt ? ` · ${new Date(editor.condaEnvironment.lastCheckedAt).toLocaleString('zh-CN')}` : ''}{editor.condaEnvironment.pythonVersion ? ` · Python ${editor.condaEnvironment.pythonVersion}` : ''}</p>}
             </div>}
           </section>
+          <ProjectTaskEvidence draft={{...editor,condaEnvironment:condaEnabled?editor.condaEnvironment:undefined}}/>
           <label className="field experiment-notes-field"><span>备注</span><textarea value={editor.notes ?? ''} onChange={(event) => updateDraft({ notes: event.target.value })} rows={2} placeholder="记录实验条件或注意事项" /></label>
         </div>
-        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => setEditor(null)} disabled={condaBusy}>取消</button><button type="button" className="secondary-button" onClick={() => void saveTask(false)} disabled={saving || condaBusy || !editor.title.trim()}>保存草稿</button><button type="button" className="primary-button" onClick={() => void saveTask(true)} disabled={saving || condaBusy || !editor.title.trim() || ['queued', 'preparing', 'running'].includes(editor.status)}>{saving ? '保存中…' : '保存并排队'}</button></footer>
+        <footer className="dialog-footer app-modal-footer">{fullConfig ? <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="primary-button" onClick={finishFullConfig} disabled={condaBusy}>完成编辑</button></> : <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="secondary-button" onClick={() => void saveTask(false)} disabled={saving || condaBusy || !editor.title.trim()}>保存草稿</button><button type="button" className="primary-button" onClick={() => void saveTask(true)} disabled={saving || condaBusy || !editor.title.trim() || ['queued', 'preparing', 'running'].includes(editor.status)}>{saving ? '保存中…' : '创建并选择资源'}</button></>}</footer>
       </section>
     </div>}
 
@@ -908,7 +981,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
             <label className="field"><span>最高 GPU 利用率（%）</span><input type="number" min="0" max="100" step="1" value={runDraft.maximumGpuUtilizationPercent ?? ''} disabled={manuallySelectedGpu} onChange={(event) => updateRunDraft({ maximumGpuUtilizationPercent: event.target.value === '' ? null : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动模式只选利用率不高于此值的 GPU。</small></label>
             <label className="field field-wide"><span>本次启动方式</span><select aria-label="本次启动方式" value={runDraft.launchMode ?? 'command'} onChange={(event) => updateRunDraft({ launchMode: event.target.value as 'command' | 'script' })}><option value="command">输入命令</option><option value="script">运行 .sh 脚本</option></select></label>
             <label className="field field-wide"><span>{runDraft.launchMode === 'script' ? '本次代码目录（可选，默认脚本所在目录）' : '本次代码目录'}</span><input value={runDraft.codePath} onChange={(event) => updateRunDraft({ codePath: event.target.value })} placeholder={runDraft.launchMode === 'script' ? '留空使用脚本所在目录' : '/home/user/project'} /></label>
-            <label className="field field-wide"><span>本次数据目录</span><input value={runDraft.dataPath} onChange={(event) => updateRunDraft({ dataPath: event.target.value })} placeholder="/mnt/nas/datasets/experiment" /></label>
+            <label className="field field-wide"><span>本次数据目录</span><input value={runDraft.dataPath} onChange={(event) => updateRunDraft({ dataPath: event.target.value })} placeholder="/mnt/nas/datasets/experiment" />{starting.projectPreparation?.questions.filter(q=>/数据|dataset/i.test(q)).map((q,i)=><small className="project-inline-warning" key={i}>{q}</small>)}</label>
             {runDraft.launchMode === 'script'
               ? <label className="field field-wide"><span>本次 .sh 脚本（服务器上的绝对路径）</span><input aria-label="本次脚本路径" value={runDraft.scriptPath ?? ''} onChange={(event) => updateRunDraft({ scriptPath: event.target.value })} placeholder="/home/user/project/train.sh" /></label>
               : <label className="field field-wide"><span>本次启动命令</span><textarea className="experiment-command-input" rows={3} value={runDraft.launchCommand} onChange={(event) => updateRunDraft({ launchCommand: event.target.value })} placeholder="python train.py --config configs/base.yaml" /></label>}

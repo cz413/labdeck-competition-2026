@@ -55,3 +55,37 @@ describe('repository request budget and cancellation',()=>{
     expect(mocks.request).toHaveBeenCalledTimes(1);expect(close).toHaveBeenCalled();expect(mocks.read).not.toHaveBeenCalled()
   })
 })
+
+describe('task project preparation requests',()=>{
+  it('returns evidence without persisting a workflow or a task, and carries its progress id',async()=>{
+    const {service}=setup(),events:unknown[]=[]
+    Object.assign(service,{onRepositoryProgress:(id:string,event:unknown)=>events.push({id,event})})
+    mocks.request.mockResolvedValueOnce({action:'done'}).mockResolvedValueOnce(answer)
+    const id='33333333-3333-4333-8333-333333333333'
+    const result=await service.prepareProject(input,id)
+    expect(result.launchCommand).toBe('python train.py')
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.every(e=>(e as {id:string}).id===id)).toBe(true)
+    // The fixture store has no workflow/save methods: accidental persistence would fail this call.
+  })
+  it('cancels the exact request and can start a new request afterwards',async()=>{
+    const {service,close}=setup(),id='33333333-3333-4333-8333-333333333333'
+    let started!:()=>void
+    const ready=new Promise<void>(resolve=>{started=resolve})
+    mocks.request.mockImplementationOnce(async(_s,_k,_p,_i,signal:AbortSignal)=>{started();return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))})
+    const pending=service.prepareProject(input,id)
+    const failed=expect(pending).rejects.toThrow('已取消项目分析')
+    await ready;service.cancelProjectPreparation(id);await failed
+    expect(close).toHaveBeenCalled();expect(mocks.request).toHaveBeenCalledTimes(1)
+    mocks.request.mockResolvedValueOnce({action:'done'}).mockResolvedValueOnce(answer)
+    await expect(service.prepareProject(input,id)).resolves.toMatchObject({launchCommand:'python train.py'})
+  })
+  it('rejects duplicate request ids and aborts pending work on shutdown',async()=>{
+    const {service}=setup(),id='33333333-3333-4333-8333-333333333333'
+    let started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve})
+    mocks.request.mockImplementationOnce(async(_s,_k,_p,_i,signal:AbortSignal)=>{started();return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))})
+    const pending=service.prepareProject(input,id),failed=expect(pending).rejects.toThrow()
+    await ready;await expect(service.prepareProject(input,id)).rejects.toThrow('正在进行中')
+    service.stopTracking();await failed
+  })
+})

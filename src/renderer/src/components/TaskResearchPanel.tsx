@@ -20,8 +20,8 @@ export function TaskResearchPanel(props: Props): React.JSX.Element | null {
   const related = props.campaigns.filter(c => c.sourceTaskId === props.task.id || c.members.some(m => m.taskId === props.task.id))
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
   if (!related.length) return null
-  return <section className="task-research-panel" aria-label="关联的智能实验">
-    <h3>智能实验记录 <span>{related.length} 个对照批次</span></h3>
+  return <section className="task-research-panel" aria-label="关联的对照实验">
+    <h3>对照实验与结果 <span>{related.length} 个对照批次</span></h3>
     {related.map(campaign => {
       const source = campaign.sourceTaskId === props.task.id
       const parent = props.tasks.find(t => t.id === campaign.sourceTaskId)

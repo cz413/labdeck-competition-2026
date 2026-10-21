@@ -10,9 +10,10 @@ interface AccessRouteSelectProps {
   compact?: boolean
   label?: string
   showSingleRoute?: boolean
+  disabled?: boolean
 }
 
-export function AccessRouteSelect({ server, value, onChange, compact = false, label, showSingleRoute = false }: AccessRouteSelectProps): React.JSX.Element | null {
+export function AccessRouteSelect({ server, value, onChange, compact = false, label, showSingleRoute = false, disabled = false }: AccessRouteSelectProps): React.JSX.Element | null {
   const routes = getAccessRoutes(server)
   const selectedRoute = getAccessRoute(server, value)
   const [open, setOpen] = useState(false)
@@ -58,7 +59,8 @@ export function AccessRouteSelect({ server, value, onChange, compact = false, la
       aria-haspopup="listbox"
       aria-expanded={open}
       aria-controls={menuId}
-      title="选择这台服务器的连接路径"
+      title={disabled ? '本次项目分析固定了连接路径' : '选择这台服务器的连接路径'}
+      disabled={disabled}
       onClick={() => setOpen((current) => !current)}
     >
       <i className="access-route-indicator" aria-hidden="true" />

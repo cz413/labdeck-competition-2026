@@ -1,3 +1,33 @@
+# 2026-10-21 实验任务智能创建准备视图
+
+- `npm run typecheck`：main / preload / shared 与 renderer 类型检查通过。
+- `npm test`：37 个测试文件，355 项通过，无跳过。
+- `npm run build`：源码生产构建通过；未执行打包命令。
+- 新增 `src/shared/experiment-plan.test.ts`（18 项）：覆盖项目信号、相关文件默认范围、方案生成、训练/评估入口切换、来源标记、缺口集中追问、数据路径与命令同步、自然语言修改、环境选择、参数修改、验证流程缩减、手动字段保留与冲突。
+- 新增 `src/renderer/src/components/SmartCreatePage.test.tsx`：首屏只包含项目位置与实验目的，不渲染任务名称、数据目录或完整配置。
+- 新增 `vitest.config.ts`，让渲染层测试复用 `@shared` / `@renderer` 别名。
+- `scripts/verify-smart-create.cjs` 与重写后的 `scripts/verify-task-creation.cjs` 覆盖新入口、方案卡片、缺口追问、增量修改与撤销、完整配置往返、保存草稿、资源弹窗、任务池返回和手动创建回归。本环境无法启动 Electron 主进程（`app.whenReady` 退出异常），本轮未执行这两个 Electron 联调；需在可启动 Electron 窗口的桌面环境运行 `npm run verify:smart-create` 与 `npm run verify:task-creation` 后补充结果。
+- 使用 **headless Chrome 155 + CDP** 加载本地 Vite harness（隔离数据、模拟模型 / SSH）执行了从真实 `ExperimentTaskPool` 进入智能创建的界面联调：任务池入口、首屏只含项目与意图、一次点击完成检查/环境/分析、理解进度、四张方案卡片、数据缺口与命令同步、服务器环境选择、手动字段冲突选择、自然语言修改与撤销、评估入口切换（命令/标题/目标同步）、只读重新核对、完整配置（锁定分析服务器并返回方案，不创建任务）、保存草稿不启动、创建并选择资源复用草稿并打开既有 GPU 弹窗（`startRun=0`）、手动创建入口，全部通过；另以独立视图检查了浅色布局无横向溢出。报告：`artifacts/smart-create-pool-verification.json`、`artifacts/smart-create-browser-verification.json`；截图：`docs/screenshots/smart-create-start-dark.png`、`smart-create-progress-dark.png`、`smart-create-plan-dark.png`、`smart-create-plan-light.png`。该 harness 位于本地 `tmp/`（已忽略），不随仓库发布。
+- 本轮未打包，未连接真实模型、SSH 服务器或 GPU 训练。真实模型对项目的理解质量仍需在实际仓库验证。
+
+---
+
+# 上一轮：实验任务内项目创建与对照入口调整
+
+- `npm test`：35 个测试文件，336 项通过，无跳过。
+- `npm run build`：Node/renderer TypeScript 检查和源码生产构建通过；未执行任何打包命令。
+- `node scripts/run-electron-check.cjs scripts/verify-task-creation.cjs --no-sandbox`：真实 Electron、preload/IPC，模拟模型与 SSH。覆盖撤下独立导航、模型设置往返保留草稿、取消不重试、改源后忽略旧结果、建议应用到同一编辑器、路径显式同步、不完整草稿保存、更新现有草稿不重复建任务、保存后资源确认、完善排队任务生成新配置、任务内对照入口及深浅/紧凑布局。该脚本的 startRun 调用为 0。
+- 任务创建报告：`artifacts/task-creation-verification.json`；截图在报告的 `testData` 目录。
+- `node scripts/run-electron-check.cjs scripts/verify-research.cjs --no-sandbox`：迁入任务后的完整对照链路通过。真实 LangGraph 与仓颉参数引擎；模拟模型/SSH。覆盖取消确认不提交、确认后提交 4 项、检查点恢复、无重复提交、结果采集/比较、重新采集、下一批建议审查与演示隔离。报告 `artifacts/research-ui-verification.json`。
+- 对照测试基准命令包含 `--seed 42`，与服务仅建议已声明参数的约束一致。
+- 新增单元覆盖：项目依据随任务保存/重载、旧记录兼容、分析请求取消和关闭、重复请求 id、检查范围失效、绝对/相对代码目录、数据路径引号/空格/单引号与显式同步。
+- 页面验证使用隔离数据目录，不操作用户的实际任务和服务器。尚需用户在源码目录中验证真实模型配置与实际远程项目。
+- 旧独立页面联调脚本 `verify:intelligence`、`verify:workflow` 保留历史参考，本轮入口说明以 [任务创建流程](TASK-CREATION.md) 为准。
+
+---
+
+以下为此前轮次记录，其中发布包和旧界面验证结果不代表本轮重新打包或重测。
+
 # 2026-10-21 仓颉兼容修复与智能实验优化验证
 
 环境：Windows x64（10.0.26200）、Node.js 22。
