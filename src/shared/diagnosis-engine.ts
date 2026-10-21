@@ -16,13 +16,15 @@ export function redactSecrets(text: string): string {
 
 export function logEvidence(raw: string): { logExcerpt: string; evidence: Evidence[]; clipped: boolean } {
   const clipped = raw.length > 65_536 || raw.split(/\r?\n/).length > 240
-  const logExcerpt = redactSecrets(raw).slice(-65_536).split(/\r?\n/).slice(-240).join('\n')
+  const logExcerpt = redactSecrets(raw.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')).slice(-65_536).split(/\r?\n/).slice(-240).join('\n')
   const evidence = logExcerpt.split('\n').flatMap((text, i): Evidence[] => text.trim() ? [{ id: `log-${i + 1}`, source: 'log', label: `日志片段第 ${i + 1} 行`, line: i + 1, text: text.slice(0, 1500) }] : [])
   return { logExcerpt, evidence, clipped }
 }
 
 export function diagnoseEvidence(evidence: Evidence[]): Finding[] {
   const rules: {category: string; pattern: RegExp; title: string; explanation: string; steps: string[]}[] = [
+    { category: 'interpreter', pattern: /(?:^|[\s:])python(?:3(?:\.\d+)?)?:\s*(?:command not found|not found)/i, title: '本次启动环境中找不到 Python', explanation: '日志直接表明本次启动时无法找到 Python 命令；这不等于服务器未安装 Python。所选 Conda 环境是否生效、解释器位置及 PATH 仍需核对。', steps: ['检查这次运行记录中的 Conda 环境是否为预期环境，而不仅是当前任务的配置。', '核对该环境的 Python 解释器路径及 Conda 管理器路径。', '确认解释器可用后修正任务环境并创建新运行；不要仅凭此报错安装 Python。'] },
+    { category: 'arguments', pattern: /(?:error:\s*)?(?:unrecognized arguments:|the following arguments are required:)/i, title: '启动参数不符合脚本要求', explanation: '日志表明脚本拒绝了未知参数，或缺少必填参数。训练尚未按预期开始，需根据报错和脚本实际参数核对命令。', steps: ['根据日志中的参数名称确认是未知参数还是缺少必填参数。', '对照项目运行说明或脚本参数定义修改命令，不猜测替代参数名。', '保存任务配置后创建新运行。'] },
     { category: 'oom', pattern: /CUDA out of memory|torch\.OutOfMemoryError|CUDA_ERROR_OUT_OF_MEMORY/i, title: '训练触发 GPU 显存不足', explanation: '日志明确包含显存分配失败。仅凭这条日志不能区分参数过大、显存碎片或其他进程竞争，需要结合失败时的资源记录判断。', steps: ['核对失败时 GPU 占用；当前资源快照只代表检查时刻。', '若启动命令明确包含 batch size，可减小后创建新运行。', '仍失败时，检查输入尺寸、梯度累积与混合精度配置。'] },
     { category: 'dependency', pattern: /ModuleNotFoundError:\s*No module named|ImportError:\s*cannot import name/i, title: '当前环境的依赖导入失败', explanation: '日志中的 Python 导入错误指向缺少依赖或依赖版本不兼容。应先确认实际解释器与所选环境一致。', steps: ['核对实际 Python 解释器与 Conda 环境。', '查看项目 requirements 或 environment 文件，确认依赖及版本。', '在独立环境中安装或调整依赖，再通过实验任务创建一次运行。'] },
     { category: 'path', pattern: /FileNotFoundError|No such file or directory|NotADirectoryError/i, title: '运行引用的文件或目录不可用', explanation: '日志报告路径无法访问。可能是路径错误、数据尚未准备或相对路径依赖当前工作目录。', steps: ['根据日志中的具体路径检查文件是否存在。', '核对代码目录、数据目录和启动命令中的路径。', '修正配置后通过实验任务重新运行。'] },
