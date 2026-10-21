@@ -38,7 +38,7 @@ const system = `你是科研实验诊断助手。根据可验证证据选择必�
 证据足够或预算用尽时：{"action":"final","summary":"概述","findings":[{"category":"类别","title":"结论","confidence":"high|medium|low","explanation":"区分事实与推测","evidenceIds":["实际证据ID"],"steps":["可验证的下一步"]}]}。
 只调用提供的工具及其列出的参数，不输出 Shell 命令或新的工具。每个检查和结论都必须引用已给出的证据 ID。
 每轮最多两个检查，总共最多四个检查；请求次数以 budget 为准。优先用现有证据完成判断，同一检查不能重复。finalOnly=true 时必须返回 final，证据不足则明确缺失信息，不再请求检查。只有直接错误证据支持时才给 high 置信度。
-当前 GPU/环境信息描述检查时刻，不能证明失败发生时的状态；检查失败或不可用也不能证明目标不存在。所有修复建议需要实际验证。`
+当前 GPU/环境信息描述检查时刻，不能证明失败发生时的状态；检查失败或不可用也不能证明目标不存在。所有修复建议需要实际验证。围绕一个主要故障形成结论，只引用直接支持该结论的证据；服务器登录公告、存储使用提示不能作为故障依据。区分直接错误与根因，例如 python: command not found 只能证明本次启动环境找不到命令，不能证明服务器未安装 Python。建议应针对当前故障，不输出“配置模型后再分析”等通用模板。`
 
 export async function investigate(options:InvestigationOptions):Promise<InvestigationResult>{
   const evidence=[...options.evidence]

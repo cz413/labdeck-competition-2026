@@ -1,3 +1,5 @@
+import { TaskDiagnosisPanel } from './TaskDiagnosisPanel'
+import type { IntelligenceRequest } from '@shared/experiment-workflow'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Archive, ArchiveRestore, Ban, CheckCircle2, ChevronDown, CircleAlert, Code2, Cpu, FolderOpen, ListTodo, LoaderCircle, MoreHorizontal, Play, Plus, RotateCcw, Server, SlidersHorizontal, Sparkles, SquareTerminal, Trash2 } from 'lucide-react'
 import type {
@@ -100,6 +102,12 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   const [startingTaskId, setStartingTaskId] = useState<string | null>(null)
   const [cancelingRunId, setCancelingRunId] = useState<string | null>(null)
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null)
+  const [inlineDiagnosis,setInlineDiagnosis]=useState<IntelligenceRequest|null>(null)
+  function openInlineDiagnosis(task:ExperimentTask,runId:string,report?:DiagnosisReport):void{
+    if(task.id===props.demoTaskId){if(report)props.onOpenReport?.(report);else props.onDiagnose?.(task,runId);return}
+    const existing=report??reportForRun(props.reports??[],task.id,runId)
+    setInlineDiagnosis({id:crypto.randomUUID(),tab:'diagnosis',taskId:task.id,runId,reportId:existing?.id})
+  }
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const [inspectedTaskId, setInspectedTaskId] = useState<string | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
@@ -820,7 +828,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                   {task.status === 'failed' && failureRun && <div className="experiment-run-failure"><strong><CircleAlert size={14} />本次运行异常</strong><span>{failureRun.message || '任务进程异常结束'}</span>{failureRun.logPath && <span className="experiment-path" title={failureRun.logPath}>远程日志 · {failureRun.logPath}</span>}</div>}
                 </div>
                 <div className="experiment-task-actions">
-                  {props.onDiagnose && failureRun && <button className="primary-button" onClick={() => props.onDiagnose?.(task, failureRun.id)}>诊断失败运行</button>}
+                  {failureRun && (task.id !== props.demoTaskId || props.onDiagnose) && <button className="primary-button" onClick={() => openInlineDiagnosis(task, failureRun.id)}>分析失败原因</button>}
                   {task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}
                   {task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
                   {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => openEditor(task, true)}>完善配置</button>}
@@ -850,10 +858,11 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                 </div>
               </div>
               <footer className="experiment-task-card-footer"><span>{task.runs.length} 次运行记录</span>{task.runs.length > 0 && <button type="button" onClick={() => setExpandedTaskId((current) => current === task.id ? null : task.id)}>{expandedTaskId === task.id ? '收起运行记录' : '查看运行记录'}</button>}</footer>
+              {inlineDiagnosis?.taskId===task.id&&inlineDiagnosis.runId&&<TaskDiagnosisPanel key={inlineDiagnosis.id} task={task} runId={inlineDiagnosis.runId} reportId={inlineDiagnosis.reportId} onClose={()=>setInlineDiagnosis(null)} onChanged={props.onChanged} onEdit={()=>openEditor(task)} onOpenRun={runId=>{if(props.onOpenTask)props.onOpenTask(task,runId);else{setExpandedTaskId(task.id);setSelectedRunId(runId)}}} confirm={props.confirm}/>}
               <TaskResearchPanel task={task} tasks={props.tasks} campaigns={props.campaigns ?? []} onOpenCampaign={campaign=>setResearch({taskId:campaign.sourceTaskId,campaignId:campaign.id})} onOpenTask={props.onOpenTask} />
               {expandedTaskId === task.id && <div className="experiment-run-history">{[...task.runs].reverse().map((item) => { const linked = reportForRun(props.reports ?? [], task.id, item.id); return <section data-run-id={item.id} className={`experiment-run-record ${item.status === 'failed' ? 'failed' : ''} ${selectedRunId === item.id ? 'workflow-selected-run' : ''}`} key={item.id}><header><strong>{item.status === 'failed' && <CircleAlert size={13} />}第 {item.number} 次运行</strong><span className={`experiment-status-pill ${item.status}`}>{statusNames[item.status]}</span><time>{item.startedAt ? new Date(item.startedAt).toLocaleString('zh-CN') : item.queuedAt ? `排队于 ${new Date(item.queuedAt).toLocaleString('zh-CN')}` : '时间未知'}{item.finishedAt ? ` — ${new Date(item.finishedAt).toLocaleString('zh-CN')}` : item.status === 'paused' ? ' — 已暂停' : item.status === 'queued' ? ' — 等待 GPU' : item.status === 'preparing' ? ' — 准备运行' : item.status === 'running' ? ' — 进行中' : ''}</time></header>{item.message && <p className={`experiment-run-message ${item.status === 'failed' ? 'failed' : ''}`}>{item.message}</p>}<div className="experiment-run-snapshot">{item.serverNameSnapshot && <span>服务器：{item.serverNameSnapshot}</span>}{item.gpuNameSnapshot && <span>GPU：{item.gpuNameSnapshot}{item.gpuIndex !== undefined ? ` · ${item.gpuIndex}` : ''}</span>}{item.codePath && <span>代码：{item.codePath}</span>}{item.dataPath && <span>数据：{item.dataPath}</span>}{item.condaEnvironment && <span>管理器：{item.condaEnvironment.manager}</span>}{item.condaEnvironment?.environmentName && <span>Conda：{item.condaEnvironment.environmentName}</span>}{item.condaEnvironment?.environmentPrefix && <span>Conda：{item.condaEnvironment.environmentPrefix}</span>}{item.condaEnvironment?.pythonVersion && <span>Python：{item.condaEnvironment.pythonVersion}</span>}{item.condaEnvironment?.pythonInterpreterPath && <span>解释器：{item.condaEnvironment.pythonInterpreterPath}</span>}{item.condaEnvironment?.environmentFilePath && <span>环境文件：{item.condaEnvironment.environmentFilePath}</span>}{item.artifactPath && <span>日志/模型：{item.artifactPath}</span>}{item.logPath && <span>运行日志：{item.logPath}</span>}</div>{item.launchMode === 'script' ? <p><strong>运行脚本：</strong>{item.scriptPath}</p> : item.launchCommand && <code className="experiment-run-command">{item.launchCommand}</code>}{item.resultSummary && <p><strong>结果：</strong>{item.resultSummary}</p>}{item.notes && <p><strong>备注：</strong>{item.notes}</p>}<div className="workflow-run-links">
-                  {props.onDiagnose && item.status === 'failed' && <button className="secondary-button" onClick={() => props.onDiagnose?.(task, item.id)}>诊断第 {item.number} 次运行</button>}
-                  {linked && <><span>{linked.retryRunId === item.id ? '修复运行 · ' : '已有诊断 · '}{linked.closure ? closureNames[linked.closure.status] : linked.findings[0]?.title}</span><button className="secondary-button" onClick={() => props.onOpenReport?.(linked)}>{linked.retryRunId === item.id ? '查看重试状态' : '查看诊断报告'}</button></>}
+                  {item.status === 'failed' && (task.id !== props.demoTaskId || props.onDiagnose) && <button className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id)}>分析第 {item.number} 次运行</button>}
+                  {linked && <><span>{linked.retryRunId === item.id ? '修复运行 · ' : '已有诊断 · '}{linked.closure ? closureNames[linked.closure.status] : linked.findings[0]?.title}</span><button className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id, linked)}>{linked.retryRunId === item.id ? '查看重试状态' : '查看诊断报告'}</button></>}
                 </div></section>})}</div>}
             </article>
           })}

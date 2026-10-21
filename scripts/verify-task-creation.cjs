@@ -38,7 +38,7 @@ async function main(){
   if(calls.save!==1||calls.start||tasks.length!==1||tasks[0].runs.length||tasks[0].status!=='planned'||tasks[0].launchCommand!=='')throw new Error('Incomplete manual draft was not saved as a draft')
 
   await waitFor('!!document.querySelector(".experiment-task-card")');await click('完善配置','.experiment-task-card');await waitFor('!!document.querySelector(".experiment-editor")')
-  await setField('启动命令','python train.py --data /data/original');await click('创建并选择资源','.experiment-editor')
+  await setField('代码目录（远程绝对路径）','/workspace/manual');await setField('启动命令','python train.py --data /data/original');await click('创建并选择资源','.experiment-editor')
   await waitFor('!!document.querySelector("#experiment-run-start-title")')
   if(calls.start||tasks.length!==1||calls.save!==2)throw new Error('Resource handoff created a duplicate or started a run')
   await click('返回','.experiment-editor');await waitFor('!document.querySelector(".experiment-editor")')
