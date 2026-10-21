@@ -73,4 +73,4 @@ npm run dist:competition
 `npm run verify:research:package` 使用发布版 Electron 检查 ASAR 内的实际 LangGraph 运行、仓颉原生展开及预算限制，并核对构建文件。`@langchain/core` 显式列为运行依赖，保证打包器包含 LangGraph 所需的共享依赖。检查不启动应用调度器，也不连接真实服务器。
 
 
-0.6.0 本机验证详情见 [VALIDATION.md](VALIDATION.md)：实际 LangGraph、TypeScript 参数回退、结构化指标采集和 Electron 联调通过。仓颉启动自检失败，原生专项跳过并报告原因；严格验证命令 `npm run verify:cangjie` 会报错。当前结果不能作为仓颉运行成功或真实训练效果的证明。
+0.6.0 本机验证详情见 [VALIDATION.md](VALIDATION.md)：实际 LangGraph、仓颉原生参数展开、结构化指标采集和 Electron 联调通过。Windows loader 初始化问题已通过配套 1.0.5 运行时的本地兼容回移修复，严格验证命令 `npm run verify:cangjie` 通过。详见 CANGJIE-WINDOWS-FIX.md；模拟训练仍不代表真实训练效果。

@@ -1,0 +1,10 @@
+﻿{
+  "sdk": "1.0.5",
+  "fix": "windows-loader-920",
+  "upstream": "https://github.com/cangjielanguage/cangjie_runtime/commit/d28cbe02df27c53e278d69a26d9c326ba99bffc2",
+  "localUnsignedBackport": true,
+  "originalSha256": "14ff79293be6328393a0bee5d3d69b3023f3ba1bcac7cebda2dceb35b98cac6a",
+  "patchedSha256": "d3da85227242256d6b484914742191bacccf3dd47269f6845164ce879943b8bf",
+  "initRva": 106016,
+  "runningRva": 108912
+}

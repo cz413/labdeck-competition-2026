@@ -1,6 +1,16 @@
+import { RepositoryWorkflowService } from './repository-workflow'
+import { reviewRepositoryGuide } from './repository-review'
+import { selectDiagnosticLog } from './log-selection'
+import { createHash } from 'node:crypto'
+import type { ModelUsage } from '../shared/model-usage'
+import { sumModelUsage } from '../shared/model-usage'
+import { externalExperimentSchema, externalDraftSchema } from '../shared/external-experiment'
+import type { ExternalDraftInput } from '../shared/external-experiment'
+import { collectExternalLog } from './external-diagnosis'
 import { app, dialog, ipcMain, safeStorage } from 'electron'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
+import type { SFTPWrapper } from 'ssh2'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { investigate } from './diagnostic-agent'
@@ -12,16 +22,22 @@ import { applyAccessRoute, getAccessRoutes, getDefaultAccessRouteId } from '../s
 import { experimentRunStartInputSchema, experimentTaskDraftSchema } from '../shared/schemas'
 import type { ExperimentTask, ExperimentRun, ExperimentRunStartInput } from '../shared/types'
 import { modelSettingsSchema, requestModel, validateEndpoint } from './model-provider'
+import { readRepository, checkRepositoryLocations, findRepositoryDirectories, openRepositoryReadSession, inspectServerPaths } from './repository-reader'
+import { runRepositoryAgent } from './repository-agent'
+import { parseRepositoryCandidates } from './repository-discovery'
+import { repositoryGuidePrompt, parseRepositoryGuide, repositoryLaunchPaths, applyRepositoryChecks, fillLaunchFromReadme, resolveAutoAnsweredInputs } from './repository-analysis'
+import type { RepositoryAnalysisInput, RepositoryCandidate, RepositoryDirectoryView, RepositoryGuide, RepositoryProgress, RepositorySnapshot } from '../shared/repository-guide'
 import type { AppStore } from './store'
 import type { SshService } from './ssh-service'
 import type { MonitorService } from './monitor-service'
 import type { CondaService } from './conda-service'
 
-const diagnosisInputSchema = z.object({ taskId: z.string().uuid().optional(), runId: z.string().uuid().optional(), logText: z.string().max(200_000).optional(), sample: z.enum(['oom', 'dependency', 'path']).optional(), useModel: z.boolean(), requestId: z.string().uuid().optional() }).refine(v => Number(Boolean(v.taskId)) + Number(v.logText !== undefined) + Number(Boolean(v.sample)) === 1, '请选择一个日志来源')
+const diagnosisInputSchema = z.object({ force:z.boolean().default(false), external:externalExperimentSchema.optional(), taskId: z.string().uuid().optional(), runId: z.string().uuid().optional(), logText: z.string().max(200_000).optional(), sample: z.enum(['oom', 'dependency', 'path']).optional(), useModel: z.boolean(), depth:z.enum(['quick','inspect']).optional(), requestId: z.string().uuid().optional() }).refine(v => Number(Boolean(v.taskId)) + Number(v.logText !== undefined) + Number(Boolean(v.sample)) + Number(Boolean(v.external)) === 1, '请选择一个日志来源')
 const evidenceSchema = z.object({ id: z.string(), source: z.enum(['log', 'resource', 'environment', 'runtime']), label: z.string(), text: z.string(), line: z.number().optional() })
 const findingSchema = z.object({ category: z.string().max(80), title: z.string().max(160), confidence: z.enum(['high', 'medium', 'low']), explanation: z.string().max(2500), evidenceIds: z.array(z.string()).max(10), steps: z.array(z.string().max(500)).max(8) })
-const closureSchema=z.object({enabled:z.boolean(),status:z.enum(['waiting','running','verifying','passed','failed','attention','paused']),message:z.string(),updatedAt:z.string(),attempts:z.number().int().min(0),checkedAt:z.string().optional(),nextCheckAt:z.string().optional(),exitCode:z.number().int().nonnegative().optional(),nextDiagnosisId:z.string().uuid().optional()})
-const reportSchema = z.object({ id: z.string().uuid(), createdAt: z.string(), title: z.string(), source: z.enum(['remote', 'pasted', 'sample']), engine: z.enum(['rules', 'model+rules', 'agent+rules']), taskId: z.string().optional(), runId: z.string().optional(), logExcerpt: z.string(), evidence: z.array(evidenceSchema), findings: z.array(findingSchema), warnings: z.array(z.string()), summary: z.string().optional(), investigation: z.object({status:z.enum(['completed','partial','cancelled','failed']),rounds:z.number().int().min(0).max(4),inspections:z.number().int().min(0).max(4),trace:z.array(z.object({round:z.number().int(),kind:z.enum(['model','tool']),label:z.string(),status:z.enum(['completed','failed','unavailable']),reason:z.string().optional(),tool:z.enum(['search_log','inspect_path','read_project_file','inspect_package','inspect_environment','inspect_gpu']).optional(),arguments:z.record(z.string(),z.string()).optional(),evidenceIds:z.array(z.string()),elapsedMs:z.number().min(0)})).max(16)}).optional(), repair: z.object({kind:z.literal('reduce-batch'),before:z.string(),after:z.string(),previousBatch:z.number(),nextBatch:z.number()}).optional(), retryRunId: z.string().optional(),useModel:z.boolean().optional(),closure:closureSchema.optional() })
+const closureSchema=z.object({enabled:z.boolean(),useModelOnFailure:z.boolean().optional(),status:z.enum(['waiting','running','verifying','passed','failed','attention','paused']),message:z.string(),updatedAt:z.string(),attempts:z.number().int().min(0),checkedAt:z.string().optional(),nextCheckAt:z.string().optional(),exitCode:z.number().int().nonnegative().optional(),nextDiagnosisId:z.string().uuid().optional()})
+const usageSchema=z.object({requests:z.number().int().nonnegative(),elapsedMs:z.number().nonnegative(),promptTokens:z.number().nonnegative().optional(),completionTokens:z.number().nonnegative().optional(),totalTokens:z.number().nonnegative().optional()})
+const reportSchema = z.object({ usage:usageSchema.optional(),cacheKey:z.string().optional(), id: z.string().uuid(), createdAt: z.string(), title: z.string(), source: z.enum(['remote', 'external', 'pasted', 'sample']), engine: z.enum(['rules', 'model+rules', 'agent+rules']), externalContext:externalExperimentSchema.optional(),externalLog:z.object({segments:z.array(z.object({offset:z.number(),length:z.number()})).optional(),selection:z.enum(['errors_and_tail','tail']).optional(),collectedAt:z.string(),modifiedAt:z.string().optional(),sizeBytes:z.number(),bytesRead:z.number(),resolvedPath:z.string(),truncated:z.boolean(),changed:z.boolean()}).optional(),importedTaskId:z.string().uuid().optional(),taskId: z.string().optional(), runId: z.string().optional(), logExcerpt: z.string(), evidence: z.array(evidenceSchema), findings: z.array(findingSchema), warnings: z.array(z.string()), summary: z.string().optional(), investigation: z.object({status:z.enum(['completed','partial','cancelled','failed']),rounds:z.number().int().min(0).max(4),inspections:z.number().int().min(0).max(4),trace:z.array(z.object({round:z.number().int(),kind:z.enum(['model','tool']),label:z.string(),status:z.enum(['completed','failed','unavailable']),reason:z.string().optional(),tool:z.enum(['search_log','inspect_path','read_project_file','inspect_package','inspect_environment','inspect_gpu']).optional(),arguments:z.record(z.string(),z.string()).optional(),evidenceIds:z.array(z.string()),elapsedMs:z.number().min(0)})).max(16)}).optional(), repair: z.object({kind:z.literal('reduce-batch'),before:z.string(),after:z.string(),previousBatch:z.number(),nextBatch:z.number()}).optional(), retryRunId: z.string().optional(),useModel:z.boolean().optional(),closure:closureSchema.optional() })
 const defaultModel: ModelSettingsInput = { enabled: false, endpoint: 'http://127.0.0.1:11434/v1', model: '' }
 const quote = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`
 export function isAllowedTrainingCommand(command: string): boolean {
@@ -36,8 +52,11 @@ export class IntelligenceService {
   private reportWrites: Promise<void> = Promise.resolve()
   private readonly diagnoses = new Map<string, AbortController>()
   private readonly retrying = new Set<string>()
+  private readonly externalDrafting = new Set<string>()
+  private workflowService?:RepositoryWorkflowService
+  private workflows():RepositoryWorkflowService {return this.workflowService??=new RepositoryWorkflowService(this.store,{analyze:(input,progress,signal)=>this.analyzeRepository(input,progress,signal),recheck:async(guide,input)=>{const reviewed=reviewRepositoryGuide(guide,input);try{return applyRepositoryChecks(reviewed,await checkRepositoryLocations(this.store,this.ssh,guide.snapshot.input,repositoryLaunchPaths(reviewed)))}catch{return applyRepositoryChecks(reviewed,repositoryLaunchPaths(reviewed).map(item=>({...item,status:'unreadable' as const,message:'本次连接未能完成路径核对'})))}}},()=>this.onChanged(),undefined,(id,event)=>this.onRepositoryProgress(id,event))}
   private readonly tracker:RepairTracker
-  constructor(private readonly store: AppStore, private readonly ssh: SshService, private readonly monitor: MonitorService, private readonly conda: CondaService, private readonly onChanged:()=>void=()=>{}) {
+  constructor(private readonly store: AppStore, private readonly ssh: SshService, private readonly monitor: MonitorService, private readonly conda: CondaService, private readonly onChanged:()=>void=()=>{}, private readonly onRepositoryProgress:(id:string,event:Omit<RepositoryProgress,'id'>)=>void=()=>{}) {
     this.tracker=new RepairTracker({list:()=>this.history(),patch:(id,update)=>this.patchClosure(id,update),status:report=>{
       try{return this.findRun(report.taskId!,report.retryRunId).run.status}catch{return undefined}
     },verify:(id,requestId,signal)=>this.inspectRepair(id,requestId,signal),cancelDiagnosis:id=>this.cancelDiagnosis(id)})
@@ -48,7 +67,7 @@ export class IntelligenceService {
     for(const report of [...this.reports])if(report.source==='remote'&&report.taskId&&report.repair&&!report.retryRunId){
       const task=this.store.listExperimentTasks().find(t=>t.id===report.taskId)
       const run=task?.runs.find(r=>r.notes.includes(`[诊断:${report.id}]`))
-      if(run)await this.record({...report,retryRunId:run.id,closure:initialClosure()})
+      if(run)await this.record({...report,retryRunId:run.id,closure:initialClosure(true,!!report.useModel)})
     }
     await this.tracker.start()
   }
@@ -110,7 +129,12 @@ export class IntelligenceService {
     return this.settings()
   }
   private key(): string {
-    return this.config.encryptedKey ? safeStorage.decryptString(Buffer.from(this.config.encryptedKey, 'base64')) : ''
+    if (!this.config.encryptedKey) return ''
+    try {
+      return safeStorage.decryptString(Buffer.from(this.config.encryptedKey, 'base64'))
+    } catch {
+      throw new Error('模型密钥解密失败。数据目录切换或 Windows 凭据变化后，请在“设置 → 智能实验模型”中重新填写 API Key。')
+    }
   }
   async requestResearchModel(system: string, payload: unknown): Promise<unknown> {
     await this.ready()
@@ -146,6 +170,17 @@ export class IntelligenceService {
   private async collect(input: DiagnosisInput, signal?: AbortSignal): Promise<Omit<DiagnosisReport, 'id' | 'createdAt' | 'engine' | 'findings'>> {
     let raw = input.logText ?? (input.sample ? diagnosticSamples[input.sample] : '')
     const report: Omit<DiagnosisReport, 'id' | 'createdAt' | 'engine' | 'findings'> = { title: input.sample ? '示例日志诊断' : '粘贴日志诊断', source: input.sample ? 'sample' : 'pasted', logExcerpt:'', evidence:[], warnings:[] }
+    if(input.external){
+      const collected=await collectExternalLog(this.store,this.ssh,input.external,signal)
+      raw=collected.text
+      const context={...collected.context,launchCommand:redactSecrets(collected.context.launchCommand)}
+      Object.assign(report,{title:`${collected.serverName} · 手动实验日志`,source:'external',externalContext:context,externalLog:collected.snapshot})
+      report.evidence.push({id:'external-runtime',source:'runtime',label:'用户提供的手动实验上下文（未核验进程状态）',text:redactSecrets(JSON.stringify({...context,processStatus:'unknown',server:collected.serverName}))})
+      report.evidence.push({id:'external-log-file',source:'runtime',label:'实际读取的服务器日志文件',text:JSON.stringify({...collected.snapshot,path:context.logPath})})
+      report.warnings.push('本报告来自已有日志；原命令、工作目录和环境由用户填写，不能据此确认进程已退出或日志属于哪次运行。没有创建任务或执行原命令。')
+      if(collected.snapshot.truncated)report.warnings.push('在最多 256 KiB 的文件开头/末尾范围中选取错误上下文与末尾状态；结果最多 240 行 / 64 KiB，省略处不表示原日志连续。')
+      if(collected.snapshot.changed)report.warnings.push('读取期间日志发生变化，片段可能来自仍在写入的进程。')
+    }
     if (input.taskId) {
       const {task, run} = this.findRun(input.taskId, input.runId)
       Object.assign(report, {title: `${task.title} · 第 ${run.number} 次运行`, source:'remote', taskId:task.id, runId:run.id})
@@ -166,7 +201,9 @@ export class IntelligenceService {
         signal?.addEventListener('abort',abort,{once:true})
         try {
           if(signal?.aborted)throw new Error('诊断已停止')
-          raw = await this.ssh.exec(connected.client, `if [ -f ${quote(run.logPath)} ]; then tail -n 240 -- ${quote(run.logPath)} | tail -c 65536; else printf '日志文件不存在\\n'; fi`, 15_000)
+          const split=`__LABDECK_LOG_${randomUUID()}__`
+          const scanned=await this.ssh.exec(connected.client,`if [ -f ${quote(run.logPath)} ]; then head -c 196608 -- ${quote(run.logPath)}; printf '\\n${split}\\n'; tail -c 65536 -- ${quote(run.logPath)}; else printf '日志文件不存在\\n'; fi`,15000)
+          raw=selectDiagnosticLog(scanned.split(`\n${split}\n`).map((text,index)=>({text,label:index?'文件末尾最多 64 KiB':'文件开头最多 192 KiB'}))).text
         } catch { report.warnings.push('远程日志读取失败，请检查连接或粘贴日志重试') }
         finally { signal?.removeEventListener('abort',abort); connected.client.end() }
       } else report.warnings.push('这次运行没有记录日志路径')
@@ -197,7 +234,7 @@ export class IntelligenceService {
     report.logExcerpt = logs.logExcerpt
     report.evidence = [...logs.evidence,...report.evidence]
     if (logs.clipped) report.warnings.push('日志仅保留最后 240 行 / 64 KiB；行号相对于显示的日志片段')
-    if (report.source === 'remote') report.warnings.push('远程日志仅采集末尾片段，行号相对于本报告；更早内容可能未包含')
+    if (report.source === 'remote') report.warnings.push('远程日志在有限的文件开头/末尾范围提取错误上下文；片段间可能不连续，未扫描区域仍可能有其他错误')
     if (!raw.trim()) report.warnings.push('没有可用日志，现有证据不足以判断失败原因')
     return report
   }
@@ -212,16 +249,25 @@ export class IntelligenceService {
     try {
       emit('collect','正在读取日志与运行记录')
       const collected=await this.collect(input,controller.signal)
-      const report:DiagnosisReport={...collected,id:randomUUID(),createdAt:new Date().toISOString(),engine:'rules',useModel:input.useModel,findings:diagnoseEvidence(collected.evidence)}
+      const cacheEvidence=collected.evidence.map(item=>{
+        if(item.source==='resource'||item.source==='environment'){try{const value=JSON.parse(item.text);delete value.sampledAt;delete value.checkedAt;return {...item,text:JSON.stringify(value)}}catch{return item}}
+        if(item.id==='external-log-file'){const value=JSON.parse(item.text);delete value.collectedAt;return {...item,text:JSON.stringify(value)}}
+        return item
+      })
+      const cacheKey=createHash('sha256').update(JSON.stringify({version:'diagnosis-v5-source',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence:cacheEvidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?{endpoint:this.config.endpoint,model:this.config.model,enabled:this.config.enabled}:null})).digest('hex')
+      const cached=(collected.source==='remote'||collected.source==='external')&&!input.force&&this.reports.find(item=>item.cacheKey===cacheKey&&Date.now()-Date.parse(item.createdAt)<86400000&&(!input.useModel||item.engine!=='rules')&&(!item.investigation||item.investigation.status==='completed'))
+      if(cached){emit('complete','已采集的日志与输入配置未变化，复用已有诊断；未再次调用模型');return {...structuredClone(cached),cacheHit:true,warnings:[...cached.warnings,'本次复用原分析。环境与资源信息仍是原采集时刻，需要更新时请强制重新分析。']}}
+      const modelCalls:ModelUsage[]=[]
+      const report:DiagnosisReport={...collected,cacheKey,id:randomUUID(),createdAt:new Date().toISOString(),engine:'rules',useModel:input.useModel,findings:diagnoseEvidence(collected.evidence)}
       if(input.useModel){
         if(!this.config.enabled||!this.config.model){
           report.warnings.push('模型未启用或未配置名称，保留规则诊断。')
         }else{
           const config={...this.config};const key=this.key()
           const remote=report.taskId&&report.runId?this.findRun(report.taskId,report.runId):undefined
-          const tools=new DiagnosticTools(report.evidence,remote?.task,remote?.run,this.store,this.ssh,this.monitor,this.conda)
-          const result=await investigate({evidence:report.evidence,warnings:report.warnings,tools:tools.catalog,context:tools.context,signal:controller.signal,
-            request:(system,payload,signal)=>requestModel(config,key,system,payload,signal),
+          const tools=new DiagnosticTools(report.evidence,remote?.task,remote?.run,this.store,this.ssh,this.monitor,this.conda,report.externalContext)
+          const result=await investigate({evidence:report.evidence,warnings:report.warnings,tools:input.depth==='quick'?[]:tools.catalog,maxModelRounds:input.depth==='quick'?1:4,context:tools.context,signal:controller.signal,
+            request:(system,payload,signal)=>requestModel(config,key,system,payload,signal,usage=>modelCalls.push(usage)),
             execute:(call,signal)=>tools.execute(call,signal),progress:emit})
           report.evidence=result.evidence;report.investigation=result.investigation;report.warnings.push(...result.warnings)
           if(result.findings){report.findings.push(...result.findings);report.summary=result.summary;report.engine=result.investigation.inspections?'agent+rules':'model+rules'}
@@ -234,6 +280,7 @@ export class IntelligenceService {
         report.repair=proposeBatchRepair(run.launchCommand??'',diagnoseEvidence(collected.evidence).some(f=>f.category==='oom'),run.launchMode)
         if(run.status!=='failed')report.repair=undefined
       }
+      if(modelCalls.length)report.usage=sumModelUsage(modelCalls)
       const saved=await this.record(report)
       emit(controller.signal.aborted?'cancelled':'complete',controller.signal.aborted?'已停止，当前证据已保存':'诊断完成，证据与检查过程已保存')
       return saved
@@ -265,6 +312,117 @@ export class IntelligenceService {
     const result=await this.readPlanReadme({...input,intent:'',environmentName:''})
     return {status:result.status,name:result.name}
   }
+  async analyzeRepository(raw:RepositoryAnalysisInput, progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+    await this.ready()
+    const input=z.object({source:z.literal('remote'),path:z.string().min(1).max(4096),serverId:z.string().uuid(),accessRouteId:z.string().max(80).optional(),filePaths:z.array(z.string().max(512)).min(1),goal:z.string().trim().min(1).max(2000)}).parse(raw)
+    signal?.throwIfAborted()
+    return this.analyzeRepositoryWithAgent(input,progress,signal)
+  }
+  private async analyzeRepositoryWithAgent(input:RepositoryAnalysisInput,progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+    progress?.({stage:'scan',message:'正在扫描勾选范围；本次最多 4 次模型请求，不自动重试'})
+    const session=await openRepositoryReadSession(this.store,this.ssh,input,input.filePaths)
+    const snapshot=session.snapshot
+    const modelCalls:ModelUsage[]=[]
+    const close=():void=>session.close()
+    signal?.addEventListener('abort',close,{once:true})
+    try {
+      signal?.throwIfAborted()
+      await runRepositoryAgent({goal:input.goal,session,signal,
+        request:(system,payload)=>requestModel(this.config,this.key(),system,payload,signal,usage=>modelCalls.push(usage),{purpose:'repository'}),
+        onProgress:(message,round)=>progress?.({stage:round?'inspect':'read',message,round:round||undefined})
+      })
+    } catch(error) {
+      signal?.throwIfAborted()
+      const warning=`侦察未完成，使用已读内容生成方案：${redactSecrets(error instanceof Error?error.message:String(error)).slice(0,300)}`
+      snapshot.warnings.push(warning)
+      progress?.({stage:'inspect',message:warning})
+    } finally {signal?.removeEventListener('abort',close);session.close()}
+    signal?.throwIfAborted()
+    if(!snapshot.excerpts.length)throw new Error('没有读取到可供分析的文本，请重新选择文件')
+    return this.writeRepositoryGuide(input.goal,snapshot,modelCalls,progress,signal)
+  }
+  private async writeRepositoryGuide(goal:string,snapshot:RepositorySnapshot,modelCalls:ModelUsage[],progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+    if(!snapshot.excerpts.length)throw new Error('没有读取到可供分析的文本，请重新选择文件')
+    progress?.({stage:'write',message:'正在生成启动方案'})
+    const files=snapshot.excerpts.map(file=>({path:file.path,startLine:file.startLine,truncated:file.truncated,numberedText:file.text.split('\n').map((line,index)=>`${file.startLine+index}: ${line}`).join('\n')}))
+    const answer=await requestModel(this.config,this.key(),repositoryGuidePrompt,{goal,repository:snapshot.input,files,scopeWarnings:snapshot.warnings},signal,usage=>modelCalls.push(usage),{purpose:'repository'})
+    signal?.throwIfAborted()
+    let guide=parseRepositoryGuide(answer,snapshot)
+    guide=fillLaunchFromReadme(guide,snapshot,goal)
+    if(!guide.environmentName){
+      const environmentFile=snapshot.excerpts.find(file=>/(^|\/)environment\.ya?ml$/i.test(file.path))
+      const name=environmentFile?.text.match(/^\s*name\s*:\s*["']?([^"'\r\n#]+)["']?\s*$/m)?.[1]?.trim()
+      if(name&&environmentFile){guide.environmentName=name;guide.warnings=[...guide.warnings,`环境名从 ${environmentFile.path} 读取，仍需在任务池核对`]}
+    }
+    if(!guide.dataPath){
+      const match=guide.launchCommand.match(/--(?:data|data[-_]?path|dataset|dataset[-_]?path)[=\s]+(\/[^\s"']+)/i)
+      if(match){guide.dataPath=match[1];guide.warnings=[...guide.warnings,`数据目录从启动命令参数读取：${match[1]}，仍需核对`]}
+    }
+    let dataPathVerified=false
+    if(!guide.dataPath){
+      progress?.({stage:'verify',message:'正在探测仓库内的数据目录'})
+      try{
+        const directories=await findRepositoryDirectories(this.store,this.ssh,snapshot.input,['data','datasets','dataset','checkpoints','weights','pretrained_models'])
+        const dataDirectory=directories.find(directory=>['data','datasets','dataset'].includes(directory))
+        if(dataDirectory){guide.dataPath=posix.join(snapshot.input.path,dataDirectory);dataPathVerified=true;guide.warnings=[...guide.warnings,`数据目录从仓库内 ${guide.dataPath} 推断（目录已确认存在），仍需核对是否为本次数据`]}
+        const weightDirectories=directories.filter(directory=>['checkpoints','weights','pretrained_models'].includes(directory))
+        if(weightDirectories.length)guide.warnings=[...guide.warnings,`仓库内存在权重/检查点目录：${weightDirectories.join('、')}，请核对权重是否已就位`]
+      }catch{ /* best-effort probe; keep the field empty when unavailable */ }
+    }
+    if(guide.dataPath&&!dataPathVerified){
+      progress?.({stage:'verify',message:'正在核对数据目录是否存在'})
+      try{
+        const [inspection]=await inspectServerPaths(this.store,this.ssh,snapshot.input,[guide.dataPath])
+        if(inspection?.kind==='directory')guide.warnings=[...guide.warnings,`数据目录已确认存在：${guide.dataPath}`]
+        else if(inspection?.kind==='missing')guide.warnings=[...guide.warnings,`数据目录暂未找到：${guide.dataPath}，请核对`]
+        else if(inspection)guide.warnings=[...guide.warnings,`数据目录存在但不是普通目录（${inspection.kind}）：${guide.dataPath}`]
+      }catch{ /* best-effort; do not block the guide */ }
+    }
+    // Auto-filled environment/data answers should not keep the guide blocked on questions they already answer.
+    guide=resolveAutoAnsweredInputs(guide)
+    if(modelCalls.length)guide.usage=sumModelUsage(modelCalls)
+    if(!guide.launchCommand)return guide
+    progress?.({stage:'verify',message:'正在核对入口文件与启动目录'})
+    const paths=repositoryLaunchPaths(guide)
+    try {return applyRepositoryChecks(guide,await checkRepositoryLocations(this.store,this.ssh,snapshot.input,paths))}
+    catch {return applyRepositoryChecks(guide,paths.map(item=>({...item,status:'unreadable' as const,message:'本次连接未能完成路径核对，不能据此判定路径不存在'})))}
+  }
+  async discoverRepositories(raw:{serverId:string;accessRouteId?:string}):Promise<RepositoryCandidate[]> {    await this.ready()
+    const input=z.object({serverId:z.string().uuid(),accessRouteId:z.string().max(160).optional()}).parse(raw)
+    const server=this.store.getServer(input.serverId)
+    if(server.mode!=='real')throw new Error('请选择实际服务器')
+    const route=input.accessRouteId??getDefaultAccessRouteId(server)
+    if(!getAccessRoutes(server).some(r=>r.id===route))throw new Error('连接路径不存在')
+    const profile=applyAccessRoute(server,route)
+    if(!profile.hostFingerprint||(profile.jumpHost&&!profile.jumpHost.hostFingerprint))throw new Error('请先在资源页面连接服务器并确认 SSH 主机指纹')
+    const connected=await this.ssh.connect(profile,this.store.getSecrets(profile.id))
+    try{
+      const command=`timeout 15 find "$HOME" /data /workspace /home /mnt /opt -maxdepth 6 \\( -name node_modules -o -name .cache -o -name .local -o -name dist -o -name build \\) -prune -o \\( -name .git -o -name README.md -o -name README.rst \\) -print 2>/dev/null | head -80`
+      return parseRepositoryCandidates(await this.ssh.exec(connected.client,command,20_000))
+    }finally{connected.client.end()}
+  }
+  async browseRepositoryDirectory(raw:{serverId:string;accessRouteId?:string;path?:string}):Promise<RepositoryDirectoryView> {
+    await this.ready()
+    const input=z.object({serverId:z.string().uuid(),accessRouteId:z.string().max(160).optional(),path:z.string().trim().max(4096).refine(value=>!value||(value.startsWith('/')&&!/[\0\r\n]/.test(value)),'目录必须是绝对路径').optional()}).parse(raw)
+    const server=this.store.getServer(input.serverId)
+    if(server.mode!=='real')throw new Error('请选择实际服务器')
+    const route=input.accessRouteId??getDefaultAccessRouteId(server)
+    if(!getAccessRoutes(server).some(item=>item.id===route))throw new Error('连接路径不存在')
+    const profile=applyAccessRoute(server,route)
+    if(!profile.hostFingerprint||(profile.jumpHost&&!profile.jumpHost.hostFingerprint))throw new Error('请先在资源页面连接服务器并确认 SSH 主机指纹')
+    const connected=await this.ssh.connect(profile,this.store.getSecrets(profile.id))
+    try{
+      const home=(await this.ssh.exec(connected.client,'printf %s "$HOME"',10_000)).trim()||'/'
+      const target=input.path||home
+      const sftp=await new Promise<SFTPWrapper>((resolve,reject)=>connected.client.sftp((error,value)=>error?reject(error):resolve(value)))
+      const real=await new Promise<string>((resolve,reject)=>sftp.realpath(target,(error,value)=>error?reject(error):resolve(value)))
+      const stat=await new Promise<import('ssh2').Stats>((resolve,reject)=>sftp.stat(real,(error,value)=>error?reject(error):resolve(value)))
+      if(!stat.isDirectory())throw new Error('所选路径不是目录')
+      const entries=await new Promise<Array<{filename:string;attrs:{isDirectory():boolean}}>>((resolve,reject)=>sftp.readdir(real,(error,value)=>error?reject(error):resolve(value)))
+      const directories=entries.filter(entry=>entry.attrs.isDirectory()&&!entry.filename.startsWith('.')).map(entry=>({name:entry.filename,path:posix.join(real,entry.filename)})).sort((a,b)=>a.name.localeCompare(b.name)).slice(0,200)
+      return {path:real,parent:real==='/'?null:posix.dirname(real),home,entries:directories}
+    }finally{connected.client.end()}
+  }
   async plan(raw: PlanInput): Promise<ExperimentPlan> {
     await this.ready()
     const input = z.object({useReadme:z.boolean().default(false),condaManagerPath:z.string().trim().max(4096).refine(p=>!p||(p.startsWith('/')&&!/[\0\r\n]/.test(p)),'Conda 管理器路径必须是绝对路径').optional(),accessRouteId:z.string().min(1).max(160).optional(),readmePath:z.string().trim().max(4096).refine(p=>!p||(p.startsWith('/')&&!/[\0\r\n]/.test(p)),'README 路径必须是服务器上的绝对路径').optional(),intent:z.string().trim().min(1).max(4000),serverId:z.string().uuid(),codePath:z.string().trim().min(1).max(4096).refine(p=>p.startsWith('/')&&!p.includes('\0'),'代码目录必须是绝对路径'),environmentName:z.string().max(160)}).parse(raw)
@@ -293,14 +451,35 @@ export class IntelligenceService {
     const draft = experimentTaskDraftSchema.parse({title:parsed.title,project:'智能实验',objective:input.intent,tags:['智能计划'],priority:'normal',status:'planned',serverId:server.id,accessRouteId:input.accessRouteId||getDefaultAccessRouteId(server),codePath:input.codePath,dataPath:parsed.dataPath,launchCommand:parsed.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:input.environmentName?{manager:'conda',managerPath:input.condaManagerPath||undefined,environmentName:input.environmentName}:undefined,minimumFreeVramGiB:parsed.minimumFreeVramGiB??undefined,artifactPath:'',resultSummary:'',notes:'由模型生成，保存前需人工核对脚本参数。'})
     return {draft,engine:'model',assumptions:[...parsed.assumptions,...('warning' in readme&&readme.warning?[readme.warning]:[])],checks:['核对启动脚本及参数是否受项目支持','加入队列时检查代码 / 数据目录','加入队列时检查所选 Conda 环境','启动前重新检查 GPU 资源']}
   }
+  async saveExternalDraft(id:string,raw:ExternalDraftInput):Promise<ExperimentTask> {
+    await this.ready();z.string().uuid().parse(id)
+    if(this.externalDrafting.has(id))throw new Error('本份诊断的草稿正在保存，请勿重复提交')
+    this.externalDrafting.add(id)
+    try {
+      const report=this.report(id),context=report.externalContext
+      if(report.source!=='external'||!context)throw new Error('只有服务器手动实验诊断可以保存此类草稿')
+      const marker=`[外部诊断:${id}]`
+      const existing=this.store.listExperimentTasks().find(task=>task.id===report.importedTaskId||task.notes.includes(marker))
+      if(existing){if(report.importedTaskId!==existing.id)await this.record({...report,importedTaskId:existing.id});return existing}
+      const input=externalDraftSchema.parse(raw),server=this.store.getServer(context.serverId)
+      if(server.mode!=='real')throw new Error('原服务器已不可用，请检查服务器配置')
+      const route=context.accessRouteId??getDefaultAccessRouteId(server)
+      if(!getAccessRoutes(server).some(r=>r.id===route))throw new Error('原诊断使用的 SSH 连接路径已不存在')
+      const notes=[marker,`来自服务器手动实验日志：${context.logPath}`,`原上下文由用户提供，未创建原失败运行；日志采集：${report.externalLog?.collectedAt??report.createdAt}`,`诊断摘要：${report.summary??report.findings.map(f=>f.title).join('；')}`,`原命令：${context.launchCommand}`,`已知限制：${report.warnings.join('；')}`].join('\n').slice(0,8000)
+      const task=await this.store.saveExperimentTask({title:input.title,project:'已有实验接入',objective:'根据已有日志诊断，审查配置后重新运行',tags:['外部日志诊断'],priority:'normal',status:'planned',serverId:server.id,accessRouteId:route,codePath:input.codePath,dataPath:input.dataPath,launchCommand:input.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:input.environmentName?{manager:'conda',environmentName:input.environmentName}:undefined,artifactPath:'',resultSummary:'',notes})
+      await this.record({...report,importedTaskId:task.id})
+      return task
+    } finally {this.externalDrafting.delete(id)}
+  }
   private report(id: string): DiagnosisReport {
     const report = this.reports.find(r=>r.id===id)
     if (!report) throw new Error('诊断报告不存在')
     return report
   }
-  async retry(id: string, confirmed: boolean): Promise<ExperimentTask> {
+  async retry(id: string, confirmed: boolean, useModelOnFailure?: boolean): Promise<ExperimentTask> {
     await this.ready()
     if (confirmed !== true) throw new Error('需要明确确认后才能加入队列')
+    if (useModelOnFailure !== undefined) z.boolean().parse(useModelOnFailure)
     if (this.retrying.has(id)) throw new Error('修复运行正在创建，请勿重复提交')
     this.retrying.add(id)
     try {
@@ -314,7 +493,7 @@ export class IntelligenceService {
       const input: ExperimentRunStartInput = experimentRunStartInputSchema.parse({serverId:run.serverId??task.serverId??null,accessRouteId:run.accessRouteId??task.accessRouteId??null,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:run.codePath??task.codePath,dataPath:run.dataPath??task.dataPath,launchCommand:repair.after,launchMode:'command',scriptPath:'',condaEnvironment:run.condaEnvironment??null,artifactPath:run.artifactPath??'',minimumFreeVramGiB:run.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??null,notes:`[诊断:${id}] 从第 ${run.number} 次运行创建；batch size ${repair.previousBatch} → ${repair.nextBatch}。原运行保留。`})
       if(this.reports.filter(r=>r.closure?.enabled).length>=20)throw new Error('自动跟踪已达到 20 项，请先完成或暂停已有跟踪')
       const updated=await this.store.startExperimentRun(task.id,input)
-      await this.record({...report,retryRunId:updated.runs.at(-1)!.id,closure:initialClosure()})
+      await this.record({...report,retryRunId:updated.runs.at(-1)!.id,closure:initialClosure(true,useModelOnFailure??!!report.useModel)})
       this.tracker.wake()
       return updated
     } finally { this.retrying.delete(id) }
@@ -357,7 +536,7 @@ export class IntelligenceService {
       if(verifiedExitCode===0)return {status:'completed',message:'已重新读取远程退出码 0，新运行正常结束。请继续核对实验指标与产物，退出成功不代表模型质量达标。',runId:run.id,exitCode:0,checkedAt:new Date().toISOString()}
     }
     if (verifiedExitCode!==undefined&&verifiedExitCode!==0) {
-      const diagnosis = this.reports.find(r=>r.runId===run.id) ?? await this.diagnose({taskId:report.taskId,runId:run.id,useModel:!!report.useModel&&this.config.enabled,requestId})
+      const diagnosis = this.reports.find(r=>r.runId===run.id) ?? await this.diagnose({taskId:report.taskId,runId:run.id,useModel:(report.closure?.useModelOnFailure??!!report.useModel)&&this.config.enabled,depth:'quick',requestId})
       signal.throwIfAborted()
       return {status:'failed',message:'新运行仍然失败，已收集该次运行的诊断；审查新方案后才会再次运行',runId:run.id,diagnosis,exitCode:verifiedExitCode,checkedAt:new Date().toISOString()}
     }
@@ -368,7 +547,7 @@ export class IntelligenceService {
     const report=this.report(id)
     const result=await dialog.showSaveDialog({title:'导出诊断证据报告',defaultPath:`LabDeck-diagnosis-${report.id.slice(0,8)}.md`,filters:[{name:'Markdown',extensions:['md']}]})
     if(result.canceled||!result.filePath)return null
-    const text=[`# ${report.title}`,`时间：${report.createdAt}`,`来源：${report.source}；引擎：${report.engine}`,report.summary??'',...report.findings.flatMap(f=>[`## ${f.title}`,f.explanation,`证据：${f.evidenceIds.join(', ')}`,...f.steps.map(s=>`- ${s}`)]),...(report.investigation?['## 检查过程',`状态：${report.investigation.status}；模型轮数：${report.investigation.rounds}；检查数：${report.investigation.inspections}`,...report.investigation.trace.map(t=>`- 第 ${t.round} 轮 ${t.label} [${t.status}] ${t.reason??''}；证据：${t.evidenceIds.join(', ')}`)]:[]),...(report.closure?['## 修复闭环',`新运行：${report.retryRunId}；状态：${report.closure.status}`,report.closure.message,`核验时间：${report.closure.checkedAt??'尚未核验'}；退出码：${report.closure.exitCode??'未取得'}`,`后续诊断：${report.closure.nextDiagnosisId??'无'}`]:[]),'## 证据',...report.evidence.map(e=>`- [${e.id}] ${e.label}：${e.text}`),'## 说明',...report.warnings.map(w=>`- ${w}`),...(report.repair?['## 修复计划',`原命令：${report.repair.before}`,`新命令：${report.repair.after}`]:[])].join('\n\n')
+    const text=[`# ${report.title}`,`时间：${report.createdAt}`,`来源：${report.source}；引擎：${report.engine}`,report.summary??'',...report.findings.flatMap(f=>[`## ${f.title}`,f.explanation,`证据：${f.evidenceIds.join(', ')}`,...f.steps.map(s=>`- ${s}`)]),...(report.investigation?['## 检查过程',`状态：${report.investigation.status}；模型轮数：${report.investigation.rounds}；检查数：${report.investigation.inspections}`,...report.investigation.trace.map(t=>`- 第 ${t.round} 轮 ${t.label} [${t.status}] ${t.reason??''}；证据：${t.evidenceIds.join(', ')}`)]:[]),...(report.closure?['## 重试运行状态',`新运行：${report.retryRunId}；状态：${report.closure.status}`,report.closure.message,`核验时间：${report.closure.checkedAt??'尚未核验'}；退出码：${report.closure.exitCode??'未取得'}`,`后续诊断：${report.closure.nextDiagnosisId??'无'}`]:[]),'## 证据',...report.evidence.map(e=>`- [${e.id}] ${e.label}：${e.text}`),'## 说明',...report.warnings.map(w=>`- ${w}`),...(report.repair?['## 修复计划',`原命令：${report.repair.before}`,`新命令：${report.repair.after}`]:[])].join('\n\n')
     await writeFile(result.filePath,text,'utf8')
     return result.filePath
   }
@@ -379,10 +558,19 @@ export class IntelligenceService {
     ipcMain.handle('intelligence:diagnose',(event,input)=>this.diagnose(input,progress=>{if(!event.sender.isDestroyed())event.sender.send('intelligence:progress',progress)}))
     ipcMain.handle('intelligence:cancel',(_e,id)=>this.cancelDiagnosis(id))
     ipcMain.handle('intelligence:history',()=>this.history())
+    ipcMain.handle('intelligence:external-draft',async(_e,id,input)=>{const task=await this.saveExternalDraft(id,input);onRetry();return task})
     ipcMain.handle('intelligence:tracking',(_e,id,enabled)=>this.setTracking(id,enabled))
     ipcMain.handle('intelligence:detectReadme',(_e,input)=>this.detectReadme(input))
+    ipcMain.handle('intelligence:repository-workflows',()=>this.workflows().list())
+    ipcMain.handle('intelligence:repository-create',(_e,input,id)=>this.workflows().create(input,id))
+    ipcMain.handle('intelligence:repository-cancel',(_e,id)=>this.workflows().cancel(id))
+    ipcMain.handle('intelligence:repository-action',async(_e,id,action)=>{const result=await this.workflows().act(id,action);if(action?.kind==='save')onRetry();return result})
+    ipcMain.handle('intelligence:repository-inspect',(_e,input)=>readRepository(this.store,this.ssh,input))
+    ipcMain.handle('intelligence:repository-discover',(_e,input)=>this.discoverRepositories(input))
+    ipcMain.handle('intelligence:repository-browse',(_e,input)=>this.browseRepositoryDirectory(input))
+    ipcMain.handle('intelligence:repository-analyze',(_e,input)=>this.analyzeRepository(input))
     ipcMain.handle('intelligence:plan',(_e,input)=>this.plan(input))
-    ipcMain.handle('intelligence:retry',async(_e,id,confirmed)=>{const task=await this.retry(id,confirmed);onRetry();return task})
+    ipcMain.handle('intelligence:retry',async(_e,id,confirmed,useModelOnFailure)=>{const task=await this.retry(id,confirmed,useModelOnFailure);onRetry();return task})
     ipcMain.handle('intelligence:verify',(_e,id)=>this.verify(z.string().uuid().parse(id)))
     ipcMain.handle('intelligence:export',(_e,id)=>this.exportReport(z.string().uuid().parse(id)))
   }

@@ -23,7 +23,7 @@ export interface InvestigationOptions {
   evidence:Evidence[]; warnings:string[]; tools:ToolDescription[]; context:Record<string,unknown>;
   request:(system:string,payload:unknown,signal:AbortSignal)=>Promise<unknown>;
   execute:(call:DiagnosticToolCall,signal:AbortSignal)=>Promise<ToolResult>;
-  signal:AbortSignal; progress?:(stage:DiagnosisProgress['stage'],message:string,round:number)=>void
+  maxModelRounds?:number; signal:AbortSignal; progress?:(stage:DiagnosisProgress['stage'],message:string,round:number)=>void
 }
 export interface InvestigationResult { evidence:Evidence[]; investigation:AgentInvestigation; warnings:string[]; summary?:string; findings?:Finding[] }
 export function modelEvidence(evidence:Evidence[]):Evidence[]{
@@ -37,22 +37,23 @@ const system = `你是科研实验诊断助手。根据可验证证据选择必�
 每轮仅返回 JSON。需要检查时：{"action":"inspect","toolCalls":[{"tool":"search_log","arguments":{"query":"错误关键词"},"reason":"简短说明为什么需要该检查","evidenceIds":["实际证据ID"]}]}。
 证据足够或预算用尽时：{"action":"final","summary":"概述","findings":[{"category":"类别","title":"结论","confidence":"high|medium|low","explanation":"区分事实与推测","evidenceIds":["实际证据ID"],"steps":["可验证的下一步"]}]}。
 只调用提供的工具及其列出的参数，不输出 Shell 命令或新的工具。每个检查和结论都必须引用已给出的证据 ID。
-每轮最多两个检查，总共最多四个检查、四轮模型请求。同一检查不能重复。finalOnly=true 时必须返回 final。
+每轮最多两个检查，总共最多四个检查；请求次数以 budget 为准。优先用现有证据完成判断，同一检查不能重复。finalOnly=true 时必须返回 final，证据不足则明确缺失信息，不再请求检查。只有直接错误证据支持时才给 high 置信度。
 当前 GPU/环境信息描述检查时刻，不能证明失败发生时的状态；检查失败或不可用也不能证明目标不存在。所有修复建议需要实际验证。`
 
 export async function investigate(options:InvestigationOptions):Promise<InvestigationResult>{
   const evidence=[...options.evidence]
+  const roundLimit=Math.min(MAX_MODEL_ROUNDS,Math.max(1,options.maxModelRounds??MAX_MODEL_ROUNDS))
   const investigation:AgentInvestigation={status:'partial',rounds:0,inspections:0,trace:[]}
   const warnings:string[]=[]
   const seen=new Set<string>();const visibleIds=new Set<string>()
   try{
-    for(let round=1;round<=MAX_MODEL_ROUNDS;round++){
+    for(let round=1;round<=roundLimit;round++){
       options.signal.throwIfAborted()
       const visible=modelEvidence(evidence);visible.forEach(e=>visibleIds.add(e.id))
-      const finalOnly=round===MAX_MODEL_ROUNDS||investigation.inspections>=MAX_DIAGNOSTIC_CHECKS
+      const finalOnly=round===roundLimit||investigation.inspections>=MAX_DIAGNOSTIC_CHECKS
       options.progress?.('model',`第 ${round} 轮：模型正在${finalOnly?'汇总证据':'分析并选择检查'}`,round)
       const started=Date.now();investigation.rounds=round
-      const raw=await options.request(system,{evidence:visible,warnings:[...options.warnings,...warnings],tools:options.tools,context:options.context,previousChecks:investigation.trace.filter(t=>t.kind==='tool'),budget:{remainingChecks:MAX_DIAGNOSTIC_CHECKS-investigation.inspections,remainingRounds:MAX_MODEL_ROUNDS-round},finalOnly},options.signal)
+      const raw=await options.request(system,{evidence:visible,warnings:[...options.warnings,...warnings],tools:options.tools,context:options.context,previousChecks:investigation.trace.filter(t=>t.kind==='tool'),budget:{remainingChecks:MAX_DIAGNOSTIC_CHECKS-investigation.inspections,remainingRounds:roundLimit-round},finalOnly},options.signal)
       options.signal.throwIfAborted()
       // Accept first-version JSON finals so existing compatible services do not break.
       const compatible=raw&&typeof raw==='object'&&!('action' in raw)?{...raw,action:'final'}:raw

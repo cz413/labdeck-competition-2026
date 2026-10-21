@@ -9,6 +9,7 @@ artifacts/
 .chrome-dom-profile/
 .chrome-screenshot-dashboard/
 .screenshot-userdata/
+.labdeck-data/
 /实验室服务器管理平台-需求与实施方案.md
 /实验室服务器管理平台-本地桌面版需求与实施方案.md
 *.log
@@ -32,3 +33,5 @@ Thumbs.db
 *.user
 *.suo
 .vs/
+
+.tmp-build/

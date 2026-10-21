@@ -1,3 +1,4 @@
+import type { ExternalExperimentContext } from '../shared/external-experiment'
 import { posix } from 'node:path'
 import type { DiagnosticToolCall, Evidence } from '../shared/intelligence'
 import type { ExperimentTask, ExperimentRun, ServerProfile, CondaEnvironmentConfig } from '../shared/types'
@@ -32,19 +33,19 @@ export class DiagnosticTools {
   readonly catalog:ToolDescription[]
   readonly context:Record<string,unknown>
   private environmentPromise:Promise<CondaEnvironmentConfig>|undefined
-  constructor(private readonly evidence:Evidence[],private readonly task:ExperimentTask|undefined,private readonly run:ExperimentRun|undefined,private readonly store:AppStore,private readonly ssh:SshService,private readonly monitor:MonitorService,private readonly conda:CondaService){
+  constructor(private readonly evidence:Evidence[],private readonly task:ExperimentTask|undefined,private readonly run:ExperimentRun|undefined,private readonly store:AppStore,private readonly ssh:SshService,private readonly monitor:MonitorService,private readonly conda:CondaService,private readonly external?:ExternalExperimentContext){
     const log=evidence.filter(e=>e.source==='log').map(e=>e.text).join('\n')
-    const remote=!!task&&!!run
-    this.catalog=remote?toolDescriptions:toolDescriptions.filter(t=>t.name==='search_log')
-    this.context={allowedPaths:remote?allowedDiagnosticPaths(task!,run!,log):[],allowedPackages:allowedDiagnosticPackages(log),codePath:run?.codePath??task?.codePath??'',environment:run?.condaEnvironment??task?.condaEnvironment??null,source:remote?'实际运行':'仅已有日志，不能检查服务器'}
+    const remote=!!task&&!!run||!!external
+    this.catalog=(remote?toolDescriptions:toolDescriptions.filter(t=>t.name==='search_log')).filter(t=>!external||(t.name!=='read_project_file'||!!external.codePath)&&(!['inspect_environment','inspect_package'].includes(t.name)||!!external.environmentName))
+    this.context={allowedPaths:external?[external.codePath,external.logPath].filter(Boolean):remote?allowedDiagnosticPaths(task!,run!,log):[],allowedPackages:allowedDiagnosticPackages(log),codePath:external?.codePath??run?.codePath??task?.codePath??'',environment:this.configuredEnvironment()??null,source:external?'手动实验上下文：用户提供，进程状态未核验':remote?'实际运行':'仅已有日志，不能检查服务器',command:external?.launchCommand}
   }
   private profile():ServerProfile{
-    if(!this.task||!this.run)throw new Error('没有远程运行上下文')
-    const id=this.run.serverId??this.task.serverId
+    if(!this.external&&(!this.task||!this.run))throw new Error('没有远程运行上下文')
+    const id=this.external?.serverId??this.run?.serverId??this.task?.serverId
     if(!id)throw new Error('运行记录没有服务器')
     const server=this.store.getServer(id)
     if(server.mode!=='real')throw new Error('演示节点不能执行远程诊断')
-    const routeId=this.run.accessRouteId??this.task.accessRouteId??getDefaultAccessRouteId(server)
+    const routeId=this.external?.accessRouteId??this.run?.accessRouteId??this.task?.accessRouteId??getDefaultAccessRouteId(server)
     if(!getAccessRoutes(server).some(r=>r.id===routeId))throw new Error('连接路径不存在')
     const profile=applyAccessRoute(server,routeId)
     if(!profile.hostFingerprint||(profile.jumpHost&&!profile.jumpHost.hostFingerprint))throw new Error('SSH 主机指纹尚未确认')
@@ -58,9 +59,12 @@ export class DiagnosticTools {
     try{signal.throwIfAborted();const text=await this.ssh.exec(connected.client,command,15_000);signal.throwIfAborted();return redactSecrets(text).slice(0,12000)}
     finally{signal.removeEventListener('abort',abort);connected.client.end()}
   }
+  private configuredEnvironment():CondaEnvironmentConfig|undefined {
+    return this.run?.condaEnvironment??this.task?.condaEnvironment??(this.external?.environmentName?{manager:'conda',environmentName:this.external.environmentName}:undefined)
+  }
   private environment():Promise<CondaEnvironmentConfig>{
     return this.environmentPromise??=(async()=>{
-      const config=this.run?.condaEnvironment??this.task?.condaEnvironment
+      const config=this.configuredEnvironment()
       if(!config)throw new Error('这次运行没有记录 Conda 环境，不能推断默认环境')
       const profile=this.profile();const result=await this.conda.checkEnvironment(profile,this.store.getSecrets(profile.id),config)
       if(!result.found)throw new Error('记录的环境尚未找到')
@@ -97,7 +101,7 @@ export class DiagnosticTools {
       return {status:'success',text:await this.exec(this.conda.buildEnvironmentRunCommand(environment,`python -c ${quote(probe)}`),signal)}
     }
     if(call.tool==='inspect_environment'){
-      const profile=this.profile();const config=this.run?.condaEnvironment??this.task?.condaEnvironment
+      const profile=this.profile();const config=this.configuredEnvironment()
       if(!config)return {status:'unavailable',text:'本次运行未记录 Conda 环境，未猜测其他环境。'}
       const result=await this.conda.checkEnvironment(profile,this.store.getSecrets(profile.id),config);signal.throwIfAborted()
       return {status:'success',text:JSON.stringify(result)}

@@ -21,15 +21,21 @@ import type { ConfirmationRequest } from './ConfirmDialog'
 import type { DiagnosisReport } from '@shared/intelligence'
 import { reportForRun } from '@shared/experiment-workflow'
 import { closureNames } from './RepairClosurePanel'
+import type { ResearchView } from '@shared/research'
+import { parameterExperimentReason } from '@shared/parameter-engine'
+import { TaskResearchPanel } from './TaskResearchPanel'
 
 type PoolTab = 'pool' | 'live'
 
 interface ExperimentTaskPoolProps {
   tasks: ExperimentTask[]
   reports?: DiagnosisReport[]
+  campaigns?: ResearchView[]
+  onReadRepository?(task?: ExperimentTask): void
+  onOpenCampaign?(campaign: ResearchView): void
+  onOpenTask?(task: ExperimentTask, runId?: string): void
   demoTaskId?: string
   onDiagnose?(task: ExperimentTask, runId: string): void
-  onPlan?(task: ExperimentTask): void
   onResearch?(task: ExperimentTask): void
   onOpenReport?(report: DiagnosisReport): void
   servers: ServerProfile[]
@@ -38,7 +44,7 @@ interface ExperimentTaskPoolProps {
   liveTaskCount: number
   vscodeConnectingId: string | null
   defaultServerId?: string
-  request?: { id: number; taskId?: string; runId?: string; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null
+  request?: { id: number; taskId?: string; runId?: string; start?: boolean; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null
   onRequestHandled?(): void
   onChanged(task: ExperimentTask): void
   notify(message: string, kind?: 'success' | 'error'): void
@@ -76,6 +82,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   const [saving, setSaving] = useState(false)
   const [finishing, setFinishing] = useState<ExperimentTask | null>(null)
   const [starting, setStarting] = useState<ExperimentTask | null>(null)
+  const [pendingStartId, setPendingStartId] = useState<string | null>(null)
   const [runDraft, setRunDraft] = useState<ExperimentRunStartInput | null>(null)
   const [runGpuSnapshot, setRunGpuSnapshot] = useState<ServerSnapshot | null>(null)
   const [runGpuRefreshBusy, setRunGpuRefreshBusy] = useState(false)
@@ -146,6 +153,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       setFilterTag('all')
       setInspectedTaskId(request.taskId)
       setExpandedTaskId(request.taskId)
+      if (request.start) setPendingStartId(request.taskId)
     } else {
       openEditor()
       setEditor({ ...initialDraft(), serverId: request.serverId, accessRouteId: request.accessRouteId,
@@ -423,6 +431,15 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
     setStarting(task)
   }
 
+  // A repository guide can hand off a freshly saved task and open the GPU dialog directly.
+  useEffect(() => {
+    if (!pendingStartId) return
+    const task = props.tasks.find((item) => item.id === pendingStartId)
+    if (!task) return
+    setPendingStartId(null)
+    void startTask(task)
+  }, [pendingStartId, props.tasks])
+
   const recordRun = async (): Promise<void> => {
     if (!starting || !runDraft || startingTaskId) return
     const selectedRunServer = runDraft.serverId ? props.servers.find((server) => server.id === runDraft.serverId) : undefined
@@ -670,6 +687,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               </div>
             </details>
             <button type="button" className="secondary-button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{showArchived ? '返回任务池' : '已归档'}</button>
+            {!showArchived && props.onReadRepository && <button type="button" className="secondary-button" onClick={() => props.onReadRepository?.()}>AI 阅读实验仓库</button>}
             {!showArchived && <button type="button" className="primary-button" onClick={() => openEditor()}><Plus size={16} />添加实验任务</button>}
           </div>
         </div>
@@ -740,8 +758,9 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                 </div>
                 <div className="experiment-task-actions">
                   {props.onDiagnose && failureRun && <button className="primary-button" onClick={() => props.onDiagnose?.(task, failureRun.id)}>诊断失败运行</button>}
-                  {props.onResearch && task.id !== props.demoTaskId && task.launchMode !== 'script' && <button className="secondary-button" onClick={() => props.onResearch?.(task)}>设计对照实验</button>}
-                  {props.onPlan && task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => props.onPlan?.(task)}>基于此任务生成计划</button>}
+                  {props.onResearch && task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => props.onResearch?.(task)}>设计对照实验</button>}
+                  {props.onResearch && task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
+                  {props.onReadRepository && task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => props.onReadRepository?.(task)}>分析仓库启动方式</button>}
                   {task.id === props.demoTaskId ? <p className="workflow-sim-note">模拟任务 · 使用上方演示控制条推进运行。</p> : <>
 
                   {!showArchived && !['queued', 'preparing', 'running'].includes(task.status) && <button type="button" className="primary-button" onClick={() => void startTask(task)} disabled={startingTaskId === task.id}><Play size={15} />{task.status === 'paused' ? '再次排队' : task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed' ? '再次排队' : '加入队列'}</button>}
@@ -768,9 +787,10 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                 </div>
               </div>
               <footer className="experiment-task-card-footer"><span>{task.runs.length} 次运行记录</span>{task.runs.length > 0 && <button type="button" onClick={() => setExpandedTaskId((current) => current === task.id ? null : task.id)}>{expandedTaskId === task.id ? '收起运行记录' : '查看运行记录'}</button>}</footer>
+              <TaskResearchPanel task={task} tasks={props.tasks} campaigns={props.campaigns ?? []} onOpenCampaign={props.onOpenCampaign} onOpenTask={props.onOpenTask} />
               {expandedTaskId === task.id && <div className="experiment-run-history">{[...task.runs].reverse().map((item) => { const linked = reportForRun(props.reports ?? [], task.id, item.id); return <section data-run-id={item.id} className={`experiment-run-record ${item.status === 'failed' ? 'failed' : ''} ${selectedRunId === item.id ? 'workflow-selected-run' : ''}`} key={item.id}><header><strong>{item.status === 'failed' && <CircleAlert size={13} />}第 {item.number} 次运行</strong><span className={`experiment-status-pill ${item.status}`}>{statusNames[item.status]}</span><time>{item.startedAt ? new Date(item.startedAt).toLocaleString('zh-CN') : item.queuedAt ? `排队于 ${new Date(item.queuedAt).toLocaleString('zh-CN')}` : '时间未知'}{item.finishedAt ? ` — ${new Date(item.finishedAt).toLocaleString('zh-CN')}` : item.status === 'paused' ? ' — 已暂停' : item.status === 'queued' ? ' — 等待 GPU' : item.status === 'preparing' ? ' — 准备运行' : item.status === 'running' ? ' — 进行中' : ''}</time></header>{item.message && <p className={`experiment-run-message ${item.status === 'failed' ? 'failed' : ''}`}>{item.message}</p>}<div className="experiment-run-snapshot">{item.serverNameSnapshot && <span>服务器：{item.serverNameSnapshot}</span>}{item.gpuNameSnapshot && <span>GPU：{item.gpuNameSnapshot}{item.gpuIndex !== undefined ? ` · ${item.gpuIndex}` : ''}</span>}{item.codePath && <span>代码：{item.codePath}</span>}{item.dataPath && <span>数据：{item.dataPath}</span>}{item.condaEnvironment && <span>管理器：{item.condaEnvironment.manager}</span>}{item.condaEnvironment?.environmentName && <span>Conda：{item.condaEnvironment.environmentName}</span>}{item.condaEnvironment?.environmentPrefix && <span>Conda：{item.condaEnvironment.environmentPrefix}</span>}{item.condaEnvironment?.pythonVersion && <span>Python：{item.condaEnvironment.pythonVersion}</span>}{item.condaEnvironment?.pythonInterpreterPath && <span>解释器：{item.condaEnvironment.pythonInterpreterPath}</span>}{item.condaEnvironment?.environmentFilePath && <span>环境文件：{item.condaEnvironment.environmentFilePath}</span>}{item.artifactPath && <span>日志/模型：{item.artifactPath}</span>}{item.logPath && <span>运行日志：{item.logPath}</span>}</div>{item.launchMode === 'script' ? <p><strong>运行脚本：</strong>{item.scriptPath}</p> : item.launchCommand && <code className="experiment-run-command">{item.launchCommand}</code>}{item.resultSummary && <p><strong>结果：</strong>{item.resultSummary}</p>}{item.notes && <p><strong>备注：</strong>{item.notes}</p>}<div className="workflow-run-links">
                   {props.onDiagnose && item.status === 'failed' && <button className="secondary-button" onClick={() => props.onDiagnose?.(task, item.id)}>诊断第 {item.number} 次运行</button>}
-                  {linked && <><span>{linked.retryRunId === item.id ? '修复运行 · ' : '已有诊断 · '}{linked.closure ? closureNames[linked.closure.status] : linked.findings[0]?.title}</span><button className="secondary-button" onClick={() => props.onOpenReport?.(linked)}>{linked.retryRunId === item.id ? '查看修复验收' : '查看诊断报告'}</button></>}
+                  {linked && <><span>{linked.retryRunId === item.id ? '修复运行 · ' : '已有诊断 · '}{linked.closure ? closureNames[linked.closure.status] : linked.findings[0]?.title}</span><button className="secondary-button" onClick={() => props.onOpenReport?.(linked)}>{linked.retryRunId === item.id ? '查看重试状态' : '查看诊断报告'}</button></>}
                 </div></section>})}</div>}
             </article>
           })}

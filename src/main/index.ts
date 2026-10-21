@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from 'electron'
 import { writeFile } from 'node:fs/promises'
-import { basename, join, posix } from 'node:path'
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, isAbsolute, join, posix } from 'node:path'
 import type { AppSettings, CondaEnvironmentConfig, CondaManager, ExperimentRunFinishInput, ExperimentRunStartInput, ExperimentTaskDraft, ExperimentTaskStatus, GpuHistoryRange, GpuMetric, RemoteCondaResult, ServerProfile, ServerProfileInput, ServerSnapshot, SftpTransferProgress } from '../shared/types'
 import { isGpuBusy } from '../shared/gpu-status'
 import { applyAccessRoute, getDefaultAccessRouteId } from '../shared/access-routes'
@@ -23,9 +24,50 @@ import type { ProcessWatchInput, TaskFinishedEvent } from '../shared/types'
 import type { TunnelConfigInput } from '../shared/types'
 
 app.setName('LabDeck Competition')
-app.setPath('userData', app.commandLine.hasSwitch('labdeck-headless-check')
-  ? join(app.getAppPath(), 'artifacts', app.commandLine.getSwitchValue('labdeck-headless-check')==='closure'?'closure-ui-check':app.commandLine.getSwitchValue('labdeck-headless-check')==='workflow'?'workflow-ui-check':app.commandLine.getSwitchValue('labdeck-headless-check')==='research'?'research-ui-check':'intelligence-ui-check')
-  : join(app.getPath('appData'), 'LabDeck-Competition-2026'))
+const DATA_DIR_NAME = 'LabDeck-Competition-2026'
+const HEADLESS_DIRS: Record<string, string> = { closure: 'closure-ui-check', workflow: 'workflow-ui-check', research: 'research-ui-check' }
+function writableDataDir(directory: string): boolean {
+  try {
+    for (const target of [directory, join(directory, 'repository-workflows')]) {
+      mkdirSync(target, { recursive: true })
+      const probe = join(target, `.write-test-${process.pid}`)
+      writeFileSync(probe, 'x')
+      rmSync(probe, { force: true })
+    }
+    return true
+  } catch { return false }
+}
+function seedDataDirectory(from: string, to: string): void {
+  const store = join(to, 'lab-server-manager.json')
+  const marker = join(to, '.seeded-from')
+  const seeded = existsSync(marker)
+  // safeStorage on Windows derives its key from Local State; copy it with the encrypted data.
+  if ((seeded || !existsSync(store)) && existsSync(join(from, 'Local State'))) {
+    try { cpSync(join(from, 'Local State'), join(to, 'Local State'), { force: true }) } catch { /* keep the existing key */ }
+  }
+  if (existsSync(store)) return
+  for (const name of ['lab-server-manager.json', 'intelligence', 'repository-workflows', 'research']) {
+    if (!existsSync(join(from, name))) continue
+    try { cpSync(join(from, name), join(to, name), { recursive: true, force: false, errorOnExist: false }) } catch { /* keep the empty local store */ }
+  }
+  try { writeFileSync(marker, from, 'utf8') } catch { /* marker is best effort */ }
+}
+const dataDirArg = (app.commandLine.getSwitchValue('labdeck-data-dir') || process.env.LABDECK_DATA_DIR || '').trim()
+const headless = app.commandLine.hasSwitch('labdeck-headless-check')
+const customDataDir = dataDirArg && isAbsolute(dataDirArg) ? dataDirArg : ''
+const defaultDataDir = join(app.getPath('appData'), DATA_DIR_NAME)
+if (headless) app.setPath('userData', join(app.getAppPath(), 'artifacts', HEADLESS_DIRS[app.commandLine.getSwitchValue('labdeck-headless-check')] ?? 'intelligence-ui-check'))
+else if (customDataDir) { app.setPath('userData', customDataDir); console.log(`[main] 使用自定义数据目录：${customDataDir}`) }
+else if (writableDataDir(defaultDataDir)) app.setPath('userData', defaultDataDir)
+else {
+  const fallback = app.isPackaged ? join(app.getPath('temp'), DATA_DIR_NAME) : join(app.getAppPath(), '.labdeck-data')
+  if (writableDataDir(fallback)) {
+    app.setPath('userData', fallback)
+    seedDataDirectory(defaultDataDir, fallback)
+    console.warn(`[main] 数据目录不可写：${defaultDataDir}，已改用：${fallback}`)
+  } else app.setPath('userData', defaultDataDir)
+}
+if (dataDirArg && !customDataDir) console.warn(`[main] 已忽略非绝对路径的数据目录：${dataDirArg}`)
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -444,7 +486,7 @@ function registerIpc(store: AppStore): void {
   const sftp = new SftpService(ssh)
   const vscode = new VsCodeService(store)
   const conda = new CondaService(ssh)
-  const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')})
+  const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')},(id,event)=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:repository-progress',{id,...event})})
   intelligenceService=intelligence
   intelligence.registerIpc(() => { experimentScheduler?.wake(); experimentsChanged() })
   terminalManager = new TerminalManager(ssh, () => mainWindow?.webContents ?? null)

@@ -130,3 +130,23 @@ describe('saved SSH tunnels', () => {
     expect(merged.accessRoutes?.some(route => route.id === tunnel.accessRouteId && route.kind === 'jump')).toBe(true)
   })
 })
+
+describe('SSH import display-name repair', () => {
+  it('changes only the name and timestamp, preserving credentials, routes and all references', async () => {
+    const store = new AppStore()
+    const server = {id:'11111111-1111-4111-8111-111111111111',name:'labdeck-gpu8-abcdef',host:'192.0.2.8',port:22,username:'user',authType:'password',hasSecret:true,hostFingerprint:'SHA256:retained',jumpHost:{host:'192.0.2.1',port:22,username:'relay',authType:'password',hasSecret:true},accessRoutes:[{id:'direct',name:'默认',kind:'direct',host:'192.0.2.8',port:22,username:'user',authType:'password'}],defaultAccessRouteId:'direct',tags:['custom'],group:'SSH Config',mode:'real',monitorPolicy:'background',createdAt:'2026-10-01T00:00:00Z',updatedAt:'2026-10-01T00:00:00Z'} as ServerProfile
+    const data={servers:[structuredClone(server)],secrets:{[server.id]:'opaque-encrypted-secret'},settings:{serverOrder:[server.id],gpuWatches:[{serverId:server.id,gpuUuid:'gpu0'}]},lastSnapshots:{[server.id]:{serverId:server.id}},gpuHistory:{[server.id+'::gpu0']:[{value:123}]},experimentTasks:[{serverId:server.id}],tunnels:[{serverId:server.id}]}
+    const before=structuredClone(data)
+    const persist=vi.fn(async()=>undefined)
+    Object.assign(store,{data,persist})
+    const renamed=await store.renameServer(server.id,'gpu8')
+    expect(renamed).toEqual({...server,name:'gpu8',updatedAt:renamed.updatedAt})
+    expect(data).toEqual({...before,servers:[renamed]})
+    expect(persist).toHaveBeenCalledOnce()
+    renamed.tags.push('outside')
+    expect(store.getServer(server.id).tags).toEqual(['custom'])
+    await expect(store.renameServer(server.id,'   ')).rejects.toThrow()
+    await expect(store.renameServer('deleted','gpu8')).rejects.toThrow('不存在')
+    expect(persist).toHaveBeenCalledOnce()
+  })
+})
