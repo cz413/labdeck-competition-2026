@@ -925,7 +925,9 @@ export function App(): React.JSX.Element {
               onReport={(reportId) => openIntelligence({tab: 'diagnosis', reportId, taskId: demo.task.id})}
               onInitialFailure={() => { const next = failDemoInitial(demo); updateDemo(next); openTaskRun(next.task, next.task.runs.at(-1)?.id) }}
               onStart={() => updateDemo(startDemoRetry(demo))} onFinish={(success) => updateDemo(finishDemoRetry(demo, success))} />}
-            {loading ? <LoadingState /> : page === 'intelligence' ? <IntelligencePage tasks={workflowTasks} servers={workflowServers} onChanged={updateExperimentTask} onOpenTask={openTaskRun} notify={notify} confirm={requestConfirmation} request={intelligenceRequest} onRequestHandled={() => setIntelligenceRequest(null)} demo={demo} onStartDemo={startDemo} onDemoDiagnose={diagnoseSimulation} onDemoRetry={retrySimulation} /> : page === 'serverDetail' ? (selectedServer ? <ResourceWorkbench key={selectedServer.id}
+            {/* Keep drafts and generated plans when navigating between modules. */}
+            {!loading && <div hidden={page !== 'intelligence'}><IntelligencePage tasks={workflowTasks} servers={workflowServers} onChanged={updateExperimentTask} onOpenTask={openTaskRun} notify={notify} confirm={requestConfirmation} request={page === 'intelligence' ? intelligenceRequest : null} onRequestHandled={() => setIntelligenceRequest(null)} demo={demo} onStartDemo={startDemo} onDemoDiagnose={diagnoseSimulation} onDemoRetry={retrySimulation} /></div>}
+            {loading ? <LoadingState /> : page === 'intelligence' ? null : page === 'serverDetail' ? (selectedServer ? <ResourceWorkbench key={selectedServer.id}
               server={selectedServer} snapshot={snapshots[selectedServer.id]} initialGpuIndex={gpuSelection?.server.id === selectedServer.id ? gpuSelection.gpuIndex : undefined} tasks={experimentTasks} watches={settings.gpuWatches}
               accessRouteId={accessRouteIdFor(selectedServer)} onAccessRouteChange={(id) => selectAccessRoute(selectedServer, id)}
               refreshing={refreshing} testing={testingId === selectedServer.id} vscodeConnecting={vscodeConnectingId === selectedServer.id}

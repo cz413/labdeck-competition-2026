@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Activity, ArrowRight, CheckCircle2, FileDown, FlaskConical, LoaderCircle, RefreshCw, Search, Settings2, ShieldCheck } from 'lucide-react'
 import type { DiagnosisProgress, DiagnosisReport, ExperimentPlan, ModelSettings } from '@shared/intelligence'
-import type { ExperimentTask, ServerProfile } from '@shared/types'
+import type { ExperimentTask, ServerProfile, CondaEnvironmentInfo } from '@shared/types'
 import type { ConfirmationRequest } from './ConfirmDialog'
 import { getDefaultAccessRouteId } from '@shared/access-routes'
 import { RepairClosurePanel, closureNames } from './RepairClosurePanel'
 import type { IntelligenceRequest } from '@shared/experiment-workflow'
 import type { DemoWorkflow } from '@shared/demo-workflow'
 import './intelligence.css'
+import { AccessRouteSelect } from './AccessRouteSelect'
 import { ResearchPage } from './ResearchPage'
 
 type Tab = 'diagnosis' | 'plan' | 'model' | 'closure' | 'demo' | 'research'
@@ -39,10 +40,84 @@ export function IntelligencePage(props: Props): React.JSX.Element {
   const [logText,setLogText]=useState('')
   const [useModel,setUseModel]=useState(false)
   const [selectedEvidence,setSelectedEvidence]=useState<string|null>(null)
-  const [intent,setIntent]=useState('运行 train.py，batch size 设为 16，至少需要 20 GiB 空闲显存。')
-  const [serverId,setServerId]=useState(props.servers.find(s=>s.id!==props.demo?.server.id)?.id??'')
-  const [codePath,setCodePath]=useState('/workspace/vision')
-  const [environmentName,setEnvironmentName]=useState('vision')
+  const [intent,setIntent]=useState('')
+  const [serverId,setServerId]=useState('')
+  const [planRouteId,setPlanRouteId]=useState('')
+  const planServer=props.servers.find(s=>s.id===serverId)
+  const [useReadme,setUseReadme]=useState(false)
+  const [readmeStatus,setReadmeStatus]=useState<'idle'|'loading'|'found'|'manual'>('idle')
+  const [manualReadmeChecked,setManualReadmeChecked]=useState(false)
+  const [manualReadmeBusy,setManualReadmeBusy]=useState(false)
+  const [manualReadmeMessage,setManualReadmeMessage]=useState('')
+  const manualReadmeRequest=useRef(0)
+  const [readmePath,setReadmePath]=useState('')
+  const [codePath,setCodePath]=useState('')
+  const [environmentName,setEnvironmentName]=useState('')
+  const [planEnvs,setPlanEnvs]=useState<CondaEnvironmentInfo[]>([])
+  const [planConnection,setPlanConnection]=useState<'idle'|'connecting'|'success'|'failed'>('idle')
+  const [connectionMessage,setConnectionMessage]=useState('')
+  const [envLoading,setEnvLoading]=useState(false)
+  const [,setEnvError]=useState('')
+  const [condaAdvanced,setCondaAdvanced]=useState(false)
+  const [condaDirectory,setCondaDirectory]=useState('')
+  const [resolvedCondaPath,setResolvedCondaPath]=useState('')
+  const [envReload,setEnvReload]=useState(0)
+  const previousEnvTarget=useRef('')
+  const verifiedPlanTarget=useRef('')
+  const envRouteId=planServer?(planRouteId||getDefaultAccessRouteId(planServer)):''
+  useEffect(()=>{
+    let live=true
+    let connected=false
+    const target=serverId+':'+envRouteId
+    const checkConnection=verifiedPlanTarget.current!==target
+    if(checkConnection){setPlanConnection('idle');setConnectionMessage('')}
+    if(previousEnvTarget.current&&previousEnvTarget.current!==target)setEnvironmentName('')
+    previousEnvTarget.current=target
+    setPlanEnvs([]);setEnvError('');setEnvLoading(false);setResolvedCondaPath('')
+    if(!planServer||planServer.mode!=='real'||!envRouteId)return
+    const directory=condaDirectory.trim().replace(/\/+$/,'')
+    if(directory&&(!directory.startsWith('/')||/[\0\r\n]/.test(directory))){setEnvError('请填写服务器上的 Conda 安装目录绝对路径');return}
+    setEnvLoading(true)
+    if(checkConnection)setPlanConnection('connecting')
+    const connectionCheck=checkConnection?window.labApi.servers.test(serverId,envRouteId):Promise.resolve({status:'success' as const,message:''})
+    void connectionCheck.then(async connection=>{
+      if(!live)return null
+      if(connection.status!=='success')throw new Error(connection.message||'请先在资源页检查连接并确认主机指纹')
+      connected=true;verifiedPlanTarget.current=target;setPlanConnection('success');setConnectionMessage('')
+      return window.labApi.experiments.listCondaEnvironments(serverId,envRouteId,'conda',directory?directory+'/bin/conda':undefined)
+    }).then(result=>{
+      if(!result)return
+      if(!live)return
+      if(result.status==='host-key-required')throw new Error(result.message+'；请先在资源页确认主机指纹，再重新读取。')
+      setResolvedCondaPath(result.value.managerPath);setPlanEnvs(result.value.environments);if(!result.value.environments.length)setCondaAdvanced(true)
+
+    }).catch(error=>{if(live){if(!connected){setPlanConnection('failed');setConnectionMessage(error instanceof Error?error.message:String(error))}else{setEnvError('未能读取环境');setCondaAdvanced(true)}}}).finally(()=>{if(live)setEnvLoading(false)})
+    return()=>{live=false}
+  },[serverId,envRouteId,envReload])
+
+  useEffect(()=>{
+    let live=true
+    manualReadmeRequest.current+=1;setManualReadmeChecked(false);setManualReadmeBusy(false);setManualReadmeMessage('')
+    setReadmeStatus('idle');setReadmePath('')
+    if(!useReadme||!serverId||!codePath.trim().startsWith('/')||planConnection!=='success')return
+    setReadmeStatus('loading')
+    const timer=setTimeout(()=>{void window.labApi.intelligence.detectReadme({serverId,accessRouteId:envRouteId,codePath:codePath.trim(),intent:'',environmentName:''}).then(result=>{
+      if(!live)return
+      if(result.status==='found'){setReadmePath(result.name??'');setReadmeStatus('found')}else setReadmeStatus('manual')
+    }).catch(()=>{if(live)setReadmeStatus('manual')})},400)
+    return()=>{live=false;clearTimeout(timer)}
+  },[useReadme,serverId,envRouteId,codePath,planConnection])
+  async function checkManualReadme():Promise<void>{
+    const request=++manualReadmeRequest.current
+    setManualReadmeBusy(true);setManualReadmeChecked(false);setManualReadmeMessage('')
+    try{
+      const result=await window.labApi.intelligence.detectReadme({serverId,accessRouteId:envRouteId,codePath:codePath.trim(),readmePath:readmePath.trim(),intent:'',environmentName:''})
+      if(request!==manualReadmeRequest.current)return
+      setManualReadmeChecked(result.status==='found')
+      setManualReadmeMessage(result.status==='found'?'README 可读取':'无法读取，请检查路径、连接和文件权限。')
+    }catch{if(request===manualReadmeRequest.current)setManualReadmeMessage('无法读取，请检查路径、连接和文件权限。')}
+    finally{if(request===manualReadmeRequest.current)setManualReadmeBusy(false)}
+  }
   const [plan,setPlan]=useState<ExperimentPlan|null>(null)
   const [savedTask,setSavedTask]=useState<ExperimentTask|null>(null)
   const chosenTask=props.tasks.find(t=>t.id===taskId)
@@ -77,7 +152,7 @@ export function IntelligencePage(props: Props): React.JSX.Element {
     const task=props.tasks.find(t=>t.id===request.taskId)
     if(request.tab==='research'&&task)setResearchTaskId(task.id)
     if(request.tab==='plan'&&task){
-      setServerId(task.serverId??'');setCodePath(task.codePath);setEnvironmentName(task.condaEnvironment?.environmentName??'')
+      setPlanRouteId(task.accessRouteId??'');setReadmePath('');setServerId(task.serverId??'');setCodePath(task.codePath);setEnvironmentName(task.condaEnvironment?.environmentName??'')
       setIntent(`${task.objective||task.title}\n参考启动配置：${task.launchCommand||task.scriptPath||'尚未填写'}\n请生成一个新的任务草稿。`)
       setPlanSourceTaskId(task.id);setPlan(null);setSavedTask(null)
     }else if(request.tab==='diagnosis'){
@@ -185,7 +260,7 @@ export function IntelligencePage(props: Props): React.JSX.Element {
       </article>}
     </div></div>}
     {tab==='closure'&&<section className="intel-closure-list"><header><div><h2>修复运行与验收</h2><p>确认修复后自动跟踪，结束时核验退出码；再次失败会生成新诊断。</p></div><span>{allHistory.filter(r=>r.retryRunId).length} 项记录</span></header>{allHistory.some(r=>r.retryRunId)?<div className="intel-closure-rows">{allHistory.filter(r=>r.retryRunId).map(item=><article key={item.id} className="intel-closure-row"><div><button className="intel-report-link" onClick={()=>openReport(item.id)}>{item.title}</button><p>{isDemoReport(item.id)&&'模拟 · '}{item.repair?`batch size ${item.repair.previousBatch} → ${item.repair.nextBatch}`:'修复运行'} · {new Date(item.createdAt).toLocaleString('zh-CN')}</p></div><div><span className={`intel-closure-status ${item.closure?.status??'paused'}`}>{closureNames[item.closure?.status??'paused']}</span><p>{item.closure?.message??'历史运行未启用自动跟踪'}</p></div><div className="intel-closure-row-actions">{props.tasks.some(t=>t.id===item.taskId&&t.runs.some(r=>r.id===item.retryRunId))&&<button className="secondary-button" onClick={()=>props.onOpenTask(props.tasks.find(t=>t.id===item.taskId)!,item.retryRunId)}>打开修复运行</button>}<button className="secondary-button" onClick={()=>openReport(item.id)}>查看验收</button>{item.closure?.nextDiagnosisId&&<button className="secondary-button" onClick={()=>openReport(item.closure!.nextDiagnosisId!)}>查看新诊断</button>}</div></article>)}</div>:<div className="intel-empty"><Activity size={34}/><h2>从一次实际失败运行开始</h2><p>在故障诊断中选择实际运行，审查并创建支持的修复方案后，这里会自动跟踪验收。</p><button className="secondary-button" onClick={()=>{setTab('diagnosis');setSource('remote')}}>选择实际运行</button></div>}</section>}
-    {tab==='plan'&&<div className="intel-plan-layout"><section className="intel-plan-input"><h2>描述要运行的实验</h2>{planSourceTask&&<p className="workflow-context">来源：{planSourceTask.title} · 保存为新草稿</p>}<p>模型生成任务草稿，保存前可修改参数；运行仍需在实验任务中明确加入队列。</p><label>目标服务器<select value={serverId} onChange={e=>{setServerId(e.target.value);setPlan(null);setSavedTask(null)}}><option value="">选择服务器</option>{props.servers.filter(s=>s.id!==props.demo?.server.id).map(s=><option value={s.id} key={s.id}>{s.name}{s.mode==='demo'?'（演示，不能实际运行）':''}</option>)}</select></label><label>代码目录<input value={codePath} onChange={e=>setCodePath(e.target.value)} placeholder="/workspace/vision"/></label><label>Conda 环境<input value={environmentName} onChange={e=>setEnvironmentName(e.target.value)} placeholder="留空表示不指定环境"/></label><label>实验需求<textarea rows={6} value={intent} onChange={e=>setIntent(e.target.value)} /></label><button className="primary-button" disabled={!!busy||!settings.enabled||!serverId||!intent.trim()} onClick={()=>void action('plan',async()=>{setPlan(null);setSavedTask(null);setPlan(await window.labApi.intelligence.plan({intent,serverId,codePath,environmentName}))})}>{busy==='plan'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成执行计划</button>{!settings.enabled&&<p>先在模型设置中配置模型，再生成计划。</p>}</section><section className="intel-plan-output">{!plan?<div className="intel-empty"><FlaskConical size={36}/><h2>计划会在这里展开</h2><p>服务器和代码目录由你指定。生成结果需要检查，保存草稿不会启动任务。</p></div>:<><div className="intel-badges"><span>模型生成 · 尚未运行</span></div><h2>审查实验配置</h2><label>任务名称<input value={plan.draft.title} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,title:e.target.value}})}}/></label><label>启动命令<textarea rows={3} value={plan.draft.launchCommand} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,launchCommand:e.target.value}})}}/></label><label>数据目录<input value={plan.draft.dataPath} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,dataPath:e.target.value}})}}/></label><label>最低空闲显存（GiB）<input type="number" min="1" max="1024" value={plan.draft.minimumFreeVramGiB??''} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,minimumFreeVramGiB:e.target.value?Number(e.target.value):undefined}})}}/></label>{plan.assumptions.length>0&&<div className="intel-assumptions"><h3>保存前需要确认</h3><ul>{plan.assumptions.map((a,i)=><li key={i}>{a}</li>)}</ul></div>}<h3>运行前检查</h3><ul>{plan.checks.map((c,i)=><li key={i}>{c}</li>)}</ul>{savedTask?<button className="primary-button" onClick={()=>props.onOpenTask(savedTask)}><CheckCircle2 size={15}/>打开已保存的实验任务</button>:<button className="primary-button" disabled={!!busy||!plan.draft.title.trim()} onClick={()=>void savePlan()}>确认配置并保存草稿</button>}</>}</section></div>}
+    {tab==='plan'&&<div className="intel-plan-layout"><section className="intel-plan-input"><h2>描述要运行的实验</h2>{planSourceTask&&<p className="workflow-context">来源：{planSourceTask.title} · 保存为新草稿</p>}<p>模型生成任务草稿，保存前可修改参数；运行仍需在实验任务中明确加入队列。</p><label>目标服务器<select value={serverId} onChange={e=>{setServerId(e.target.value);setCondaDirectory('');setPlanRouteId('');setPlan(null);setSavedTask(null)}}><option value="" disabled hidden></option>{props.servers.filter(s=>s.id!==props.demo?.server.id).map(s=><option value={s.id} key={s.id}>{s.name}{s.mode==='demo'?'（演示，不能实际运行）':''}</option>)}</select></label>{planServer&&<AccessRouteSelect server={planServer} value={planRouteId||getDefaultAccessRouteId(planServer)} onChange={setPlanRouteId} showSingleRoute/>}{planServer&&<div role="status"><span>{planConnection==='connecting'?'连接中…':planConnection==='success'?'连接成功':planConnection==='failed'?'连接失败':'尚未连接'}</span>{planConnection==='failed'&&<><p>{connectionMessage}</p><button type="button" className="secondary-button" onClick={()=>{verifiedPlanTarget.current='';setEnvReload(value=>value+1)}}>重新连接</button></>}</div>}<label>Conda 环境<select style={{color:environmentName?undefined:'var(--text-muted, #9aa0a6)'}} value={environmentName} onChange={e=>setEnvironmentName(e.target.value)} disabled={!planServer||envLoading}><option value="" disabled hidden>{!planServer?'请先选择服务器':planConnection==='failed'?'请先连接服务器':planConnection==='connecting'?'等待服务器连接…':envLoading?'正在读取环境…':!planEnvs.length?'未找到环境，请手动指定安装目录':'选择环境'}</option>{environmentName&&!planEnvs.some(env=>env.name===environmentName)&&<option value={environmentName}>{environmentName}（来源任务配置，未验证）</option>}{planEnvs.map(env=><option key={env.prefix} value={env.name}>{env.name} · {env.prefix}</option>)}</select></label>{condaAdvanced&&(<label>Conda 安装目录<input value={condaDirectory} onChange={e=>setCondaDirectory(e.target.value)} placeholder="例如：/data/DataLACP/zhaogenghua/anaconda3"/></label>)}<button type="button" className="secondary-button" disabled={!planServer||planServer.mode!=='real'||envLoading} onClick={()=>setEnvReload(value=>value+1)}>{envLoading?'读取中…':'重新读取'}</button><label>代码目录<input value={codePath} onChange={e=>setCodePath(e.target.value)} placeholder="例如：/data/DataLACP/zhaogenghua/SASRec.pytorch/python"/></label><label>参考项目说明生成计划<select value={useReadme?'yes':'no'} onChange={e=>setUseReadme(e.target.value==='yes')}><option value="no">仅根据实验需求</option><option value="yes">结合 README 文档</option></select></label>{useReadme&&<>{readmeStatus==='idle'&&<p>请先连接服务器并填写代码目录。</p>}{readmeStatus==='loading'&&<p>正在查找 README…</p>}{readmeStatus==='found'&&<p>已找到 README：{readmePath}</p>}{readmeStatus==='manual'&&<label>未找到 README，请手动填写路径<input value={readmePath} onChange={e=>{setReadmePath(e.target.value);manualReadmeRequest.current+=1;setManualReadmeChecked(false);setManualReadmeBusy(false);setManualReadmeMessage('')}} placeholder="例如：/data/DataLACP/zhaogenghua/SASRec.pytorch/README.md"/><button type="button" className="secondary-button" disabled={manualReadmeBusy||!readmePath.trim()} onClick={()=>void checkManualReadme()}>{manualReadmeBusy?'检查中…':'检查路径'}</button>{manualReadmeMessage&&<span role="status">{manualReadmeMessage}</span>}</label>}</>}<label>实验需求<textarea rows={6} placeholder="例如：在 ml-1m 数据集上训练 SASRec，先运行 1 个 epoch，验证训练流程。" value={intent} onChange={e=>setIntent(e.target.value)} /></label><button className="primary-button" disabled={!!busy||!settings.enabled||!serverId||!codePath.trim()||!intent.trim()||(useReadme&&(readmeStatus==='idle'||readmeStatus==='loading'||!readmePath.trim()||(readmeStatus==='manual'&&!manualReadmeChecked)))} onClick={()=>void action('plan',async()=>{setPlan(null);setSavedTask(null);setPlan(await window.labApi.intelligence.plan({intent,serverId,codePath,environmentName,useReadme,readmePath:useReadme?readmePath:undefined,condaManagerPath:resolvedCondaPath||undefined,accessRouteId:planRouteId||(planServer?getDefaultAccessRouteId(planServer):undefined)}))})}>{busy==='plan'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成执行计划</button>{!settings.enabled&&<p>先在模型设置中配置模型，再生成计划。</p>}</section><section className="intel-plan-output">{!plan?<div className="intel-empty"><FlaskConical size={36}/><h2>计划会在这里展开</h2><p>服务器和代码目录由你指定。生成结果需要检查，保存草稿不会启动任务。</p></div>:<><div className="intel-badges"><span>模型生成 · 尚未运行</span></div><h2>审查实验配置</h2><label>任务名称<input value={plan.draft.title} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,title:e.target.value}})}}/></label><label>启动命令<textarea rows={3} value={plan.draft.launchCommand} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,launchCommand:e.target.value}})}}/></label><label>数据目录<input value={plan.draft.dataPath} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,dataPath:e.target.value}})}}/></label><label>最低空闲显存（GiB）<input type="number" min="1" max="1024" value={plan.draft.minimumFreeVramGiB??''} onChange={e=>{setSavedTask(null);setPlan({...plan,draft:{...plan.draft,minimumFreeVramGiB:e.target.value?Number(e.target.value):undefined}})}}/></label>{plan.assumptions.length>0&&<div className="intel-assumptions"><h3>保存前需要确认</h3><ul>{plan.assumptions.map((a,i)=><li key={i}>{a}</li>)}</ul></div>}<h3>运行前检查</h3><ul>{plan.checks.map((c,i)=><li key={i}>{c}</li>)}</ul>{savedTask?<button className="primary-button" onClick={()=>props.onOpenTask(savedTask)}><CheckCircle2 size={15}/>打开已保存的实验任务</button>:<button className="primary-button" disabled={!!busy||!plan.draft.title.trim()} onClick={()=>void savePlan()}>确认配置并保存草稿</button>}</>}</section></div>}
     {tab==='research'&&<ResearchPage tasks={props.tasks} servers={props.servers} modelEnabled={settings.enabled} initialTaskId={researchTaskId} onChanged={props.onChanged} onOpenTask={props.onOpenTask} onOpenDiagnosis={openReport} confirm={props.confirm} notify={props.notify}/>}
     {tab==='demo'&&<section className="intel-demo-entry"><h2>三分钟展示任务到验收</h2><p>不需要服务器或 API 密钥。载入一份预设计划，在原有任务栏和诊断页之间演示完整流程。</p><ol><li>查看预设实验配置，模拟第一次 CUDA 显存不足。</li><li>从任务的指定运行进入诊断，点击日志证据查看原因。</li><li>审查 batch size 32 → 16，确认创建模拟修复运行。</li><li>模拟修复开始，选择验收成功或再次失败；失败会关联新诊断。</li></ol><p>诊断使用现有规则引擎；计划、运行和退出码为预设或模拟数据，不展示真实模型推理、GPU 调度和训练效果。演示数据仅保留在当前窗口内，可随时重置或退出。</p><button className="primary-button" disabled={!!busy} onClick={props.onStartDemo}>{props.demo?'重新载入预设演示计划':'载入预设演示计划'}</button></section>}
     {tab==='model'&&<section className="intel-model-form"><h2>连接你的模型</h2><p>支持兼容 Chat Completions 的服务。密钥保存在参赛版的独立本地数据目录，并使用系统加密。</p><label className="intel-checkbox"><input type="checkbox" checked={settings.enabled} onChange={e=>setSettings({...settings,enabled:e.target.checked})}/>启用模型分析与实验计划</label><label>API 基础地址<input value={settings.endpoint} onChange={e=>setSettings({...settings,endpoint:e.target.value})} placeholder="https://模型服务地址/v1"/></label><p>填写基础地址，应用会追加 /chat/completions。本机服务可使用 HTTP。</p><label>模型名称<input value={settings.model} onChange={e=>setSettings({...settings,model:e.target.value})} placeholder="填写服务提供的模型 ID"/></label><label>API 密钥<input type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={settings.hasApiKey?'已保存密钥；留空保留':'本机无认证服务可留空'}/></label>{settings.hasApiKey&&<label className="intel-checkbox"><input type="checkbox" checked={clearKey} onChange={e=>setClearKey(e.target.checked)}/>清除已保存的密钥</label>}<div className="intel-model-actions"><button className="primary-button" disabled={!!busy} onClick={()=>void saveModel()}>保存模型配置</button><button className="secondary-button" disabled={!!busy||!settings.enabled} onClick={()=>void saveModel(true)}>{busy==='model'?<LoaderCircle size={14} className="spin"/>:<Activity size={14}/>}保存并测试连接</button></div><div className="intel-provider-note"><ShieldCheck size={18}/><p>诊断报告会标注实际使用的引擎。模型不可用或证据校验失败时保留规则结果，并说明原因。</p></div></section>}
