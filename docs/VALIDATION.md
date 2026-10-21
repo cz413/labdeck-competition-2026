@@ -1,3 +1,17 @@
+# 2026-10-21 合并任务内诊断重构
+
+- 合入 `origin/codex/task-diagnosis-refactor`（`2a2719f`），保留本地智能创建、手动配置、任务内对照组及项目依据保存。
+- 解决 `ExperimentTaskPool.tsx` 两处操作区冲突；真实任务的分析入口直接打开任务内诊断，不再依赖已撤下独立页面的回调。
+- 诊断联调脚本改为等待当前任务页面，并同步移除重新注册的项目分析 IPC 处理器。手动创建夹具补全启动所需代码目录。
+- `npm test`：38 个测试文件，363 项通过，无跳过。
+- `npm run build`：main/preload/renderer 类型检查和源码构建通过，未打包。
+- `node scripts/run-electron-check.cjs scripts/verify-task-diagnosis.cjs --no-sandbox`：真实 Electron、preload/IPC，模拟 SSH、无真实模型。覆盖指定运行自动分析、结果复用、显式重新分析、取消修复不创建运行、确认修复后创建并跟踪新运行、编辑配置、早期运行结果隔离及深浅主题布局。
+- `node scripts/run-electron-check.cjs scripts/verify-smart-create.cjs --no-sandbox`：智能创建的项目/意图输入、进度、方案卡片、环境与数据补充、修改与撤销、完整配置往返、保存草稿和资源弹窗均通过；`startRun=0`。
+- `node scripts/run-electron-check.cjs scripts/verify-task-creation.cjs --no-sandbox`：不完整手动草稿、已有草稿编辑、资源确认、排队任务快照隔离及任务内对照入口通过；`startRun=0`。
+- 所有页面联调均使用隔离数据目录与模拟服务。用户实际任务、模型和服务器未参与这些检查。
+
+---
+
 # 2026-10-21 实验任务智能创建准备视图
 
 - `npm run typecheck`：main / preload / shared 与 renderer 类型检查通过。

@@ -41,6 +41,30 @@ afterEach(async()=>{
   await rm(resolved,{recursive:true,force:true})
 })
 describe('intelligent experiment lifecycle',()=>{
+  it('selects rule analysis automatically when no model is configured',async()=>{
+    const report=await service().diagnoseTask({taskId,runId,requestId:retryRunId})
+    expect(report.runId).toBe(runId)
+    expect(report.engine).toBe('rules')
+    expect(report.findings.some(item=>item.category==='oom')).toBe(true)
+    expect(state.request).not.toHaveBeenCalled()
+  })
+  it('selects one model request automatically for task diagnosis',async()=>{
+    const s=service()
+    await s.saveSettings({enabled:true,endpoint:'https://example.com/v1',model:'mock',apiKey:'mock-key'})
+    state.request.mockResolvedValue({action:'final',summary:'OOM',findings:[{category:'oom',title:'OOM',confidence:'medium',explanation:'OOM in log',evidenceIds:['log-5'],steps:['Check batch size']}]})
+    const report=await s.diagnoseTask({taskId,runId,requestId:retryRunId})
+    expect(report.runId).toBe(runId)
+    expect(state.request).toHaveBeenCalledOnce()
+    expect(state.request.mock.calls[0][3]).toMatchObject({finalOnly:true,budget:{remainingRounds:0}})
+  })
+  it('rejects task diagnosis of a nonfailed or nonexistent run',async()=>{
+    const s=service()
+    task.runs[0].status='running'
+    await expect(s.diagnoseTask({taskId,runId,requestId:retryRunId})).rejects.toThrow('请选择已失败的运行')
+    await expect(s.diagnoseTask({taskId,runId:serverId,requestId:retryRunId})).rejects.toThrow('没有找到任务运行记录')
+    expect(ssh.connect).not.toHaveBeenCalled()
+  })
+
   it('keeps sample and pasted diagnoses separate from real runs and cannot execute them',async()=>{
     const s=service();const report=await s.diagnose({sample:'oom',useModel:false})
     expect(report.source).toBe('sample');expect(report.repair).toBeUndefined()

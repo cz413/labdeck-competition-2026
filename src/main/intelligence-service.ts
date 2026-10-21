@@ -1,12 +1,11 @@
-import { RepositoryWorkflowService } from './repository-workflow'
-import { reviewRepositoryGuide } from './repository-review'
-import { selectDiagnosticLog } from './log-selection'
-import { createHash } from 'node:crypto'
 import type { ModelUsage } from '../shared/model-usage'
 import { sumModelUsage } from '../shared/model-usage'
+import { DiagnosisCollector } from './diagnosis-collector'
+import { runDiagnosis } from './diagnosis-workflow'
+import { RepositoryWorkflowService } from './repository-workflow'
+import { reviewRepositoryGuide } from './repository-review'
 import { externalExperimentSchema, externalDraftSchema } from '../shared/external-experiment'
 import type { ExternalDraftInput } from '../shared/external-experiment'
-import { collectExternalLog } from './external-diagnosis'
 import { app, dialog, ipcMain, safeStorage } from 'electron'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, posix } from 'node:path'
@@ -17,7 +16,7 @@ import { investigate } from './diagnostic-agent'
 import { RepairTracker, initialClosure } from './repair-tracker'
 import { DiagnosticTools } from './diagnostic-tools'
 import type { RepairClosure, DiagnosisProgress, DiagnosisInput, DiagnosisReport, ExperimentPlan, ModelSettings, ModelSettingsInput, PlanInput, Verification } from '../shared/intelligence'
-import { diagnosticSamples, diagnoseEvidence, logEvidence, proposeBatchRepair, redactSecrets } from '../shared/diagnosis-engine'
+import { diagnoseEvidence, proposeBatchRepair, redactSecrets } from '../shared/diagnosis-engine'
 import { applyAccessRoute, getAccessRoutes, getDefaultAccessRouteId } from '../shared/access-routes'
 import { experimentRunStartInputSchema, experimentTaskDraftSchema } from '../shared/schemas'
 import type { ExperimentTask, ExperimentRun, ExperimentRunStartInput } from '../shared/types'
@@ -168,76 +167,15 @@ export class IntelligenceService {
     if (!task || !run) throw new Error('没有找到任务运行记录，请先选择一次实际运行')
     return { task, run }
   }
-  private async collect(input: DiagnosisInput, signal?: AbortSignal): Promise<Omit<DiagnosisReport, 'id' | 'createdAt' | 'engine' | 'findings'>> {
-    let raw = input.logText ?? (input.sample ? diagnosticSamples[input.sample] : '')
-    const report: Omit<DiagnosisReport, 'id' | 'createdAt' | 'engine' | 'findings'> = { title: input.sample ? '示例日志诊断' : '粘贴日志诊断', source: input.sample ? 'sample' : 'pasted', logExcerpt:'', evidence:[], warnings:[] }
-    if(input.external){
-      const collected=await collectExternalLog(this.store,this.ssh,input.external,signal)
-      raw=collected.text
-      const context={...collected.context,launchCommand:redactSecrets(collected.context.launchCommand)}
-      Object.assign(report,{title:`${collected.serverName} · 手动实验日志`,source:'external',externalContext:context,externalLog:collected.snapshot})
-      report.evidence.push({id:'external-runtime',source:'runtime',label:'用户提供的手动实验上下文（未核验进程状态）',text:redactSecrets(JSON.stringify({...context,processStatus:'unknown',server:collected.serverName}))})
-      report.evidence.push({id:'external-log-file',source:'runtime',label:'实际读取的服务器日志文件',text:JSON.stringify({...collected.snapshot,path:context.logPath})})
-      report.warnings.push('本报告来自已有日志；原命令、工作目录和环境由用户填写，不能据此确认进程已退出或日志属于哪次运行。没有创建任务或执行原命令。')
-      if(collected.snapshot.truncated)report.warnings.push('在最多 256 KiB 的文件开头/末尾范围中选取错误上下文与末尾状态；结果最多 240 行 / 64 KiB，省略处不表示原日志连续。')
-      if(collected.snapshot.changed)report.warnings.push('读取期间日志发生变化，片段可能来自仍在写入的进程。')
-    }
-    if (input.taskId) {
-      const {task, run} = this.findRun(input.taskId, input.runId)
-      Object.assign(report, {title: `${task.title} · 第 ${run.number} 次运行`, source:'remote', taskId:task.id, runId:run.id})
-      report.evidence.push({id:'runtime',source:'runtime',label:'运行记录',text:redactSecrets(JSON.stringify({status:run.status,message:run.message,command:run.launchCommand,codePath:run.codePath,server:run.serverNameSnapshot,startedAt:run.startedAt,finishedAt:run.finishedAt}))})
-      const serverId = run.serverId ?? task.serverId
-      if (!serverId) throw new Error('运行记录缺少服务器')
-      const server = this.store.getServer(serverId)
-      if (server.mode !== 'real') throw new Error('演示节点不能采集真实日志；请使用示例日志入口')
-      const routeId = run.accessRouteId ?? task.accessRouteId ?? getDefaultAccessRouteId(server)
-      if (!getAccessRoutes(server).some(r => r.id === routeId)) throw new Error('这次运行的连接路径已不存在')
-      const profile = applyAccessRoute(server, routeId)
-      if (!profile.hostFingerprint || (profile.jumpHost && !profile.jumpHost.hostFingerprint)) throw new Error('请先在资源页核对并信任 SSH 主机指纹')
-      const secrets = this.store.getSecrets(serverId)
-      if (run.logPath) {
-        if (!run.logPath.startsWith('/') || run.logPath.includes('\0')) throw new Error('运行日志路径无效')
-        const connected = await this.ssh.connect(profile, secrets)
-        const abort=()=>connected.client.end()
-        signal?.addEventListener('abort',abort,{once:true})
-        try {
-          if(signal?.aborted)throw new Error('诊断已停止')
-          const split=`__LABDECK_LOG_${randomUUID()}__`
-          const scanned=await this.ssh.exec(connected.client,`if [ -f ${quote(run.logPath)} ]; then head -c 196608 -- ${quote(run.logPath)}; printf '\\n${split}\\n'; tail -c 65536 -- ${quote(run.logPath)}; else printf '日志文件不存在\\n'; fi`,15000)
-          raw=selectDiagnosticLog(scanned.split(`\n${split}\n`).map((text,index)=>({text,label:index?'文件末尾最多 64 KiB':'文件开头最多 192 KiB'}))).text
-        } catch { report.warnings.push('远程日志读取失败，请检查连接或粘贴日志重试') }
-        finally { signal?.removeEventListener('abort',abort); connected.client.end() }
-      } else report.warnings.push('这次运行没有记录日志路径')
-      if(!input.useModel && !signal?.aborted) {
-      try {
-        const snapshot = await this.monitor.snapshot(profile,secrets)
-        report.evidence.push({id:'resource',source:'resource',label:'检查时的资源快照',text:JSON.stringify({sampledAt:snapshot.sampledAt,status:snapshot.status,gpus:snapshot.gpus.map(g=>({index:g.index,name:g.name,freeMiB:g.memoryTotalMiB-g.memoryUsedMiB,utilization:g.utilizationPercent,temperature:g.temperatureC}))})})
-        report.warnings.push('资源快照采集于本次检查，不能当作失败时的占用记录')
-      } catch { report.warnings.push('资源快照未采集到；资源相关原因尚未验证') }
-      const environment = run.condaEnvironment ?? task.condaEnvironment
-      if (environment) {
-        try {
-          const result = await this.conda.checkEnvironment(profile,secrets,environment)
-          report.evidence.push({id:'environment',source:'environment',label:'Conda 环境检查',text:JSON.stringify(result)})
-          if (result.found) {
-            const probe = 'import json,importlib.util; p=importlib.util.find_spec("torch"); t=__import__("torch") if p else None; print(json.dumps({"torch":getattr(t,"__version__",None),"cuda_build":getattr(getattr(t,"version",None),"cuda",None),"cuda_available":t.cuda.is_available() if t else False}))'
-            const connected = await this.ssh.connect(profile,secrets)
-            try {
-              const info = await this.ssh.exec(connected.client,this.conda.buildEnvironmentRunCommand({...environment,managerPath:result.managerPath},`python -c ${quote(probe)}`),20_000)
-              report.evidence.push({id:'torch',source:'environment',label:'PyTorch / CUDA 检查',text:redactSecrets(info).slice(0,6000)})
-            } finally { connected.client.end() }
-          }
-        } catch { report.warnings.push('环境检查未完成，不能确定依赖或 CUDA 是否可用') }
-      }
-      }
-    }
-    const logs = logEvidence(raw)
-    report.logExcerpt = logs.logExcerpt
-    report.evidence = [...logs.evidence,...report.evidence]
-    if (logs.clipped) report.warnings.push('日志仅保留最后 240 行 / 64 KiB；行号相对于显示的日志片段')
-    if (report.source === 'remote') report.warnings.push('远程日志在有限的文件开头/末尾范围提取错误上下文；片段间可能不连续，未扫描区域仍可能有其他错误')
-    if (!raw.trim()) report.warnings.push('没有可用日志，现有证据不足以判断失败原因')
-    return report
+  /** Task diagnosis owns engine selection; the UI only identifies the failed run. */
+  async diagnoseTask(raw:unknown,progress?:(event:DiagnosisProgress)=>void):Promise<DiagnosisReport>{
+    await this.ready()
+    const input=z.object({taskId:z.string().uuid(),runId:z.string().uuid(),requestId:z.string().uuid(),refresh:z.boolean().default(false),inspect:z.boolean().default(false)}).parse(raw)
+    const {run}=this.findRun(input.taskId,input.runId)
+    if(run.status!=='failed')throw new Error('请选择已失败的运行；正在运行的任务请先查看实时日志。')
+    // One model request by default; bounded read-only investigation is an explicit follow-up.
+    return this.diagnose({taskId:input.taskId,runId:input.runId,requestId:input.requestId,force:input.refresh,
+      useModel:this.config.enabled&&!!this.config.model.trim(),depth:input.inspect?'inspect':'quick'},progress)
   }
   async diagnose(raw: DiagnosisInput, progress?: (event:DiagnosisProgress)=>void): Promise<DiagnosisReport> {
     await this.ready()
@@ -248,43 +186,23 @@ export class IntelligenceService {
     const controller=new AbortController();this.diagnoses.set(requestId,controller)
     const emit=(stage:DiagnosisProgress['stage'],message:string,round?:number)=>progress?.({requestId,stage,message,round})
     try {
-      emit('collect','正在读取日志与运行记录')
-      const collected=await this.collect(input,controller.signal)
-      const cacheEvidence=collected.evidence.map(item=>{
-        if(item.source==='resource'||item.source==='environment'){try{const value=JSON.parse(item.text);delete value.sampledAt;delete value.checkedAt;return {...item,text:JSON.stringify(value)}}catch{return item}}
-        if(item.id==='external-log-file'){const value=JSON.parse(item.text);delete value.collectedAt;return {...item,text:JSON.stringify(value)}}
-        return item
-      })
-      const cacheKey=createHash('sha256').update(JSON.stringify({version:'diagnosis-v5-source',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence:cacheEvidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?{endpoint:this.config.endpoint,model:this.config.model,enabled:this.config.enabled}:null})).digest('hex')
-      const cached=(collected.source==='remote'||collected.source==='external')&&!input.force&&this.reports.find(item=>item.cacheKey===cacheKey&&Date.now()-Date.parse(item.createdAt)<86400000&&(!input.useModel||item.engine!=='rules')&&(!item.investigation||item.investigation.status==='completed'))
-      if(cached){emit('complete','已采集的日志与输入配置未变化，复用已有诊断；未再次调用模型');return {...structuredClone(cached),cacheHit:true,warnings:[...cached.warnings,'本次复用原分析。环境与资源信息仍是原采集时刻，需要更新时请强制重新分析。']}}
-      const modelCalls:ModelUsage[]=[]
-      const report:DiagnosisReport={...collected,cacheKey,id:randomUUID(),createdAt:new Date().toISOString(),engine:'rules',useModel:input.useModel,findings:diagnoseEvidence(collected.evidence)}
-      if(input.useModel){
-        if(!this.config.enabled||!this.config.model){
-          report.warnings.push('模型未启用或未配置名称，保留规则诊断。')
-        }else{
-          const config={...this.config};const key=this.key()
+      const collector=new DiagnosisCollector(this.store,this.ssh,this.monitor,this.conda,(taskId,runId)=>this.findRun(taskId,runId))
+      const config={...this.config}
+      return await runDiagnosis(input,controller.signal,emit,{
+        collect:(value,signal)=>collector.collect(value,signal),
+        history:()=>this.reports,
+        model:config,
+        analyze:async(report,signal,onProgress,onUsage)=>{
+          const key=this.key()
           const remote=report.taskId&&report.runId?this.findRun(report.taskId,report.runId):undefined
           const tools=new DiagnosticTools(report.evidence,remote?.task,remote?.run,this.store,this.ssh,this.monitor,this.conda,report.externalContext)
-          const result=await investigate({evidence:report.evidence,warnings:report.warnings,tools:input.depth==='quick'?[]:tools.catalog,maxModelRounds:input.depth==='quick'?1:4,context:tools.context,signal:controller.signal,
-            request:(system,payload,signal)=>requestModel(config,key,system,payload,signal,usage=>modelCalls.push(usage)),
-            execute:(call,signal)=>tools.execute(call,signal),progress:emit})
-          report.evidence=result.evidence;report.investigation=result.investigation;report.warnings.push(...result.warnings)
-          if(result.findings){report.findings.push(...result.findings);report.summary=result.summary;report.engine=result.investigation.inspections?'agent+rules':'model+rules'}
-        }
-      }
-      if(controller.signal.aborted&&!report.investigation){report.investigation={status:'cancelled',rounds:0,inspections:0,trace:[]};report.warnings.push('已停止诊断，保留已获得的证据。')}
-      if(report.source==='remote'&&report.taskId&&report.runId&&!controller.signal.aborted){
-        const {run}=this.findRun(report.taskId,report.runId)
-        // Model suggestions never enable an executable repair; only known original log signatures do.
-        report.repair=proposeBatchRepair(run.launchCommand??'',diagnoseEvidence(collected.evidence).some(f=>f.category==='oom'),run.launchMode)
-        if(run.status!=='failed')report.repair=undefined
-      }
-      if(modelCalls.length)report.usage=sumModelUsage(modelCalls)
-      const saved=await this.record(report)
-      emit(controller.signal.aborted?'cancelled':'complete',controller.signal.aborted?'已停止，当前证据已保存':'诊断完成，证据与检查过程已保存')
-      return saved
+          return investigate({evidence:report.evidence,warnings:report.warnings,tools:input.depth==='quick'?[]:tools.catalog,maxModelRounds:input.depth==='quick'?1:4,context:tools.context,signal,
+            request:(system,payload,requestSignal)=>requestModel(config,key,system,payload,requestSignal,onUsage),
+            execute:(call,requestSignal)=>tools.execute(call,requestSignal),progress:onProgress})
+        },
+        findRun:(taskId,runId)=>this.findRun(taskId,runId).run,
+        save:report=>this.record(report)
+      })
     }finally{this.diagnoses.delete(requestId)}
   }
   private async readPlanReadme(input: PlanInput): Promise<{status:'found'|'missing'|'unavailable';name?:string;content?:string;warning?:string}> {
@@ -569,6 +487,7 @@ export class IntelligenceService {
     ipcMain.handle('intelligence:settings',()=>this.settings())
     ipcMain.handle('intelligence:saveSettings',(_e,input)=>this.saveSettings(input))
     ipcMain.handle('intelligence:testModel',()=>this.testModel())
+    ipcMain.handle('intelligence:task-diagnose',(event,input)=>this.diagnoseTask(input,progress=>{if(!event.sender.isDestroyed())event.sender.send('intelligence:progress',progress)}))
     ipcMain.handle('intelligence:diagnose',(event,input)=>this.diagnose(input,progress=>{if(!event.sender.isDestroyed())event.sender.send('intelligence:progress',progress)}))
     ipcMain.handle('intelligence:cancel',(_e,id)=>this.cancelDiagnosis(id))
     ipcMain.handle('intelligence:history',()=>this.history())

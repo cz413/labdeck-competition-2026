@@ -1,0 +1,20 @@
+.task-diagnosis {margin:20px 0;padding:22px;border:1px solid var(--border);border-radius:8px;background:var(--panel);line-height:1.7;min-width:0;}
+.task-diagnosis-header {display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;}
+.task-diagnosis h3,.task-diagnosis h4 {margin:0 0 8px;}
+.task-diagnosis-header p {margin:0;color:var(--muted);font-size:13px;}
+.task-diagnosis-result {padding:16px 18px;background:var(--panel-soft);border-left:3px solid var(--teal);border-radius:4px;}
+.task-diagnosis-result h4 {font-size:18px;margin:5px 0 8px;}
+.task-diagnosis-result p {margin:0;}
+.task-diagnosis-label {font-size:12px;color:var(--muted);}
+.task-diagnosis>section,.task-diagnosis-details {margin-top:22px;}
+.task-diagnosis blockquote {margin:10px 0;padding:10px 14px;border-left:2px solid var(--border);background:var(--panel-soft);}
+.task-diagnosis blockquote span {color:var(--muted);font-size:12px;}
+.task-diagnosis pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;max-height:320px;overflow:auto;margin:8px 0;}
+.task-diagnosis li {margin:5px 0;}
+.task-diagnosis-actions,.task-diagnosis-progress {display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.task-diagnosis-actions {margin-top:20px;}
+.task-diagnosis-error {color:var(--red,#df8994);}
+.task-diagnosis-details {padding-top:12px;border-top:1px solid var(--border);}
+.task-diagnosis-details summary {cursor:pointer;color:var(--muted);}
+
+.task-diagnosis-result .task-diagnosis-uncertainty { margin-top:12px; color:var(--muted); font-size:13px; }
