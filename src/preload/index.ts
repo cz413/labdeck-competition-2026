@@ -168,7 +168,12 @@ const api: AppApi = {
   vscode: {
     openRemote: (serverId: string, accessRouteId?: string, remotePath?: string) => ipcRenderer.invoke('vscode:openRemote', serverId, accessRouteId, remotePath)
   },
+  processLogs: {
+    inspect: target => ipcRenderer.invoke('processLogs:inspect', target),
+    read: input => ipcRenderer.invoke('processLogs:read', input)
+  },
   experiments: {
+    readRunLog: (taskId: string, runId: string) => ipcRenderer.invoke('experiments:readRunLog', taskId, runId),
     list: () => ipcRenderer.invoke('experiments:list'),
     save: (input: ExperimentTaskDraft) => ipcRenderer.invoke('experiments:save', input),
     setStatus: (taskId: string, status: ExperimentTaskStatus) => ipcRenderer.invoke('experiments:setStatus', taskId, status),

@@ -410,6 +410,7 @@ export class ExperimentScheduler {
       `  export LABDECK_LOG_FILE=${logPathExpr}`,
       `  export LABDECK_DATA_PATH=${shellQuote(run.dataPath)}`,
       `  export LABDECK_ARTIFACT_PATH=${shellQuote(run.artifactPath ?? '')}`,
+      '  export PYTHONUNBUFFERED=1',
       `  ${runCommand}`,
       '  run_exit=$?',
       'fi',
