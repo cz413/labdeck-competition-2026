@@ -94,6 +94,7 @@ describe('remote script scheduling', () => {
     expect(wrapper).toContain('train.sh')
     expect(wrapper).toContain("CUDA_VISIBLE_DEVICES='0'")
     expect(wrapper).toContain('exit-code')
+    expect(wrapper).toContain('export PYTHONUNBUFFERED=1')
     expect(store.listExperimentTasks()[0].runs[0]).toMatchObject({ status: 'running', remotePid: 123, logPath: '/home/user/runs/test/stdout.log' })
   })
   it('keeps missing/unreadable scripts queued without launching a remote process', async () => {

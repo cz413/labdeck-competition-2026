@@ -1,3 +1,14 @@
+# 2026-10-22 实验任务和 GPU 进程实时日志
+
+- 本次提交前完整 `npm test`：42 个测试文件、401 项通过，无失败或跳过；包括真实仓颉原生引擎集成。
+- `npm run build`：main / preload / shared / renderer 类型检查及生产构建通过，未打包。
+- `node scripts/run-electron-check.cjs scripts/verify-process-logs.cjs --no-sandbox`：真实参赛版 Electron 窗口与 preload/IPC，独立测试数据目录及模拟 SSH/进程；任务池日志、GPU 实时进程入口、标准/错误输出切换、自动刷新、暂停继续、手动路径、PID 复用后保留原日志、终端/管道的手动回退、模块隐藏停止轮询及 GPU 详情入口通过。
+- 进程日志单元测试还覆盖进程持有的其他日志描述符、启动器及 tee 相关文件、不可读的 /proc 目录、退出/PID 复用、路径注入校验与固定读取上限。
+- [日志界面截图](screenshots/gpu-process-realtime-logs.png)来自隔离验证夹具，不能视为真实服务器训练结果。机器报告和完整运行数据保留在被忽略的 `artifacts/` 中。本次验证没有调用真实训练服务器或模型。
+
+---
+
+
 # 2026-10-22 智能创建目录输入与视频素材
 
 - 本次推送前 `npm test`：40 个测试文件、377 项通过，无跳过；包含真实仓颉原生引擎集成。

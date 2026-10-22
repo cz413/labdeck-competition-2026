@@ -203,6 +203,18 @@ export const experimentTaskDraftSchema = experimentTaskSchema.omit({
   runs: true
 }).extend({ id: z.string().uuid().optional() })
 
+export const processLogTargetSchema = z.object({
+  serverId: z.string().uuid(),
+  accessRouteId: z.string().min(1).max(80).optional(),
+  pid: z.number().int().min(1).max(2147483647)
+})
+
+export const processLogReadSchema = processLogTargetSchema.extend({
+  bootId: z.string().min(1).max(128).regex(/^[\w-]+$/),
+  startTicks: z.string().min(1).max(32).regex(/^\d+$/),
+  logPath: z.string().min(1).max(4096).refine(path => path.startsWith('/') && !/[\0\r\n]/.test(path), '请输入服务器上的绝对日志文件路径')
+})
+
 export const experimentTaskStatusSchema = z.enum(['planned', 'queued', 'preparing', 'running', 'paused', 'completed', 'failed', 'cancelled'])
 
 export const experimentRunFinishInputSchema = z.object({

@@ -52,6 +52,7 @@ import { ConfirmDialog, type ConfirmationRequest } from './components/ConfirmDia
 import type { DiagnosisReport } from '@shared/intelligence'
 import type { ResearchView } from '@shared/research'
 import { ExperimentTaskPool } from './components/ExperimentTaskPool'
+import { ProcessLogPanel } from './components/ProcessLogPanel'
 import { ResourceWorkbench } from './components/ResourceWorkbench'
 import { SftpPanel } from './components/SftpPanel'
 import { TunnelPage, type TunnelRequest } from './components/TunnelPage'
@@ -848,7 +849,7 @@ export function App(): React.JSX.Element {
     tasks={experimentTasks} servers={servers} snapshots={snapshots}
     reports={diagnosisHistory} campaigns={researchHistory}
     onOpenTask={openTaskRun}
-    liveTasks={<MyTasksPage tasks={myTasks} onOpenGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} />}
+    liveTasks={<MyTasksPage tasks={myTasks} accessRouteIdFor={accessRouteIdFor} active={page === 'tasks'} onOpenGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} />}
     liveTaskCount={myTasks.length} vscodeConnectingId={vscodeConnectingId}
     onChanged={updateExperimentTask} notify={notify} confirm={requestConfirmation}
     onTrusted={async () => { await loadServers() }}
@@ -975,7 +976,8 @@ function ServerTable({ servers, snapshots, ...actions }: { servers: ServerProfil
     return <tr key={server.id}><td><button className="wb-device-link" onClick={() => actions.onOverview(server)}><strong>{server.name}</strong><small>{route.username}@{route.host}:{route.port}</small></button><small className="wb-cell-secondary">{server.group || '未分组'}{server.tags.length ? ` · ${server.tags.join(' / ')}` : ''}</small></td><td><span className={`wb-state ${state}`}><i />{statusLabel(snapshot)}</span><small className="wb-cell-secondary">{monitorPolicyLabel[server.monitorPolicy]}采集</small></td><td><span>CPU {formatPercent(snapshot?.cpuUsagePercent)}</span><small className="wb-cell-secondary">{snapshot?.memoryUsedBytes == null ? '—' : formatBytes(snapshot.memoryUsedBytes)} / {snapshot?.memoryTotalBytes == null ? '—' : formatBytes(snapshot.memoryTotalBytes)}</small></td><td><div className="wb-server-gpu-links">{snapshot?.gpus.map(gpu => <button key={gpu.uuid} className={!live ? 'cached' : isGpuBusy(gpu) ? 'busy' : 'idle'} title={`${gpu.name} · ${(gpu.memoryUsedMiB / 1024).toFixed(1)} / ${(gpu.memoryTotalMiB / 1024).toFixed(0)} GiB`} aria-label={`查看 ${server.name} GPU ${gpu.index} 详情`} onClick={() => actions.onGpu(server, gpu.index)}><i />GPU {gpu.index}<small>{live ? `${Math.round(gpu.utilizationPercent)}%` : '待确认'}</small></button>) ?? null}{!snapshot?.gpus.length && <span className="wb-muted">{snapshot ? '无 GPU' : '尚未采集'}</span>}</div></td><td><span className={disk && disk.usagePercent >= 80 ? 'wb-warning' : ''}>{formatPercent(disk?.usagePercent)}</span><small className="wb-cell-secondary">{disk ? `${disk.mountPoint} · 可用 ${formatBytes(disk.availableBytes)}` : '—'}</small></td><td>{getAccessRoutes(server).length > 1 ? <AccessRouteSelect server={server} value={actions.accessRouteId(server)} compact onChange={id => actions.onAccessRouteChange(server, id)} /> : <span className="wb-muted">{route.name}</span>}</td><td><div className="wb-server-actions"><button className="secondary-button" onClick={() => actions.onTerminal(server)}><SquareTerminal size={13} />终端</button><button className="icon-button small" onClick={() => actions.onSftp(server)} aria-label={`打开 ${server.name} 文件`} title="打开文件"><FolderOpen size={14} /></button><button className="icon-button small" onClick={() => actions.onVsCode(server)} disabled={actions.vscodeConnectingId === server.id} aria-label={`打开 ${server.name} VS Code`} title="打开 VS Code"><Code2 size={14} /></button><button className="icon-button small" onClick={() => actions.onTest(server)} disabled={actions.testingId === server.id} aria-label={`测试 ${server.name} 连接`} title="测试连接"><RefreshCw size={14} className={actions.testingId === server.id ? 'spin' : ''} /></button><button className="icon-button small" onClick={() => actions.onEdit(server)} aria-label={`编辑 ${server.name}`} title="编辑服务器"><Pencil size={14} /></button>{isLegacyJumpProfile(server.name) && <button className="icon-button small" onClick={() => actions.onMerge(server)} title="合并连接路径"><GitMerge size={14} /></button>}<button className="icon-button small wb-danger" onClick={() => actions.onRemove(server)} aria-label={`删除 ${server.name}`} title="删除服务器"><Trash2 size={14} /></button></div></td></tr>
   })}</tbody></table>{!servers.length && <div className="wb-empty-inline">没有匹配的服务器。调整搜索，或从左侧添加服务器。</div>}</div></section>
 }
-function MyTasksPage({ tasks, onOpenGpu }: { tasks: UserGpuTask[]; onOpenGpu(server: ServerProfile, gpuIndex: number): void }): React.JSX.Element {
+function MyTasksPage({ tasks, accessRouteIdFor, onOpenGpu, active }: { active: boolean; tasks: UserGpuTask[]; accessRouteIdFor(server: ServerProfile): string; onOpenGpu(server: ServerProfile, gpuIndex: number): void }): React.JSX.Element {
+  const [logTask, setLogTask] = useState<UserGpuTask | null>(null)
   const serverCount = new Set(tasks.map((task) => task.server.id)).size
   const gpuCount = new Set(tasks.map((task) => `${task.server.id}:${task.gpuIndex}`)).size
   const memoryMiB = tasks.reduce((sum, task) => sum + task.process.memoryUsedMiB, 0)
@@ -990,16 +992,17 @@ function MyTasksPage({ tasks, onOpenGpu }: { tasks: UserGpuTask[]; onOpenGpu(ser
     <div className="my-task-panel">
       <div className="my-task-heading"><div><h2>当前 GPU 任务</h2><p>仅展示进程用户名与服务器 SSH 用户名一致的实时任务</p></div><span>{tasks.length} 个进程</span></div>
       {tasks.length ? <div className="my-task-table">
-        <div className="my-task-table-head"><span>任务</span><span>服务器 / GPU</span><span>运行时长</span><span>显存占用</span><span /></div>
-        {tasks.map((task) => <button type="button" className="my-task-row" key={`${task.server.id}-${task.gpuIndex}-${task.process.pid}`} onClick={() => onOpenGpu(task.server, task.gpuIndex)}>
-          <span className="my-task-process"><i><ListTodo size={15} /></i><span><strong title={task.process.processName}>{task.process.processName}</strong><small>PID {task.process.pid} · {task.process.username}</small></span></span>
+        <div className="my-task-table-head"><span>任务</span><span>服务器 / GPU</span><span>运行时长</span><span>显存占用</span><span>操作</span></div>
+        {tasks.map((task) => <div className="my-task-row" key={`${task.server.id}-${task.gpuIndex}-${task.process.pid}`}>
+          <button type="button" className="my-task-process" onClick={() => onOpenGpu(task.server, task.gpuIndex)}><i><ListTodo size={15} /></i><span><strong title={task.process.processName}>{task.process.processName}</strong><small>PID {task.process.pid} · {task.process.username}</small></span></button>
           <span className="my-task-target"><strong>{task.server.name} · GPU {task.gpuIndex}</strong><small>{task.gpuName.replace('NVIDIA ', '')}</small></span>
           <time>{formatTaskDuration(task.process.elapsedSeconds)}</time>
           <b>{formatGpuProcessMemory(task.process, task.processMemoryInconsistent)}</b>
-          <ChevronRight size={16} />
-        </button>)}
+          <div className="my-task-log-actions"><button type="button" className="secondary-button" disabled={task.server.mode !== 'real'} onClick={() => setLogTask(task)}><SquareTerminal size={13} />实时日志</button><button type="button" className="icon-button small" title="GPU 详情" aria-label={`PID ${task.process.pid} GPU 详情`} onClick={() => onOpenGpu(task.server, task.gpuIndex)}><ChevronRight size={16} /></button></div>
+        </div>)}
       </div> : <div className="my-task-empty"><ListTodo size={38} /><strong>当前没有检测到你的 GPU 任务</strong><span>任务按各服务器配置的 SSH 用户名识别；点击顶部刷新可立即重新采集。</span></div>}
     </div>
+    {logTask && <ProcessLogPanel enabled={active} key={`${logTask.server.id}:${accessRouteIdFor(logTask.server)}:${logTask.process.pid}`} serverId={logTask.server.id} accessRouteId={accessRouteIdFor(logTask.server)} pid={logTask.process.pid} processName={logTask.process.processName} onClose={() => setLogTask(null)} />}
   </section>
 }
 

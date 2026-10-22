@@ -19,6 +19,7 @@ import type {
 import { getAccessRoute, getAccessRoutes, getDefaultAccessRouteId } from '@shared/access-routes'
 import { experimentWorkingDirectory, resolveExperimentLaunch, validateExperimentScriptPath } from '@shared/experiment-launch'
 import { AccessRouteSelect } from './AccessRouteSelect'
+import { ExperimentRunLogPanel } from './ExperimentRunLogPanel'
 import type { ConfirmationRequest } from './ConfirmDialog'
 import type { DiagnosisReport } from '@shared/intelligence'
 import { reportForRun } from '@shared/experiment-workflow'
@@ -789,6 +790,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
             const minimumFreeVramGiB = run ? run.minimumFreeVramGiB : task.minimumFreeVramGiB
             const maximumGpuUtilizationPercent = run ? run.maximumGpuUtilizationPercent : task.maximumGpuUtilizationPercent
             const failureRun = [...task.runs].reverse().find((item) => item.status === 'failed')
+            const logRun = run?.status === 'running' ? run : !run ? [...task.runs].reverse().find((item) => item.logPath) : undefined
             const condaConfig = run ? run.condaEnvironment : task.condaEnvironment
             const serverNameSnapshot = run ? run.serverNameSnapshot : task.serverNameSnapshot
             return <article className={`experiment-task-card status-${task.status}`} key={task.id}>
@@ -857,6 +859,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                   </>}
                 </div>
               </div>
+              {logRun && <ExperimentRunLogPanel key={logRun.id} taskId={task.id} run={logRun} enabled={props.active} />}
               <footer className="experiment-task-card-footer"><span>{task.runs.length} 次运行记录</span>{task.runs.length > 0 && <button type="button" onClick={() => setExpandedTaskId((current) => current === task.id ? null : task.id)}>{expandedTaskId === task.id ? '收起运行记录' : '查看运行记录'}</button>}</footer>
               {inlineDiagnosis?.taskId===task.id&&inlineDiagnosis.runId&&<TaskDiagnosisPanel key={inlineDiagnosis.id} task={task} runId={inlineDiagnosis.runId} reportId={inlineDiagnosis.reportId} onClose={()=>setInlineDiagnosis(null)} onChanged={props.onChanged} onEdit={()=>openEditor(task)} onOpenRun={runId=>{if(props.onOpenTask)props.onOpenTask(task,runId);else{setExpandedTaskId(task.id);setSelectedRunId(runId)}}} confirm={props.confirm}/>}
               <TaskResearchPanel task={task} tasks={props.tasks} campaigns={props.campaigns ?? []} onOpenCampaign={campaign=>setResearch({taskId:campaign.sourceTaskId,campaignId:campaign.id})} onOpenTask={props.onOpenTask} />

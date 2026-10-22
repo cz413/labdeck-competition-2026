@@ -140,6 +140,34 @@ export interface GpuProcessMetric {
   elapsedSeconds: number | null
 }
 
+export interface ProcessLogTarget {
+  serverId: string
+  accessRouteId?: string
+  pid: number
+}
+
+export interface ProcessLogInfo {
+  bootId: string
+  startTicks: string
+  cwd: string
+  sources: Array<{ path: string; label: string }>
+  stdoutTarget: string
+  stderrTarget: string
+  /** Why nothing was detected even though the process may still log somewhere. */
+  note?: string
+}
+
+export interface ProcessLogReadInput extends ProcessLogTarget {
+  bootId: string
+  startTicks: string
+  logPath: string
+}
+
+export interface ProcessLogSnapshot extends ExperimentRunLog {
+  processRunning: boolean
+  processIdentityChanged?: boolean
+}
+
 export interface GpuWatchTarget {
   serverId: string
   gpuUuid?: string
@@ -498,7 +526,12 @@ export interface AppApi {
   vscode: {
     openRemote(serverId: string, accessRouteId?: string, remotePath?: string): Promise<VsCodeRemoteResult>
   }
+  processLogs: {
+    inspect(target: ProcessLogTarget): Promise<ProcessLogInfo>
+    read(input: ProcessLogReadInput): Promise<ProcessLogSnapshot>
+  }
   experiments: {
+    readRunLog(taskId: string, runId: string): Promise<ExperimentRunLog>
     list(): Promise<ExperimentTask[]>
     save(input: ExperimentTaskDraft): Promise<ExperimentTask>
     setStatus(taskId: string, status: ExperimentTaskStatus): Promise<ExperimentTask>
@@ -529,3 +562,10 @@ export interface AppApi {
   }
 }
 
+
+export interface ExperimentRunLog {
+  text: string
+  missing: boolean
+  truncated: boolean
+  fetchedAt: string
+}
