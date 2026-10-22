@@ -32,7 +32,7 @@ npm run dev
 | --- | --- |
 | 服务器与资源管理 | SSH 连接、终端、SFTP、端口隧道、Conda 环境查看、GPU 状态与实验任务队列，延续原项目能力。 |
 | 实验任务 | 智能创建使用独立准备视图，手动创建保留完整配置编辑器；两条路径共用任务草稿、GPU 选择与调度队列。 |
-| 智能创建 | 首屏只填写项目位置与实验目的；系统自动选择相关文件、识别训练/评估入口、读取服务器环境并生成“本次实验 / 运行方式 / 环境与数据 / 输出与观察”方案卡片。支持缺口追问、自然语言修改、撤销、完整配置编辑和来源区分，详见 [操作流程](docs/TASK-CREATION.md)。 |
+| 智能创建 | 首屏只填写项目位置与实验目的；系统自动选择相关文件、识别训练/评估入口、读取服务器环境并生成“本次实验 / 运行方式 / 环境与数据 / 输出与观察”方案卡片。支持缺口追问、自然语言修改、撤销、完整配置编辑、断点恢复和分析时间线，详见 [操作流程](docs/TASK-CREATION.md)。 |
 | 故障诊断（历史能力） | 底层规则、分析和报告接口保留；本轮移除独立智能实验页面，暂不设计诊断入口。 |
 | 修复闭环（历史能力） | 原服务和历史记录保留，当前页面调整未重做此流程。 |
 | 对照实验 | 手工或 AI 建议参数轴；仓颉展开组合、去重和检查预算；LangGraph 编排审查、入队、等待、采集、诊断和分析，支持磁盘检查点恢复。 |
@@ -82,7 +82,7 @@ npm run dev
 | `node scripts/run-electron-check.cjs scripts/verify-research.cjs --no-sandbox` | 任务内对照方案、参数展开、确认入队和结果比较的 Electron 联调。 |
 | `npm run dist:competition` | 构建 Windows 便携版，输出到 `release/`。 |
 | `npm run dist` | 构建 Windows NSIS 安装包和便携版，输出到 `release/`。 |
-| `npm run verify:smart-create` | 智能创建准备视图的 Electron 联调：首屏输入、方案卡片、缺口追问、增量修改与保存/选资源。使用隔离模型/SSH 夹具。 |
+| `npm run verify:smart-create` | 智能创建准备视图的 Electron 联调：首屏输入、方案卡片、缺口追问、修改与保存、真实图检查点重启、暂停继续和分析时间线。使用隔离模型/SSH 夹具。 |
 | `npm run verify:task-creation` | 手动创建、完整配置编辑、排队任务新配置与任务内对照入口的 Electron 回归联调。 |
 | `npm run verify:repository` | 指向智能创建联调（历史命令名保留）。 |
 | `npm run verify:cangjie` | 严格验证原生仓颉，缺失或启动失败均报错，不能以 TypeScript 回退通过。 |
@@ -90,7 +90,7 @@ npm run dev
 
 当前任务创建与对照实验的 Electron 验证使用 `out/`，先运行 `npm run build`，两个页面脚本分别运行。它们使用隔离数据目录及模拟模型 / SSH，截图和机器报告保存在 `artifacts/`，对照流程还更新 `docs/screenshots/`。
 
-本轮源码检查为 37 个测试文件、355 项通过，类型检查和源码构建通过；智能创建增加了纯函数测试与首屏渲染测试。另使用 headless Chrome 155 + CDP 完成了从真实任务池入口到 GPU 弹窗的隔离界面联调（模拟模型 / SSH）：首屏、理解进度、四张方案卡片、数据 / 环境缺口、冲突选择、撤销、重新核对路径、完整配置往返、保存草稿与资源交接均通过，截图见 `docs/screenshots/smart-create-*.png`。官方 Electron 联调脚本 `verify:smart-create` / `verify-task-creation` 仍保留，需在可启动 Electron 窗口的桌面环境执行；本环境 Electron 主进程无法启动。本轮没有打包，未连接真实模型、SSH 服务器或 GPU 训练，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
+本轮源码检查为 40 个测试文件、377 项通过，类型检查和源码构建通过。智能创建接入真实 LangGraph 持久化流程，支持准备记录恢复和本地分析时间线；相关 Electron 联调使用模拟模型/SSH。未连接真实训练服务器或模型，本轮没有打包，见 [验证记录](docs/VALIDATION.md)。建议提交前执行：
 
 ```powershell
 npm run typecheck
@@ -122,6 +122,7 @@ docs/                   架构、设计、演示、验证记录、截图与项�
 | 任务内项目创建、全局模型设置 | [`SmartCreatePage.tsx`](src/renderer/src/components/SmartCreatePage.tsx)、[`experiment-plan.ts`](src/shared/experiment-plan.ts)、[`ExperimentTaskPool.tsx`](src/renderer/src/components/ExperimentTaskPool.tsx)、[`ModelSettingsPanel.tsx`](src/renderer/src/components/ModelSettingsPanel.tsx) |
 | 规则诊断、模型协议与只读工具 | [`diagnosis-engine.ts`](src/shared/diagnosis-engine.ts)、[`model-provider.ts`](src/main/model-provider.ts)、[`diagnostic-agent.ts`](src/main/diagnostic-agent.ts)、[`diagnostic-tools.ts`](src/main/diagnostic-tools.ts) |
 | 修复后的自动跟踪 | [`repair-tracker.ts`](src/main/repair-tracker.ts)、[`RepairClosurePanel.tsx`](src/renderer/src/components/RepairClosurePanel.tsx) |
+| 持久化智能创建 | [`preparation-service.ts`](src/main/preparation-service.ts)、[`SmartCreatePage.tsx`](src/renderer/src/components/SmartCreatePage.tsx)、[`PreparationTimeline.tsx`](src/renderer/src/components/PreparationTimeline.tsx) |
 | 对照实验和 LangGraph | [`research-service.ts`](src/main/research-service.ts)、[`research-checkpointer.ts`](src/main/research-checkpointer.ts)、[`ResearchPage.tsx`](src/renderer/src/components/ResearchPage.tsx)、[`research.ts`](src/shared/research.ts) |
 | 仓颉参数引擎和回退实现 | [`main.cj`](cangjie/parameter-engine/main.cj)、[`parameter-bridge.ts`](src/main/parameter-bridge.ts)、[`parameter-engine.ts`](src/shared/parameter-engine.ts) |
 | 应用存储与迁移 | [`store.ts`](src/main/store.ts)；改动时关注历史配置与实验运行的兼容性。 |
@@ -238,3 +239,8 @@ PR 写清楚解决的问题、影响的任务 / 智能流程、验证命令与�
 已保存任务的“完善配置”复用同一编辑器；“创建对照组”进入任务内的参数设计与结果比较。模型连接统一在“设置 → 模型服务”配置。完整交互、草稿保存边界和源码验证命令见 [任务创建流程](docs/TASK-CREATION.md)。
 
 本轮撤下独立的“智能实验”导航，原计划、仓库编排、诊断及闭环服务保留兼容，不作为当前新建实验的前置步骤。
+
+
+## 作品演示视频素材
+
+参见 [视频制作说明](docs/demo-video/制作说明.md) 和 [离线分镜预览](docs/demo-video/分镜预览.html)。素材包含 6 张参考 PNG、可编辑 SVG、5 段镜头提示词、旁白定位和约 6 分钟的剪辑时间线；其中动画共 53 秒。这是制作素材，尚未生成连续动画或最终视频。

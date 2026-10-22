@@ -366,6 +366,7 @@ export interface ExperimentRunStartInput {
 }
 
 export interface ExperimentTask {
+  preparationId?: string
   projectPreparation?: TaskProjectContext
   id: string
   title: string

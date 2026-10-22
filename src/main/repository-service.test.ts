@@ -89,3 +89,19 @@ describe('task project preparation requests',()=>{
     service.stopTracking();await failed
   })
 })
+
+describe('actual preparation analysis trace',()=>{
+  it('records performed file reads, model requests and measured token usage',async()=>{
+    const {service}=setup(),events:import('../shared/agent-trace').AgentTraceEvent[]=[]
+    mocks.request.mockImplementation(async(_settings,_key,_system,payload,_signal,onUsage)=>{
+      onUsage?.({requests:1,elapsedMs:25,promptTokens:100,completionTokens:30,totalTokens:130})
+      return 'readFiles' in payload?{action:'done'}:answer
+    })
+    await service.analyzeRepository(input,undefined,undefined,event=>events.push(event))
+    const models=events.filter(event=>event.kind==='model'&&event.status==='completed')
+    expect(models).toHaveLength(2)
+    expect(models.reduce((n,event)=>n+(event.usage?.totalTokens??0),0)).toBe(260)
+    expect(events.some(event=>event.name==='读取项目文件'&&event.references?.some(ref=>ref.path==='README.md'&&ref.startLine===1))).toBe(true)
+    expect(events.some(event=>event.name==='核对启动目录与入口'&&event.status==='completed')).toBe(true)
+  })
+})

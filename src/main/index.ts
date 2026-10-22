@@ -486,7 +486,7 @@ function registerIpc(store: AppStore): void {
   const sftp = new SftpService(ssh)
   const vscode = new VsCodeService(store)
   const conda = new CondaService(ssh)
-  const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')},(id,event)=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:repository-progress',{id,...event})})
+  const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')},(id,event)=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:repository-progress',{id,...event})},id=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:preparation-changed',id)})
   intelligenceService=intelligence
   intelligence.registerIpc(() => { experimentScheduler?.wake(); experimentsChanged() })
   terminalManager = new TerminalManager(ssh, () => mainWindow?.webContents ?? null)

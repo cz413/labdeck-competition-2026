@@ -1,3 +1,6 @@
+import { PreparationService } from './preparation-service'
+import type { AgentTraceObserver, AgentTraceEvent } from '../shared/agent-trace'
+import { planCommandEntry } from '../shared/experiment-plan'
 import type { ModelUsage } from '../shared/model-usage'
 import { sumModelUsage } from '../shared/model-usage'
 import { DiagnosisCollector } from './diagnosis-collector'
@@ -53,10 +56,30 @@ export class IntelligenceService {
   private readonly diagnoses = new Map<string, AbortController>()
   private readonly retrying = new Set<string>()
   private readonly externalDrafting = new Set<string>()
+  private preparationTaskChanged:()=>void=()=>{}
+  private preparationService?:PreparationService
+  private preparations():PreparationService {return this.preparationService??=new PreparationService({
+    scan:input=>readRepository(this.store,this.ssh,input),
+    environments:async input=>{const server=this.store.getServer(input.serverId);if(server.mode!=='real')throw new Error('请选择真实服务器');const profile=applyAccessRoute(server,input.accessRouteId);return (await this.conda.listEnvironments(profile,this.store.getSecrets(server.id),'conda')).environments},
+    analyze:(input,signal,observer)=>this.analyzeRepository(input,undefined,signal,observer),
+    candidates:async input=>{
+      const view=await this.browseRepositoryDirectory(input)
+      const directories=view.entries.filter(e=>/^(data|datasets?|corpus|raw|processed|images|audio|text|videos?)$/i.test(e.name)).map(e=>({path:e.path,source:'server' as const,note:'项目目录中实际存在的子目录'}))
+      const recent=this.store.listExperimentTasks().filter(task=>task.serverId===input.serverId&&task.dataPath).slice(0,8).map(task=>({path:task.dataPath,source:'recent' as const,note:`任务“${task.title}”使用过`}))
+      return [...directories,...recent].filter((candidate,index,all)=>all.findIndex(item=>item.path===candidate.path)===index)
+    },
+    recheck:async flow=>{
+      const draft=flow.plan!.draft,entry=planCommandEntry(draft.launchCommand)
+      const targets=[{path:draft.codePath,kind:'directory',label:'启动目录'},...(entry&&/\.(py|sh)$/.test(entry)?[{path:entry.startsWith('/')?entry:posix.join(draft.codePath,entry),kind:'file',label:'入口文件'}]:[]),...(draft.dataPath?[{path:draft.dataPath,kind:'directory',label:'数据目录'}]:[])]
+      const results=await inspectServerPaths(this.store,this.ssh,{source:'remote',...flow.input},targets.map(t=>t.path))
+      return {at:new Date().toISOString(),lines:targets.map(target=>{const found=results.find(r=>r.path===target.path);return {ok:found?.kind===target.kind,text:`${target.label}：${target.path} · ${found?.kind===target.kind?'已确认存在':found?.kind==='missing'?'未找到':'未确认'}`}})}
+    },
+    save:async(draft,id)=>{const task=await this.store.saveExperimentTask(draft,id);this.preparationTaskChanged();return task},tasks:()=>this.store.listExperimentTasks()
+  },id=>this.onPreparationChanged(id))}
   private workflowService?:RepositoryWorkflowService
   private workflows():RepositoryWorkflowService {return this.workflowService??=new RepositoryWorkflowService(this.store,{analyze:(input,progress,signal)=>this.analyzeRepository(input,progress,signal),recheck:async(guide,input)=>{const reviewed=reviewRepositoryGuide(guide,input);try{return applyRepositoryChecks(reviewed,await checkRepositoryLocations(this.store,this.ssh,guide.snapshot.input,repositoryLaunchPaths(reviewed)))}catch{return applyRepositoryChecks(reviewed,repositoryLaunchPaths(reviewed).map(item=>({...item,status:'unreadable' as const,message:'本次连接未能完成路径核对'})))}}},()=>this.onChanged(),undefined,(id,event)=>this.onRepositoryProgress(id,event))}
   private readonly tracker:RepairTracker
-  constructor(private readonly store: AppStore, private readonly ssh: SshService, private readonly monitor: MonitorService, private readonly conda: CondaService, private readonly onChanged:()=>void=()=>{}, private readonly onRepositoryProgress:(id:string,event:Omit<RepositoryProgress,'id'>)=>void=()=>{}) {
+  constructor(private readonly store: AppStore, private readonly ssh: SshService, private readonly monitor: MonitorService, private readonly conda: CondaService, private readonly onChanged:()=>void=()=>{}, private readonly onRepositoryProgress:(id:string,event:Omit<RepositoryProgress,'id'>)=>void=()=>{}, private readonly onPreparationChanged:(id:string)=>void=()=>{}) {
     this.tracker=new RepairTracker({list:()=>this.history(),patch:(id,update)=>this.patchClosure(id,update),status:report=>{
       try{return this.findRun(report.taskId!,report.retryRunId).run.status}catch{return undefined}
     },verify:(id,requestId,signal)=>this.inspectRepair(id,requestId,signal),cancelDiagnosis:id=>this.cancelDiagnosis(id)})
@@ -71,7 +94,7 @@ export class IntelligenceService {
     }
     await this.tracker.start()
   }
-  stopTracking():void{this.tracker.stop();for(const controller of this.projectPreparations.values())controller.abort();for(const controller of this.diagnoses.values())controller.abort()}
+  stopTracking():void{this.preparationService?.stop();this.tracker.stop();for(const controller of this.projectPreparations.values())controller.abort();for(const controller of this.diagnoses.values())controller.abort()}
   wakeTracking():void{this.tracker.wake()}
   async checkTrackedRepairs():Promise<void>{await this.tracker.sweep()}
   async setTracking(id:string,enabled:boolean):Promise<DiagnosisReport>{await this.ready();return this.tracker.setEnabled(z.string().uuid().parse(id),z.boolean().parse(enabled))}
@@ -244,15 +267,16 @@ export class IntelligenceService {
     }finally{this.projectPreparations.delete(id)}
   }
   cancelProjectPreparation(requestId:string):void{this.projectPreparations.get(z.string().uuid().parse(requestId))?.abort(new Error('已取消项目分析'))}
-  async analyzeRepository(raw:RepositoryAnalysisInput, progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+  async analyzeRepository(raw:RepositoryAnalysisInput, progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal,observer?:AgentTraceObserver):Promise<RepositoryGuide> {
     await this.ready()
     const input=z.object({source:z.literal('remote'),path:z.string().min(1).max(4096),serverId:z.string().uuid(),accessRouteId:z.string().max(80).optional(),filePaths:z.array(z.string().max(512)).min(1),goal:z.string().trim().min(1).max(2000)}).parse(raw)
     signal?.throwIfAborted()
-    return this.analyzeRepositoryWithAgent(input,progress,signal)
+    return this.analyzeRepositoryWithAgent(input,progress,signal,observer)
   }
-  private async analyzeRepositoryWithAgent(input:RepositoryAnalysisInput,progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+  private async analyzeRepositoryWithAgent(input:RepositoryAnalysisInput,progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal,observer?:AgentTraceObserver):Promise<RepositoryGuide> {
     progress?.({stage:'scan',message:'正在扫描勾选范围；本次最多 4 次模型请求，不自动重试'})
-    const session=await openRepositoryReadSession(this.store,this.ssh,input,input.filePaths)
+    const original=await openRepositoryReadSession(this.store,this.ssh,input,input.filePaths)
+    const session={...original,read:async(path:string)=>this.traceRepositoryCall(observer,'tool','读取项目文件',path,()=>original.read(path),result=>[{path:result.path,startLine:result.startLine,endLine:result.startLine+result.text.split('\n').length-1}]),list:(path:string)=>{const result=original.list(path);observer?.({id:randomUUID(),kind:'tool',name:'列出目录',status:'completed',startedAt:new Date().toISOString(),summary:path||'.',references:[{path:path||'.'}]});return result},find:(pattern:string)=>{const result=original.find(pattern);observer?.({id:randomUUID(),kind:'tool',name:'搜索项目文件',status:'completed',startedAt:new Date().toISOString(),summary:pattern,references:result.slice(0,20).map(file=>({path:file.path}))});return result}}
     const snapshot=session.snapshot
     const modelCalls:ModelUsage[]=[]
     const close=():void=>session.close()
@@ -260,7 +284,7 @@ export class IntelligenceService {
     try {
       signal?.throwIfAborted()
       await runRepositoryAgent({goal:input.goal,session,signal,
-        request:(system,payload)=>requestModel(this.config,this.key(),system,payload,signal,usage=>modelCalls.push(usage),{purpose:'repository'}),
+        request:(system,payload)=>this.traceRepositoryCall(observer,'model','选择需要的项目文件','根据已读依据选择后续检查',onUsage=>requestModel(this.config,this.key(),system,payload,signal,usage=>{modelCalls.push(usage);onUsage?.(usage)},{purpose:'repository'})),
         onProgress:(message,round)=>progress?.({stage:round?'inspect':'read',message,round:round||undefined})
       })
     } catch(error) {
@@ -271,13 +295,13 @@ export class IntelligenceService {
     } finally {signal?.removeEventListener('abort',close);session.close()}
     signal?.throwIfAborted()
     if(!snapshot.excerpts.length)throw new Error('没有读取到可供分析的文本，请重新选择文件')
-    return this.writeRepositoryGuide(input.goal,snapshot,modelCalls,progress,signal)
+    return this.writeRepositoryGuide(input.goal,snapshot,modelCalls,progress,signal,observer)
   }
-  private async writeRepositoryGuide(goal:string,snapshot:RepositorySnapshot,modelCalls:ModelUsage[],progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal):Promise<RepositoryGuide> {
+  private async writeRepositoryGuide(goal:string,snapshot:RepositorySnapshot,modelCalls:ModelUsage[],progress?:(event:Omit<RepositoryProgress,'id'>)=>void,signal?:AbortSignal,observer?:AgentTraceObserver):Promise<RepositoryGuide> {
     if(!snapshot.excerpts.length)throw new Error('没有读取到可供分析的文本，请重新选择文件')
     progress?.({stage:'write',message:'正在生成启动方案'})
     const files=snapshot.excerpts.map(file=>({path:file.path,startLine:file.startLine,truncated:file.truncated,numberedText:file.text.split('\n').map((line,index)=>`${file.startLine+index}: ${line}`).join('\n')}))
-    const answer=await requestModel(this.config,this.key(),repositoryGuidePrompt,{goal,repository:snapshot.input,files,scopeWarnings:snapshot.warnings},signal,usage=>modelCalls.push(usage),{purpose:'repository'})
+    const answer=await this.traceRepositoryCall(observer,'model','生成实验配置','使用已读入口、配置与行号依据',onUsage=>requestModel(this.config,this.key(),repositoryGuidePrompt,{goal,repository:snapshot.input,files,scopeWarnings:snapshot.warnings},signal,usage=>{modelCalls.push(usage);onUsage?.(usage)},{purpose:'repository'}))
     signal?.throwIfAborted()
     let guide=parseRepositoryGuide(answer,snapshot)
     guide=fillLaunchFromReadme(guide,snapshot,goal)
@@ -316,8 +340,14 @@ export class IntelligenceService {
     if(!guide.launchCommand)return guide
     progress?.({stage:'verify',message:'正在核对入口文件与启动目录'})
     const paths=repositoryLaunchPaths(guide)
-    try {return applyRepositoryChecks(guide,await checkRepositoryLocations(this.store,this.ssh,snapshot.input,paths))}
+    try {return applyRepositoryChecks(guide,await this.traceRepositoryCall(observer,'tool','核对启动目录与入口',paths.map(p=>p.path).join('、'),()=>checkRepositoryLocations(this.store,this.ssh,snapshot.input,paths),result=>result.map(r=>({path:r.path}))))}
     catch {return applyRepositoryChecks(guide,paths.map(item=>({...item,status:'unreadable' as const,message:'本次连接未能完成路径核对，不能据此判定路径不存在'})))}
+  }
+  private async traceRepositoryCall<T>(observer:AgentTraceObserver|undefined,kind:AgentTraceEvent['kind'],name:string,summary:string,work:(usage?:(usage:ModelUsage)=>void)=>Promise<T>,references?:(value:T)=>NonNullable<AgentTraceEvent['references']>):Promise<T>{
+    const started=Date.now(),event:AgentTraceEvent={id:randomUUID(),kind,name,summary,status:'running',startedAt:new Date().toISOString()}
+    let usage:ModelUsage|undefined;observer?.(event)
+    try{const value=await work(value=>{usage=value});observer?.({...event,status:'completed',finishedAt:new Date().toISOString(),elapsedMs:Date.now()-started,usage,references:references?.(value)});return value}
+    catch(error){observer?.({...event,status:'failed',finishedAt:new Date().toISOString(),elapsedMs:Date.now()-started,usage,summary:redactSecrets(error instanceof Error?error.message:String(error))});throw error}
   }
   async discoverRepositories(raw:{serverId:string;accessRouteId?:string}):Promise<RepositoryCandidate[]> {    await this.ready()
     const input=z.object({serverId:z.string().uuid(),accessRouteId:z.string().max(160).optional()}).parse(raw)
@@ -484,6 +514,12 @@ export class IntelligenceService {
     return result.filePath
   }
   registerIpc(onRetry:()=>void): void {
+    this.preparationTaskChanged=onRetry
+    ipcMain.handle('intelligence:preparation-create',(_e,input,id)=>this.preparations().create(input,id))
+    ipcMain.handle('intelligence:preparation-get',(_e,id)=>this.preparations().get(id))
+    ipcMain.handle('intelligence:preparation-list',()=>this.preparations().list())
+    ipcMain.handle('intelligence:preparation-action',(_e,id,action)=>this.preparations().act(id,action))
+    ipcMain.handle('intelligence:preparation-cancel',(_e,id)=>this.preparations().cancel(id))
     ipcMain.handle('intelligence:settings',()=>this.settings())
     ipcMain.handle('intelligence:saveSettings',(_e,input)=>this.saveSettings(input))
     ipcMain.handle('intelligence:testModel',()=>this.testModel())

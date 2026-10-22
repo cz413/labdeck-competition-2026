@@ -33,6 +33,14 @@ const api: AppApi = {
     onChanged: listener => { const handler = (): void => listener(); ipcRenderer.on('research:changed', handler); return () => ipcRenderer.removeListener('research:changed', handler) }
   },
   intelligence: {
+    preparations: {
+      create: (input,id) => ipcRenderer.invoke('intelligence:preparation-create',input,id),
+      get: id => ipcRenderer.invoke('intelligence:preparation-get',id),
+      list: () => ipcRenderer.invoke('intelligence:preparation-list'),
+      act: (id,action) => ipcRenderer.invoke('intelligence:preparation-action',id,action),
+      cancel: id => ipcRenderer.invoke('intelligence:preparation-cancel',id),
+      onChanged: listener => {const handler=(_event:Electron.IpcRendererEvent,id:string):void=>listener(id);ipcRenderer.on('intelligence:preparation-changed',handler);return()=>ipcRenderer.removeListener('intelligence:preparation-changed',handler)}
+    },
     settings: () => ipcRenderer.invoke('intelligence:settings'),
     saveSettings: input => ipcRenderer.invoke('intelligence:saveSettings', input),
     testModel: () => ipcRenderer.invoke('intelligence:testModel'),

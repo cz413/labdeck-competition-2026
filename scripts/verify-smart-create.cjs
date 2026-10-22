@@ -1,6 +1,6 @@
 // Smart experiment creation: project + intent in, reviewed plan out, shared task save.
 const {app,BrowserWindow,ipcMain}=require('electron')
-const fs=require('node:fs/promises'),path=require('node:path'),{pathToFileURL}=require('node:url'),{randomUUID}=require('node:crypto')
+const fs=require('node:fs/promises'),path=require('node:path'),{pathToFileURL}=require('node:url'),{randomUUID}=require('node:crypto'),esbuild=require('esbuild')
 const root=path.resolve(__dirname,'..'),testData=path.join(root,'artifacts','smart-create-'+Date.now())
 const setPath=app.setPath.bind(app);app.getAppPath=()=>root;app.setPath=(name,value)=>setPath(name,name==='userData'?testData:value)
 app.disableHardwareAcceleration();app.commandLine.appendSwitch('labdeck-headless-check','smart-create')
@@ -34,19 +34,68 @@ async function main(){
   handle('experiments:checkCondaEnvironment',(_serverId,_route,config)=>({found:true,name:config.environmentName||'',prefix:'/opt/conda/envs/'+config.environmentName,pythonInterpreterPath:'/opt/conda/envs/'+config.environmentName+'/bin/python',pythonVersion:'3.10.14'}))
   handle('intelligence:repository-inspect',input=>{calls.inspect++;return snapshot(input)})
   handle('intelligence:repository-discover',()=>[])
-  handle('intelligence:repository-browse',input=>{calls.browse++;const target=input.path||'/workspace';if(target==='/workspace/repo')return{path:target,parent:'/workspace',home:'/workspace',entries:[{name:'data',path:'/workspace/repo/data'},{name:'datasets',path:'/workspace/repo/datasets'},{name:'runs',path:'/workspace/repo/runs'}]};if(target==='/workspace/repo/data')return{path:target,parent:'/workspace/repo',home:'/workspace',entries:[{name:'train',path:'/workspace/repo/data/train'}]};return{path:target,parent:'/',home:'/workspace',entries:[]}})
+  handle('intelligence:repository-browse',input=>{calls.browse++;const target=input.path||'/workspace';if(target==='/missing-directory')throw new Error('目录不存在，请检查路径');if(target==='/workspace/repo')return{path:target,parent:'/workspace',home:'/workspace',entries:[{name:'data',path:'/workspace/repo/data'},{name:'datasets',path:'/workspace/repo/datasets'},{name:'runs',path:'/workspace/repo/runs'}]};if(target==='/workspace/repo/data')return{path:target,parent:'/workspace/repo',home:'/workspace',entries:[{name:'train',path:'/workspace/repo/data/train'}]};return{path:target,parent:'/',home:'/workspace',entries:[]}})
   handle('intelligence:project-prepare',async(_input,id)=>{calls.prepare++;win.webContents.send('intelligence:repository-progress',{id,stage:'read',message:'正在阅读 README 与训练入口'});await delay(80);win.webContents.send('intelligence:repository-progress',{id,stage:'verify',message:'正在核对入口文件与启动目录'});return guide()})
   handle('intelligence:project-cancel',()=>{calls.cancel++})
   handle('experiments:save',draft=>{calls.save++;const existing=tasks.find(t=>t.id===draft.id),task={...draft,id:draft.id||randomUUID(),runs:existing?.runs||[],archived:false,createdAt:existing?.createdAt||now,updatedAt:now};if(existing)tasks.splice(tasks.indexOf(existing),1,task);else tasks.push(task);win.webContents.send('experiments:changed');return structuredClone(task)})
   handle('experiments:startRun',()=>{calls.start++;throw new Error('Unexpected execution')})
+  const bundle=path.join(testData,'preparation-service.cjs')
+  esbuild.buildSync({entryPoints:[path.join(root,'src/main/preparation-service.ts')],outfile:bundle,bundle:true,platform:'node',format:'cjs',packages:'external',target:'node22'})
+  const {PreparationService}=require(bundle),preparationDirectory=path.join(testData,'preparations')
+  let pauseNext=false
+  const ops={
+    scan:async input=>{calls.inspect++;return snapshot(input)},
+    environments:async()=>[{name:'vision',prefix:'/opt/conda/envs/vision'},{name:'torch24',prefix:'/opt/conda/envs/torch24'}],
+    analyze:async(input,signal,trace)=>{
+      calls.prepare++
+      if(pauseNext){pauseNext=false;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))}
+      trace({id:randomUUID(),kind:'tool',name:'读取项目文件',status:'completed',startedAt:now,summary:'读取 README 的训练和评估说明',references:[{path:'README.md',startLine:3,endLine:13}]})
+      const id=randomUUID(),at=new Date().toISOString()
+      trace({id,kind:'model',name:'生成实验配置',status:'running',startedAt:at,summary:'根据已读文件准备本次实验'})
+      await delay(120)
+      trace({id,kind:'model',name:'生成实验配置',status:'completed',startedAt:at,finishedAt:new Date().toISOString(),elapsedMs:120,summary:'已整理入口与配置的文件依据',usage:{requests:1,elapsedMs:120,promptTokens:120,completionTokens:40,totalTokens:160}})
+      return guide()
+    },
+    candidates:async()=>[{path:'/workspace/repo/data',source:'server',note:'项目中存在此目录'},{path:'/workspace/repo/datasets',source:'server',note:'项目中存在此目录'}],
+    recheck:async flow=>({at:new Date().toISOString(),lines:[{ok:true,text:'启动目录存在：'+flow.plan.draft.codePath},{ok:true,text:'数据目录存在：'+flow.plan.draft.dataPath}]}),
+    save:async(draft,id)=>{calls.save++;const existing=tasks.find(task=>task.preparationId===id),task={...draft,id:existing?.id||randomUUID(),preparationId:id,status:'planned',runs:[],archived:false,createdAt:now,updatedAt:new Date().toISOString()};if(existing)tasks.splice(tasks.indexOf(existing),1,task);else tasks.push(task);win.webContents.send('experiments:changed');return structuredClone(task)},
+    tasks:()=>structuredClone(tasks)
+  }
+  const createService=()=>new PreparationService(ops,id=>win.webContents.send('intelligence:preparation-changed',id),preparationDirectory)
+  let preparation=createService()
+  handle('intelligence:preparation-create',(input,id)=>preparation.create(input,id))
+  handle('intelligence:preparation-get',id=>preparation.get(id))
+  handle('intelligence:preparation-list',()=>preparation.list())
+  handle('intelligence:preparation-action',(id,action)=>preparation.act(id,action))
+  handle('intelligence:preparation-cancel',id=>{calls.cancel++;return preparation.cancel(id)})
+  const waitBackend=async predicate=>{for(let i=0;i<180;i++){if(await predicate())return;await delay(60)}throw new Error('Backend did not finish persisting the plan')}
   win.webContents.reload();await waitFor('!!document.querySelector(".experiment-pool-page")')
   await click('智能创建');await waitFor('!!document.querySelector(".smart-create")')
   if(await run('!!document.querySelector("[aria-label=任务名称]")||!!document.querySelector(".experiment-editor")'))throw new Error('Start screen shows the full form')
   if(!await run('!!document.querySelector("[aria-label=项目目录]")&&!!document.querySelector("[aria-label=实验目标]")'))throw new Error('Start screen lost project or intent input')
   await set('[aria-label=实验目标]','先跑一次基线');await set('[aria-label=项目目录]','/workspace/repo')
+  await click('浏览');await waitFor(`document.querySelector('[aria-label=浏览目录路径]')?.value==='/workspace/repo'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await set('[aria-label=浏览目录路径]','  workspace/repo/data  ')
+  if(!await run(`[...document.querySelectorAll('.smart-browser button')].find(b=>b.textContent==='选择此目录').disabled`))throw new Error('Unopened typed path can select a stale directory')
+  await run(`document.querySelector('[aria-label=浏览目录路径]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`)
+  await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo/data'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await set('[aria-label=浏览目录路径]','/missing-directory');await click('打开目录','.smart-browser')
+  await waitFor(`!!document.querySelector('.smart-browser [role=alert]')`)
+  if(!await run(`document.querySelector('[aria-label=浏览目录路径]').value==='/missing-directory'&&[...document.querySelectorAll('.smart-browser button')].find(b=>b.textContent==='选择此目录').disabled`))throw new Error('Failed path was lost or allowed stale selection')
+  await click('主目录','.smart-browser');await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await set('[aria-label=浏览目录路径]','/workspace/repo');await click('打开目录','.smart-browser')
+  await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await click('data','.smart-browser-list');await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo/data'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await click('上一级','.smart-browser');await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await fs.writeFile(path.join(testData,'directory-browser-dark.png'),(await win.webContents.capturePage()).toPNG())
+  await click('选择此目录','.smart-browser');await waitFor('!document.querySelector(".smart-browser")')
+  if(await run('document.querySelector("[aria-label=项目目录]").value')!=='/workspace/repo')throw new Error('Directory browser did not update project path')
   await click('分析项目并准备实验');await waitFor('!!document.querySelector(".smart-plan")',)
-  const progress=await run('document.querySelector(".smart-progress").innerText')
-  for(const text of ['训练入口 train.py','评估入口 evaluate.py','已找到 2 个可用环境','正在核对入口文件'])if(!progress.includes(text))throw new Error('Progress did not explain: '+text)
+  if(await run('document.querySelector(".preparation-timeline details").open'))throw new Error('Analysis trace should start collapsed')
+  await run('document.querySelector(".preparation-timeline details").open=true')
+  const progress=await run('document.querySelector(".preparation-timeline").innerText')
+  for(const text of ['读取项目清单','识别项目入口','读取可用环境','README.md:3–13','160'])if(!progress.includes(text))throw new Error('Trace did not show performed work or usage: '+text)
+  await run('document.querySelector(".preparation-timeline details").open=false')
   if(calls.inspect!==1||calls.prepare!==1||calls.save)throw new Error('Analysis created a task or skipped inspection')
   if(!await run('document.querySelector("[aria-label=任务名称]").value.includes("训练基线")'))throw new Error('Suggested task name missing')
   if(!await run(`[...document.querySelectorAll('.smart-plan code')].some(code=>code.textContent.includes('train.py'))`))throw new Error('Training command missing from plan')
@@ -56,6 +105,19 @@ async function main(){
 
   await clickContaining('/workspace/repo/data','.smart-gap-options');await waitFor(`document.querySelector('[aria-label=数据目录]').value==='/workspace/repo/data'`)
   if(!await run(`[...document.querySelectorAll('.smart-plan code')].some(code=>code.textContent.includes('--data /workspace/repo/data'))`))throw new Error('Data answer did not sync the command')
+  await click('选择数据');await waitFor(`document.querySelector('[aria-label=浏览目录路径]')?.value==='/workspace/repo/data'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await set('[aria-label=浏览目录路径]','/workspace/repo/datasets');await click('打开目录','.smart-browser')
+  await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo/datasets'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await click('选择此目录','.smart-browser');await waitFor(`!document.querySelector('.smart-browser')&&document.querySelector('[aria-label=数据目录]').value==='/workspace/repo/datasets'`)
+  if(!await run(`[...document.querySelectorAll('.smart-plan code')].some(code=>code.textContent.includes('--data /workspace/repo/datasets'))`))throw new Error('Typed browser data path did not sync command')
+  await click('选择数据');await waitFor(`document.querySelector('[aria-label=浏览目录路径]')?.value==='/workspace/repo/datasets'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await run(`document.documentElement.dataset.theme='instrument'`);win.setSize(1100,800);await delay(120)
+  await fs.writeFile(path.join(testData,'directory-browser-light-compact.png'),(await win.webContents.capturePage()).toPNG())
+  await run(`document.documentElement.dataset.theme='ocean'`);win.setSize(1600,1000)
+  await set('[aria-label=浏览目录路径]','/workspace/repo/data');await click('打开目录','.smart-browser')
+  await waitFor(`document.querySelector('[aria-label=浏览目录路径]').value==='/workspace/repo/data'&&!document.querySelector('[aria-label=浏览目录路径]').disabled`)
+  await click('选择此目录','.smart-browser');await waitFor(`!document.querySelector('.smart-browser')&&document.querySelector('[aria-label=数据目录]').value==='/workspace/repo/data'`)
+
   await waitFor(`!!document.querySelector('.smart-gap-options')&&document.querySelector('.smart-gap h3').textContent.includes('环境')`)
   await clickContaining('vision','.smart-gap-options');await waitFor(`document.querySelector('[aria-label=推荐环境]').value==='vision'`)
 
@@ -80,8 +142,26 @@ async function main(){
   if(await run('document.querySelector("[aria-label=任务名称]").value')!=='完整配置名称')throw new Error('Full config did not flow back to the plan')
   if(calls.save)throw new Error('Full config created a task')
 
+  const preparationId=(await preparation.list())[0].id
+  await waitBackend(async()=>{const view=await preparation.get(preparationId);return !view.busy&&view.plan.draft.title==='完整配置名称'})
+  await click('重新核对路径');await waitFor('!!document.querySelector(".smart-recheck-failed")||document.querySelector(".smart-plan").textContent.includes("只读核对")')
+  if(calls.prepare!==1)throw new Error('Editing or rechecking called the model again')
+  preparation.stop();preparation=createService()
+  win.webContents.reload();await waitFor('!!document.querySelector(".experiment-pool-page")');await click('智能创建')
+  await waitFor('!!document.querySelector(".preparation-sessions article")');await click('继续准备','.preparation-sessions article')
+  await waitFor('!!document.querySelector(".smart-plan")')
+  if(await run('document.querySelector("[aria-label=任务名称]").value')!=='完整配置名称')throw new Error('Restart lost manual configuration')
+  if(await run('document.querySelector("[aria-label=数据目录]").value')!=='/workspace/repo/data')throw new Error('Restart lost answered data question')
+  if(!await run(`[...document.querySelectorAll('.smart-plan code')].some(code=>code.textContent.includes('evaluate.py'))`))throw new Error('Restart lost the selected evaluation entry')
+  if(calls.prepare!==1||calls.inspect!==1||calls.save)throw new Error('Restoring a prepared plan repeated analysis or saved a task')
+  await run('document.querySelector(".preparation-timeline details").open=true');await delay(200)
+  await fs.writeFile(path.join(testData,'preparation-trace-dark.png'),(await win.webContents.capturePage()).toPNG())
+  await run('document.documentElement.dataset.theme="instrument"');win.setSize(1280,840);await delay(200)
+  if(await run('document.querySelector(".workbench-page").scrollWidth>document.querySelector(".workbench-page").clientWidth'))throw new Error('Compact trace layout overflows')
+  await fs.writeFile(path.join(testData,'preparation-trace-light-compact.png'),(await win.webContents.capturePage()).toPNG())
+  await run('document.querySelector(".preparation-timeline details").open=false')
   await set('[aria-label=任务名称]','智能创建基线');await click('保存草稿')
-  await waitFor('!!document.querySelector(".smart-saved")')
+  await waitFor('document.querySelector(".smart-plan-save").textContent.includes("草稿已保存")')
   if(calls.save!==1||tasks.length!==1||tasks[0].runs.length||tasks[0].status!=='planned'||tasks[0].launchCommand!=='python evaluate.py --checkpoint weights/model.pth --data /workspace/repo/data')throw new Error('Draft save did not keep the reviewed configuration')
   if(calls.start)throw new Error('Draft save started a run')
   await fs.writeFile(path.join(testData,'smart-plan-light.png'),(await win.webContents.capturePage()).toPNG())
@@ -93,13 +173,21 @@ async function main(){
   await click('智能创建');await waitFor('!!document.querySelector(".smart-create")')
   await set('[aria-label=实验目标]','评估已有权重');await set('[aria-label=项目目录]','/workspace/repo');await click('分析项目并准备实验')
   await waitFor('!!document.querySelector(".smart-plan")');await click('返回实验任务')
-  await waitFor('!!document.querySelector(".confirm-dialog")');await click('离开','.confirm-dialog')
   await waitFor('!document.querySelector(".smart-create")')
 
+  await click('智能创建');await waitFor('!!document.querySelector(".smart-create")')
+  await set('[aria-label=实验目标]','暂停后继续训练');await set('[aria-label=项目目录]','/workspace/repo');pauseNext=true
+  const beforePause=calls.prepare,beforeScan=calls.inspect
+  await click('分析项目并准备实验');await waitBackend(async()=>calls.prepare>beforePause)
+  await click('暂停准备');await waitFor('!!document.querySelector(".preparation-resume-note")')
+  await click('继续未完成步骤');await waitFor('!!document.querySelector(".smart-plan")')
+  if(calls.inspect!==beforeScan+1||calls.prepare!==beforePause+2)throw new Error('Resume repeated a completed scan or skipped unfinished analysis')
+  await click('返回实验任务');await waitFor('!document.querySelector(".smart-create")')
   await click('手动创建');await waitFor('!!document.querySelector(".experiment-editor")');await setField('任务名称 *','手动草稿');await click('保存草稿');await waitFor('!document.querySelector(".experiment-editor")')
   if(tasks.length!==2||tasks[1].launchCommand!=='')throw new Error('Manual draft path broke')
   if(errors.length)throw new Error(errors.join('\n'))
-  const result={status:'passed',calls,testData,mockSSH:true,mockModel:true,checks:['start asks only for project and intent','analysis reports entry, environment and file understanding','plan cards cover experiment, runtime, environment/data and output/metrics','documented evaluation entry switches without a model call','one focused data question syncs the command','server environment selection','deterministic smoke-run refinement with undo','manual environment edit conflicts and explicit choice','full config edits flow back without saving','save draft creates one planned task without a run','create-and-select-resources uses the existing GPU dialog','returning to the pool keeps the saved draft','manual creation still available']}
+  preparation.stop()
+  const result={status:'passed',realLangGraph:true,persistedSessions:true,calls,testData,mockSSH:true,mockModel:true,checks:['project and data directory browsers support typed paths, Enter and folder selection','failed directory preserves input and blocks stale selection','directory browser supports home and parent navigation','restart restores manual changes, data answer, mode and trace without a model request','current configuration recheck uses no model requests','interrupted analysis resumes after completed scan','timeline has actual step, file and token records','collapsed trace and light compact layout','start asks only for project and intent','analysis reports entry, environment and file understanding','plan cards cover experiment, runtime, environment/data and output/metrics','documented evaluation entry switches without a model call','one focused data question syncs the command','server environment selection','deterministic smoke-run refinement with undo','manual environment edit conflicts and explicit choice','full config edits flow back without saving','save draft creates one planned task without a run','create-and-select-resources uses the existing GPU dialog','returning to the pool keeps the saved draft','manual creation still available']}
   await fs.writeFile(path.join(root,'artifacts/smart-create-verification.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));app.exit(0)
 }
 setTimeout(()=>{console.error('Smart create UI timeout');app.exit(1)},140000).unref()

@@ -1,18 +1,20 @@
+import type { PreparationView, PreparationSummary, PreparationEdit } from '@shared/preparation'
+import { PreparationTimeline } from './PreparationTimeline'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Circle, Code2, Database, FileCode2,
   FolderOpen, LoaderCircle, Play, RotateCcw, Save, Server, SlidersHorizontal, Sparkles, Undo2, X
 } from 'lucide-react'
 import type { CondaEnvironmentInfo, ExperimentTask, ExperimentTaskDraft, RemoteCondaResult, ServerProfile } from '@shared/types'
-import type { RepositoryCandidate, RepositoryDirectoryView, RepositoryProgress, RepositorySnapshot } from '@shared/repository-guide'
+import type { RepositoryCandidate, RepositoryDirectoryView, RepositorySnapshot } from '@shared/repository-guide'
 import { getAccessRoutes, getDefaultAccessRouteId } from '@shared/access-routes'
-import { commandDataPath, syncCommandDataPath } from '@shared/project-task'
+import { commandDataPath, syncCommandDataPath, projectConfigurationKey } from '@shared/project-task'
 import type { ConfirmationRequest } from './ConfirmDialog'
 import { AccessRouteSelect } from './AccessRouteSelect'
 import {
-  createExperimentPlan, experimentDraftChanges, experimentModeFromGoal, markUserFields,
+  experimentDraftChanges, experimentModeFromGoal, markUserFields,
   planCommandConfig, planCommandEntry, planEnvironmentName, planGaps, planModeLabels, planRootPath,
-  planSourceLabels, projectSignals, recommendProjectFiles, refineExperimentPlan, resolvePlanGap,
+  planSourceLabels, refineExperimentPlan, resolvePlanGap,
   suggestPlanTitle, switchPlanMode, planLaunchCitations,
   type ExperimentMode, type ExperimentPlan, type PlanConflict, type PlanDataCandidate,
   type PlanField, type PlanFieldState, type PlanFields, type PlanGap, type PlanSource
@@ -39,19 +41,9 @@ interface Props {
 }
 
 type Stage = 'start' | 'analyzing' | 'review'
-type StageKey = 'scan' | 'entry' | 'environment' | 'match' | 'generate'
-interface SmartMessage { id: number; stage: StageKey; text: string; at: string; tone?: 'warn' }
 interface HistoryEntry { id: number; label: string; at: string; before: { draft: ExperimentTaskDraft; mode: ExperimentMode; fields: PlanFields } }
-interface BrowserState { mode: 'project' | 'data'; view: RepositoryDirectoryView | null; busy: boolean; error: string }
+interface BrowserState { mode: 'project' | 'data'; view: RepositoryDirectoryView | null; pathInput: string; busy: boolean; error: string }
 
-const stageOrder: { key: StageKey; label: string; hint: string }[] = [
-  { key: 'scan', label: '读取项目文件', hint: '读取目录结构、README 与依赖说明' },
-  { key: 'entry', label: '识别入口与配置', hint: '查找训练、评估入口和默认配置' },
-  { key: 'environment', label: '核对环境与依赖', hint: '读取服务器上可用的 Conda 环境' },
-  { key: 'match', label: '匹配本次目标', hint: '按实验目的选择最相关的内容' },
-  { key: 'generate', label: '生成实验方案', hint: '整理运行方式并核对入口与目录' }
-]
-const stageOfProgress = (stage: RepositoryProgress['stage']): StageKey => stage === 'scan' || stage === 'read' ? 'scan' : stage === 'verify' || stage === 'write' ? 'generate' : 'match'
 const clonePlanState = (plan: ExperimentPlan): HistoryEntry['before'] => ({
   draft: structuredClone(plan.draft), mode: plan.mode, fields: structuredClone(plan.fields)
 })
@@ -71,6 +63,15 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [root, setRoot] = useState(props.seed?.path ?? '')
   const [goal, setGoal] = useState(props.seed?.goal ?? '')
   const [stage, setStage] = useState<Stage>('start')
+  const [preparation,setPreparation]=useState<PreparationView|null>(null)
+  const [sessions,setSessions]=useState<PreparationSummary[]>([])
+  const [syncError,setSyncError]=useState('')
+  const [syncing,setSyncing]=useState(false)
+  const preparationId=useRef<string|null>(null),preparationRevision=useRef(0)
+  const lastSynced=useRef(''),pendingEdit=useRef<{edit:PreparationEdit;signature:string}|null>(null)
+  const pumpPromise=useRef<Promise<void>|null>(null),analysisPending=useRef(false),fetchRevision=useRef(0)
+  const live=useRef(true)
+
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null)
   const [files, setFiles] = useState<string[]>([])
   const [plan, setPlan] = useState<ExperimentPlan | null>(null)
@@ -80,14 +81,14 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [saving, setSaving] = useState<'draft' | 'start' | null>(null)
   const [busy, setBusy] = useState(false)
   const [rechecking, setRechecking] = useState(false)
-  const [recheckResult, setRecheckResult] = useState<{ at: string; lines: { ok: boolean; text: string }[] } | null>(null)
+  const [recheckResult, setRecheckResult] = useState<PreparationView['checks'] | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [messages, setMessages] = useState<SmartMessage[]>([])
   const [envs, setEnvs] = useState<CondaEnvironmentInfo[]>([])
   const [envLoading, setEnvLoading] = useState(false)
   const [envChecking, setEnvChecking] = useState(false)
   const [browser, setBrowser] = useState<BrowserState | null>(null)
+  const browserRequest = useRef(0)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [conflicts, setConflicts] = useState<PlanConflict[]>([])
   const [deferredGaps, setDeferredGaps] = useState<string[]>([])
@@ -98,8 +99,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [discovering, setDiscovering] = useState(false)
   const [discoverNote, setDiscoverNote] = useState('')
   const revision = useRef(0)
-  const requestId = useRef<string | null>(null)
-  const messageId = useRef(0)
   const historyId = useRef(0)
   const server = realServers.find(item => item.id === serverId)
   const accessRouteId = server ? (routeId && getAccessRoutes(server).some(route => route.id === routeId) ? routeId : getDefaultAccessRouteId(server)) : ''
@@ -130,8 +129,9 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0]
     setRoot(props.seed?.path ?? recent?.codePath ?? '')
     setGoal(props.seed?.goal ?? '')
+    preparationId.current=null;setPreparation(null);pendingEdit.current=null;lastSynced.current='';analysisPending.current=false
     setStage('start'); setSnapshot(null); setFiles([]); setPlan(null); setInitialPlan(null); setSavedTask(null)
-    setDirty(false); setError(''); setMessages([]); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([])
+    setDirty(false); setError(''); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([])
     setRecheckResult(null)
     // Seed changes mean a new preparation session from the resource page.
   }, [props.seed])
@@ -139,28 +139,89 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     if (stage === 'start' && (!serverId || !realServers.some(server => server.id === serverId)) && realServers[0]) setServerId(realServers[0].id)
   }, [realServers, serverId, stage])
 
-  useEffect(() => {
-    const unsubscribe = window.labApi.intelligence.onRepositoryProgress(event => {
-      if (event.id !== requestId.current) return
-      pushMessage(stageOfProgress(event.stage), event.message)
+  useEffect(()=>{
+    live.current=true
+    void refreshSessions()
+    const unsubscribe=window.labApi.intelligence.preparations.onChanged(id=>{
+      void refreshSessions()
+      if(id!==preparationId.current)return
+      const revision=++fetchRevision.current
+      void window.labApi.intelligence.preparations.get(id).then(view=>{
+        if(!live.current||id!==preparationId.current||revision!==fetchRevision.current)return
+        setPreparation(view)
+        if(analysisPending.current&&!view.busy){analysisPending.current=false;hydratePreparation(view)}
+      }).catch(cause=>{if(live.current)setError(cause instanceof Error?cause.message:String(cause))})
     })
-    return unsubscribe
-  }, [])
+    return()=>{live.current=false;unsubscribe();revision.current++}
+  },[])
 
-  useEffect(() => () => {
-    revision.current += 1
-    const id = requestId.current
-    requestId.current = null
-    if (id) void window.labApi.intelligence.cancelProjectPreparation(id).catch(() => {})
-  }, [])
-
-  function pushMessage(stageKey: StageKey, text: string, tone?: 'warn'): void {
-    messageId.current += 1
-    setMessages(current => [...current.slice(-30), { id: messageId.current, stage: stageKey, text, at: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), tone }])
+  function currentEdit(value:ExperimentPlan):PreparationEdit{return {draft:value.draft,mode:value.mode,fields:value.fields,deferredGaps,conflicts,history}}
+  async function refreshSessions():Promise<void>{try{const items=await window.labApi.intelligence.preparations.list();if(live.current)setSessions(items)}catch(cause){if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))}}
+  function hydratePreparation(view:PreparationView):void{
+    preparationId.current=view.id;preparationRevision.current=view.revision
+    setPreparation(view);setServerId(view.input.serverId);setRouteId(view.input.accessRouteId);setRoot(view.input.path);setGoal(view.input.goal)
+    setSnapshot(view.plan?.guide.snapshot??view.snapshot??null);setFiles(view.files);setEnvs(view.environments);setDataCandidates(view.dataCandidates)
+    setPlan(view.plan??null);setInitialPlan(view.initialPlan??null);setSavedTask(view.task??null)
+    setDirty(!!view.plan&&view.savedRevision!==view.revision);setStage(view.plan?'review':view.busy?'analyzing':'start');setBusy(view.busy&&!view.plan)
+    setHistory(view.edit?.history??[]);setConflicts(view.edit?.conflicts??[]);setDeferredGaps(view.edit?.deferredGaps??[])
+    setRecheckResult(view.checks??null);setError(view.error??'');setSyncError('')
+    const edit=view.plan?{draft:view.plan.draft,mode:view.plan.mode,fields:view.plan.fields,deferredGaps:view.edit?.deferredGaps??[],conflicts:view.edit?.conflicts??[],history:view.edit?.history??[]}:null
+    lastSynced.current=edit?JSON.stringify(edit):'';pendingEdit.current=null
+    if(view.edit?.history.length)historyId.current=Math.max(...view.edit.history.map(item=>item.id))
   }
+  async function pumpEdits():Promise<void>{
+    if(pumpPromise.current)return pumpPromise.current
+    const operation=(async()=>{
+      if(live.current)setSyncing(true)
+      try{
+        while(pendingEdit.current&&preparationId.current){
+          const pending=pendingEdit.current,id=preparationId.current
+          pendingEdit.current=null
+          if(pending.signature===lastSynced.current)continue
+          try{
+            const view=await window.labApi.intelligence.preparations.act(id,{kind:'edit',expectedRevision:preparationRevision.current,edit:pending.edit,label:pending.edit.history.at(-1)?.label||'修改实验配置'})
+            if(view.error)throw new Error(view.error)
+            if(preparationId.current!==id)return
+            preparationRevision.current=view.revision;lastSynced.current=pending.signature
+            if(live.current){setPreparation(view);setSyncError('')}
+          }catch(cause){if(!pendingEdit.current)pendingEdit.current=pending;throw cause}
+        }
+      }finally{if(live.current)setSyncing(false)}
+    })()
+    pumpPromise.current=operation
+    let succeeded=false
+    try{await operation;succeeded=true}finally{pumpPromise.current=null;if(succeeded&&pendingEdit.current)void pumpEdits().catch(cause=>{if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))})}
+  }
+  async function flushEdits(edit?:PreparationEdit):Promise<void>{
+    if(edit){const signature=JSON.stringify(edit);if(signature!==lastSynced.current)pendingEdit.current={edit,signature}}
+    await pumpEdits()
+    if(pendingEdit.current)await pumpEdits()
+  }
+  useEffect(()=>{
+    if(!preparationId.current||!plan||stage!=='review'||analysisPending.current)return
+    const edit=currentEdit(plan),signature=JSON.stringify(edit)
+    if(signature===lastSynced.current)return
+    pendingEdit.current={edit,signature}
+    void pumpEdits().catch(cause=>{if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))})
+  },[plan,history,conflicts,deferredGaps,stage])
+  async function resumePreparation(id:string):Promise<void>{
+    try{
+      if(plan)await flushEdits(currentEdit(plan))
+      const view=await window.labApi.intelligence.preparations.get(id)
+      hydratePreparation(view)
+      if(view.busy){analysisPending.current=true;setStage('analyzing');setBusy(true);return}
+      if(view.pending.length&&!view.pending.includes('wait')){
+        analysisPending.current=true;setBusy(true);setStage(view.plan?'review':'analyzing')
+        const resumed=await window.labApi.intelligence.preparations.act(id,{kind:'resume'})
+        if(live.current){analysisPending.current=false;hydratePreparation(resumed)}
+      }
+    }catch(cause){setError(cause instanceof Error?cause.message:String(cause));setBusy(false)}
+  }
+
   function resetSession(nextServerId = serverId, nextRoot = root): void {
+    preparationId.current=null;setPreparation(null);pendingEdit.current=null;lastSynced.current='';analysisPending.current=false
     setSnapshot(null); setFiles([]); setPlan(null); setInitialPlan(null); setSavedTask(null)
-    setDirty(false); setMessages([]); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([])
+    setDirty(false); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([])
     setError(''); setNotice(''); setScopeOpen(false); setRepositories([]); setDiscoverNote(''); setRecheckResult(null)
     if (nextServerId !== serverId) setServerId(nextServerId)
     setRoot(nextRoot)
@@ -197,130 +258,46 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       setEnvLoading(false)
     }
   }
-  function describeSignals(value: RepositorySnapshot): void {
-    const signals = projectSignals(value)
-    pushMessage('scan', `已读取 ${value.files.length} 个可分析文件的清单${signals.hasReadme ? '，包含 README' : '，没有找到 README'}。`)
-    const train = signals.entries.find(entry => entry.kind === 'train')
-    const evaluate = signals.entries.find(entry => entry.kind === 'evaluate')
-    if (train && evaluate) pushMessage('entry', `项目提供训练入口 ${train.path} 与评估入口 ${evaluate.path}，正在按“${goal.trim()}”匹配本次目标。`)
-    else if (train || evaluate) pushMessage('entry', `已找到${train ? '训练' : '评估'}入口 ${(train ?? evaluate)!.path}${signals.configs[0] ? `和默认配置 ${signals.configs[0]}` : ''}。`)
-    else pushMessage('entry', '没有识别出明确的训练或评估入口，将依据已读说明和配置继续分析。', 'warn')
-    if (signals.dependencyFiles.length) pushMessage('environment', `项目依赖说明：${signals.dependencyFiles.slice(0, 3).join('、')}。`)
+  async function analyze(scope?:{snapshot:RepositorySnapshot;files:string[]}):Promise<void>{
+    if(!server||!accessRouteId||!root.trim().startsWith('/')||!goal.trim()||!props.modelEnabled){setError('请填写项目与目标，并启用模型服务');return}
+    if(plan){try{await flushEdits(currentEdit(plan))}catch(cause){setSyncError(String(cause));return}}
+    const id=crypto.randomUUID(),token=++revision.current
+    preparationId.current=id;preparationRevision.current=0;pendingEdit.current=null;lastSynced.current='';analysisPending.current=true
+    setPreparation(null);setStage('analyzing');setBusy(true);setError('');setSyncError('');setNotice('');setPlan(null);setInitialPlan(null);setSavedTask(null);setHistory([]);setConflicts([]);setDeferredGaps([]);setScopeOpen(false)
+    try{
+      const view=await window.labApi.intelligence.preparations.create({serverId:server.id,accessRouteId,path:root.trim(),goal:goal.trim(),filePaths:scope?.files},id)
+      if(live.current&&token===revision.current&&preparationId.current===id){analysisPending.current=false;hydratePreparation(view)}
+    }catch(cause){if(live.current&&token===revision.current){setError(cause instanceof Error?cause.message:String(cause));setStage('start');setBusy(false);analysisPending.current=false}}
+    finally{void refreshSessions()}
   }
-  async function analyze(scope?: { snapshot: RepositorySnapshot; files: string[] }): Promise<void> {
-    if (!server || !accessRouteId) { setError('请选择一台真实服务器和连接路径'); return }
-    if (!root.trim().startsWith('/')) { setError('项目目录必须是服务器上的绝对路径'); return }
-    if (!goal.trim()) { setError('请先说明这次想做什么'); return }
-    if (!props.modelEnabled) { setError('模型尚未启用，请先完成模型设置，或使用手动创建'); return }
-    const hadSavedDraft = Boolean(savedTask)
-    const token = ++revision.current
-    setStage('analyzing'); setBusy(true); setError(''); setNotice(''); setPlan(null); setInitialPlan(null); setSavedTask(null)
-    setDirty(false); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([]); setFiles([]); setSnapshot(null); setMessages([])
-    setScopeOpen(false)
-    let currentSnapshot = scope?.snapshot
-    let selectedFiles = scope?.files ?? []
-    try {
-      if (scope) {
-        setSnapshot(scope.snapshot); setFiles(scope.files)
-        pushMessage('scan', `按更新后的文件范围重新分析：已选 ${scope.files.length} 个文件。`)
-        pushMessage('entry', '沿用上次识别的入口与配置，按新的文件范围重新生成方案。')
-      } else {
-        pushMessage('scan', '正在连接服务器并读取项目目录…')
-        currentSnapshot = await window.labApi.intelligence.inspectRepository({ source: 'remote', serverId: server.id, accessRouteId, path: root.trim() })
-        if (token !== revision.current) return
-        setSnapshot(currentSnapshot)
-        const recommended = recommendProjectFiles(currentSnapshot.files, goal)
-        if (!recommended.length) throw new Error('此目录中没有可分析的文本文件，请确认项目路径或换一个目录')
-        selectedFiles = recommended
-        setFiles(recommended)
-        describeSignals(currentSnapshot)
-        pushMessage('match', `已选出 ${recommended.length} 个与本次目标最相关的文件，准备生成最小运行方案。`)
-      }
-      if (!selectedFiles.length) throw new Error('请至少选择一个要分析的文件')
-      const envPromise = envs.length ? Promise.resolve(envs) : loadEnvironments()
-      void envPromise.then(environments => {
-        if (token !== revision.current) return
-        if (environments.length) pushMessage('environment', `已找到 ${environments.length} 个可用环境：${environments.slice(0, 4).map(environment => environment.name).join('、')}${environments.length > 4 ? ' 等' : ''}，正在核对项目依赖说明。`)
-        else pushMessage('environment', '没有读取到可用的 Conda 环境；方案会先给出环境建议，稍后可在卡片中补充。', 'warn')
-      })
-      pushMessage('generate', '正在读取项目内容并生成实验方案…')
-      const id = crypto.randomUUID()
-      requestId.current = id
-      const guide = await window.labApi.intelligence.prepareProject({ ...currentSnapshot!.input, filePaths: selectedFiles, goal: goal.trim() }, id)
-      if (token !== revision.current) return
-      requestId.current = null
-      const environments = await envPromise
-      if (token !== revision.current) return
-      const value = createExperimentPlan({ guide, goal: goal.trim(), environments, now: new Date() })
-      setPlan(value); setInitialPlan(structuredClone(value)); setStage('review'); setDirty(true)
-      if (hadSavedDraft) setNotice('已生成新方案；之前保存的草稿仍保留，保存这份方案会创建新任务。')
-      pushMessage('generate', `方案已生成：${guide.summary.slice(0, 120)}`)
-      void discoverDataCandidates(value, token)
-    } catch (caught) {
-      if (token !== revision.current) return
-      const message = caught instanceof Error ? caught.message : String(caught)
-      if (/取消/.test(message)) {
-        setStage('start'); setNotice('已取消分析；项目和目标已保留。')
-      } else {
-        setError(message); setStage('start')
-      }
-    } finally {
-      if (token === revision.current) { requestId.current = null; setBusy(false) }
-    }
-  }
-  async function discoverDataCandidates(value: ExperimentPlan, token: number): Promise<void> {
-    if (!server || !accessRouteId) return
-    const rootPath = planRootPath(value)
-    let entries: string[] = []
-    try {
-      const view = await window.labApi.intelligence.browseRepositoryDirectory({ serverId: server.id, accessRouteId, path: rootPath })
-      if (token !== revision.current) return
-      entries = view.entries.map(entry => entry.name)
-    } catch { /* data discovery is best effort */ }
-    const candidates: PlanDataCandidate[] = []
-    const add = (path: string, source: PlanSource, note: string): void => {
-      if (!path.startsWith('/') || candidates.some(item => item.path === path)) return
-      candidates.push({ path, source, note })
-    }
-    if (value.draft.dataPath) add(value.draft.dataPath, value.fields.dataPath?.source ?? 'suggested', value.fields.dataPath?.note ?? '当前方案中的位置')
-    for (const warning of value.guide.warnings) {
-      const verified = /数据目录已确认存在：([^\s，。；]+)/.exec(warning)
-      if (verified) add(verified[1], 'server', '已在服务器确认存在')
-      const inferred = /数据目录从仓库内 ([^\s，。；]+) 推断/.exec(warning)
-      if (inferred) add(inferred[1], 'server', '仓库内目录已确认存在，是否本次数据需核对')
-      const fromCommand = /数据目录从启动命令参数读取：([^\s，。；]+)/.exec(warning)
-      if (fromCommand) add(fromCommand[1], 'file', '来自启动命令参数')
-    }
-    for (const name of entries) {
-      if (/^(data|datasets?|corpus|corpora|raw|processed|images|audio|text|videos?)$/i.test(name)) add(`${rootPath.replace(/\/$/, '')}/${name}`, 'server', '项目目录中存在该子目录（已核对存在）')
-    }
-    for (const task of props.tasks) {
-      if (task.serverId === server.id && task.dataPath) add(task.dataPath, 'recent', `任务“${task.title}”使用过`)
-    }
-    if (candidates.length && token === revision.current) setDataCandidates(candidates)
-  }
-  function cancelAnalysis(): void {
-    const id = requestId.current
-    revision.current += 1
-    requestId.current = null
-    if (id) void window.labApi.intelligence.cancelProjectPreparation(id).catch(() => {})
-    setBusy(false); setStage(plan ? 'review' : 'start'); setNotice('已取消分析；输入的项目与目标已保留。')
+  function cancelAnalysis():void{
+    if(!preparationId.current)return
+    setNotice('正在暂停；已完成的节点会保留。')
+    void window.labApi.intelligence.preparations.cancel(preparationId.current).catch(cause=>setError(String(cause)))
   }
   async function browse(path?: string): Promise<void> {
     if (!server || !accessRouteId) return
-    setBrowser(current => current ? { ...current, busy: true, error: '' } : current)
+    const request = ++browserRequest.current
+    setBrowser(current => current ? { ...current, pathInput: path ?? current.pathInput, busy: true, error: '' } : current)
     try {
       const view = await window.labApi.intelligence.browseRepositoryDirectory({ serverId: server.id, accessRouteId, path })
-      setBrowser(current => current ? { ...current, view, busy: false } : current)
+      if (request !== browserRequest.current) return
+      setBrowser(current => current ? { ...current, view, pathInput: view.path, busy: false, error: '' } : current)
     } catch (caught) {
+      if (request !== browserRequest.current) return
       setBrowser(current => current ? { ...current, busy: false, error: caught instanceof Error ? caught.message : String(caught) } : current)
     }
+  }
+  function submitBrowserPath(): void {
+    if (!browser || browser.busy) return
+    const trimmed = browser.pathInput.trim()
+    void browse(trimmed.startsWith('/') ? trimmed : `/${trimmed}`)
   }
   function openBrowser(mode: 'project' | 'data'): void {
     const start = mode === 'data'
       ? (plan?.draft.dataPath.trim().startsWith('/') ? plan.draft.dataPath.trim() : root.trim().startsWith('/') ? root.trim() : undefined)
       : (root.trim().startsWith('/') ? root.trim() : undefined)
-    setBrowser({ mode, view: null, busy: true, error: '' })
+    setBrowser({ mode, view: null, pathInput: start ?? '', busy: true, error: '' })
     void browse(start)
   }
   function chooseBrowserPath(value: string): void {
@@ -429,44 +406,16 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       setPlan(current => current && current.draft.dataPath.trim() === path ? { ...current, fields: { ...current.fields, dataPath: { source: current.fields.dataPath?.source === 'user' ? 'user' : 'suggested', note: '未能在服务器确认这个目录，请检查路径' } } } : current)
     }
   }
-  async function recheckPlan(): Promise<void> {
-    if (!plan || !server || !accessRouteId || rechecking) return
+  async function recheckPlan():Promise<void>{
+    if(!plan||!preparationId.current||rechecking)return
     setRechecking(true)
-    const lines: { ok: boolean; text: string }[] = []
-    const codePath = plan.draft.codePath.trim()
-    const entry = planCommandEntry(plan.draft.launchCommand)
-    if (!codePath.startsWith('/')) lines.push({ ok: false, text: '代码目录还不是服务器绝对路径，无法核对' })
-    else {
-      try {
-        await window.labApi.intelligence.browseRepositoryDirectory({ serverId: server.id, accessRouteId, path: codePath })
-        lines.push({ ok: true, text: `启动目录存在：${codePath}` })
-      } catch (caught) {
-        lines.push({ ok: false, text: `启动目录未确认：${codePath} · ${caught instanceof Error ? caught.message : String(caught)}` })
-      }
-    }
-    if (entry && !entry.startsWith('/') && !/\.(?:py|sh)$/.test(entry)) lines.push({ ok: true, text: `入口是模块或命令形式（${entry}），没有可核对的单独文件` })
-    else if (entry && codePath.startsWith('/')) {
-      try {
-        const snapshot = await window.labApi.intelligence.inspectRepository({ source: 'remote', serverId: server.id, accessRouteId, path: codePath })
-        const found = snapshot.files.some(file => file.path === entry || file.path.endsWith(`/${entry}`) || entry.endsWith(`/${file.path}`))
-        lines.push({ ok: found, text: found ? `入口文件存在：${entry}` : `入口文件未在目录清单中找到：${entry}` })
-      } catch (caught) {
-        lines.push({ ok: false, text: `入口文件未能核对：${entry} · ${caught instanceof Error ? caught.message : String(caught)}` })
-      }
-    }
-    const dataPath = plan.draft.dataPath.trim()
-    if (dataPath.startsWith('/')) {
-      try {
-        await window.labApi.intelligence.browseRepositoryDirectory({ serverId: server.id, accessRouteId, path: dataPath })
-        lines.push({ ok: true, text: `数据目录存在：${dataPath}` })
-      } catch (caught) {
-        lines.push({ ok: false, text: `数据目录未确认：${dataPath} · ${caught instanceof Error ? caught.message : String(caught)}` })
-      }
-    }
-    setRecheckResult({ at: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), lines })
-    setRechecking(false)
-    const failed = lines.filter(line => !line.ok).length
-    setNotice(failed ? `重新核对完成：${failed} 项需要确认。` : '重新核对完成：入口、启动目录和数据目录都可在服务器确认。')
+    try{
+      await flushEdits(currentEdit(plan))
+      const view=await window.labApi.intelligence.preparations.act(preparationId.current,{kind:'recheck',expectedRevision:preparationRevision.current})
+      if(view.error)throw new Error(view.error)
+      preparationRevision.current=view.revision;setPreparation(view);setRecheckResult(view.checks??null)
+      setNotice('当前配置已完成只读核对，检查结果已保存在分析过程。')
+    }catch(cause){setError(cause instanceof Error?cause.message:String(cause))}finally{setRechecking(false)}
   }
   function answerGap(gap: PlanGap, option: PlanGap['options'][number]): void {    if (!plan) return
     const resolved = resolvePlanGap(plan, gap, option)
@@ -597,9 +546,16 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     }
     setSaving(start ? 'start' : 'draft')
     try {
-      const saved = await window.labApi.experiments.save(draft)
+      if(!preparationId.current)throw new Error('准备流程尚未保存，请重新打开方案')
+      await flushEdits({...currentEdit(plan),draft})
+      const view=await window.labApi.intelligence.preparations.act(preparationId.current,{kind:'save',expectedRevision:preparationRevision.current})
+      if(view.error)throw new Error(view.error)
+      const saved=view.task
+      if(!saved)throw new Error('没有找到保存后的实验任务')
+      preparationRevision.current=view.revision;setPreparation(view)
+      lastSynced.current=JSON.stringify({...currentEdit(plan),draft:view.plan!.draft})
       setSavedTask(saved)
-      setPlan(current => current ? { ...current, draft: { ...current.draft, id: saved.id } } : current)
+      setPlan(current => current ? { ...current, draft: view.plan!.draft } : current)
       setDirty(false)
       props.onChanged(saved)
       props.notify(start ? '实验草稿已保存，正在打开资源选择' : '实验草稿已保存；继续修改会更新这份草稿')
@@ -610,22 +566,12 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       setSaving(null)
     }
   }
-  async function leave(): Promise<void> {
-    if (saving) { props.notify('正在保存实验草稿，请稍候'); return }
-    if (busy) {
-      const accepted = await props.confirm({ title: '取消分析并离开？', message: '项目分析尚未完成，离开后会取消本次分析。', confirmLabel: '取消分析并离开', tone: 'danger' })
-      if (!accepted) return
-      cancelAnalysis()
-    }
-    if (plan && dirty) {
-      const accepted = await props.confirm({
-        title: '离开实验准备？',
-        message: savedTask ? '当前方案有未保存的修改，离开后这些修改不会写入草稿。' : '当前方案还没有保存为任务。离开后需要重新分析项目。',
-        confirmLabel: '离开', tone: 'danger'
-      })
-      if (!accepted) return
-    }
-    props.onExit()
+  async function leave():Promise<void>{
+    if(saving){props.notify('正在保存实验草稿，请稍候');return}
+    try{
+      if(plan)await flushEdits(currentEdit(plan))
+      props.onExit()
+    }catch(cause){setSyncError(cause instanceof Error?cause.message:String(cause))}
   }
   async function discover(): Promise<void> {
     if (!server || !accessRouteId || discovering) return
@@ -645,8 +591,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const envName = plan ? planEnvironmentName(plan.draft) : ''
   const envState = plan?.fields.environment
   const activeGap = gaps[0]
-  const lastMessageStage = messages.length ? messages[messages.length - 1].stage : undefined
-  const coveredStages = new Set(messages.map(message => message.stage))
 
   return <section className="smart-create" aria-label="智能创建实验">
     <header className="smart-create-head">
@@ -659,6 +603,9 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       <span className="smart-create-shared">与手动创建共用任务数据与 GPU 调度</span>
     </header>
 
+    {syncError&&<div className="intel-error" role="alert">准备进度保存失败：{syncError}<button type="button" className="secondary-button" onClick={()=>void flushEdits(plan?currentEdit(plan):undefined).then(()=>setSyncError('')).catch(cause=>setSyncError(String(cause)))}>重试保存进度</button></div>}
+    {preparation&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}。已完成的节点会保留，未完成的模型步骤可能需要重新请求。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
+    {stage==='start'&&sessions.length>0&&<section className="preparation-sessions" aria-label="继续实验准备"><header><h3>继续准备</h3><p>恢复分析、补充信息和未提交的方案。</p></header>{sessions.slice(0,8).map(item=><article key={item.id}><div><strong>{item.title}</strong><small>{props.servers.find(server=>server.id===item.input.serverId)?.name??'服务器已移除'} · {item.input.path}</small></div><span>{{analyzing:'正在处理',needs_input:'等待补充',review:'可审阅',saved:'草稿已保存',paused:'已暂停',failed:'需要处理'}[item.phase]}</span><button type="button" className="secondary-button" disabled={busy||!props.servers.some(server=>server.id===item.input.serverId)} onClick={()=>void resumePreparation(item.id)}>继续准备</button></article>)}</section>}
     {stage === 'start' && <div className="smart-start">
       <div className="smart-start-main">
         <section className="smart-start-card">
@@ -687,22 +634,13 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       {notice && <p className="smart-note" role="status">{notice}</p>}
       <footer className="smart-start-footer">
         <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}分析项目并准备实验</button><button type="button" className="secondary-button" onClick={props.onManualCreate}>手动创建</button></div>
-        <p>只读取项目文件与环境清单，不安装、不运行；勾选文件内容会发送给已配置模型，保存草稿时才创建任务。</p>
+        <p>只读检查项目与环境，不安装依赖或启动实验；所选文件内容会发送给已配置模型，保存草稿时才创建任务。</p>
       </footer>
     </div>}
 
+    {stage==='start'&&preparation&&<PreparationTimeline view={preparation}/>}
     {stage !== 'start' && <div className="smart-workbench">
-      <section className={`smart-progress ${stage === 'analyzing' ? 'running' : 'done'}`} aria-label="项目理解进度">
-        <header><div><h2>{stage === 'analyzing' ? '正在准备实验' : '项目理解过程'}</h2><p>{root.trim()} · {goal.trim()}</p></div>{stage === 'analyzing' && <button type="button" className="secondary-button" onClick={cancelAnalysis}>取消分析</button>}</header>
-        <ol>{stageOrder.map((item, index) => {
-          const itemMessages = messages.filter(message => message.stage === item.key)
-          const active = stage === 'analyzing' && item.key === lastMessageStage
-          const complete = coveredStages.has(item.key) && !active
-          return <li key={item.key} className={`${complete ? 'complete' : ''} ${active ? 'active' : ''}`}>
-            <span className="smart-progress-mark">{complete && !active ? <CheckCircle2 size={15} /> : active ? <LoaderCircle size={15} className="spin" /> : <Circle size={13} />}</span>
-            <div><strong>{item.label}</strong>{itemMessages.length === 0 ? <small>{item.hint}</small> : itemMessages.map(message => <p key={message.id} className={message.tone === 'warn' ? 'warn' : ''}>{message.text}</p>)}</div>
-          </li>
-        })}</ol>
+      <section className="smart-progress durable-preparation-progress"><PreparationTimeline view={preparation}/>{stage==='analyzing'&&<button type="button" className="secondary-button" onClick={cancelAnalysis}>暂停准备</button>}
         {snapshot && <details className="smart-scope" open={scopeOpen} onToggle={event => setScopeOpen((event.target as HTMLDetailsElement).open)}>
           <summary>分析范围 · 已选 {files.length} / {snapshot.files.length} 个相关文件 · 可展开调整</summary>
           <div className="smart-scope-actions"><button type="button" className="wb-text-button" disabled={busy} onClick={() => setFiles(snapshot.files.map(file => file.path))}>全选</button><button type="button" className="wb-text-button" disabled={busy} onClick={() => setFiles([])}>清空</button><button type="button" className="secondary-button" disabled={busy || !files.length} onClick={() => void analyze({ snapshot, files })}>按此范围重新分析</button></div>
@@ -717,7 +655,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       {plan && stage === 'review' && <div className="smart-plan">
         <header className="smart-plan-head">
           <div><span className="smart-plan-state"><CheckCircle2 size={14} />方案已生成</span><h2>{plan.draft.title || '本次实验'}</h2><p>{plan.summary}</p></div>
-          <div className="smart-plan-meta"><span><FileCode2 size={13} />{launchCitations.length + plan.guide.snapshot.excerpts.length} 处文件依据</span><span><Server size={13} />{plan.guide.checks.filter(check => check.status === 'confirmed').length} 项服务器路径核对</span><button type="button" className="wb-text-button" onClick={() => void leave()}>放弃方案</button></div>
+          <div className="smart-plan-meta"><span><FileCode2 size={13} />{launchCitations.length + plan.guide.snapshot.excerpts.length} 处文件依据</span><span><Server size={13} />{plan.guide.checks.filter(check => check.status === 'confirmed').length} 项服务器路径核对</span><button type="button" className="wb-text-button" onClick={() => void leave()}>返回任务池</button></div>
         </header>
         <div className="smart-plan-grid">
           <article className="smart-card">
@@ -803,12 +741,12 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
 
         {history.length > 0 && <details className="smart-history"><summary>本次修改记录 · {history.length} 项</summary><ol>{history.map(entry => <li key={entry.id}><time>{entry.at}</time><span>{entry.label}</span></li>)}</ol><div><button type="button" className="wb-text-button" onClick={resetPlan}><RotateCcw size={13} />恢复初始方案</button></div></details>}
 
-        {recheckResult && <details className="smart-questions" open><summary>服务器路径核对 · {recheckResult.at}</summary><ul>{recheckResult.lines.map((line, index) => <li key={index} className={line.ok ? '' : 'smart-recheck-failed'}>{line.ok ? '✓' : '×'} {line.text}</li>)}</ul><p className="smart-note">这是只读检查，不会运行任何命令；运行时还会再次检查。</p></details>}
+        {recheckResult && <details className="smart-questions" open><summary>服务器路径核对 · {recheckResult.configurationKey===projectConfigurationKey(plan.draft)?'当前配置':'配置已变更，以下为原核对结果'} · {new Date(recheckResult.at).toLocaleTimeString('zh-CN')}</summary><ul>{recheckResult.lines.map((line, index) => <li key={index} className={line.ok ? '' : 'smart-recheck-failed'}>{line.ok ? '✓' : '×'} {line.text}</li>)}</ul><p className="smart-note">这是当前配置的只读路径检查，结果已保存；运行时还会再次检查。</p></details>}
 
         {!server && <p className="smart-inline-warning">原服务器已不可用，当前方案无法保存。请返回任务池重新选择服务器并分析。</p>}
         <footer className="smart-plan-footer">
           <div><button type="button" className="secondary-button" onClick={editFullConfig}><SlidersHorizontal size={14} />编辑完整配置</button><button type="button" className="secondary-button" disabled={rechecking || saving !== null} onClick={() => void recheckPlan()}>{rechecking ? <LoaderCircle size={14} className="spin" /> : <Server size={14} />}重新核对路径</button><span className="smart-footer-hint">返回方案后仍可继续让系统检查与修改。</span></div>
-          <div className="smart-plan-save">
+          <div className="smart-plan-save"><span className="smart-saved" role="status">{syncing?'正在保存准备进度…':syncError?'进度尚未保存':'准备进度已保存'}</span>
             {savedTask && <span className="smart-saved"><CheckCircle2 size={14} />草稿已保存{!dirty ? '' : ' · 有未保存修改'}<button type="button" className="wb-text-button" disabled={saving !== null} onClick={() => props.onOpenTask(savedTask)}>在任务池查看</button></span>}
             <button type="button" className="secondary-button" disabled={!canSave} onClick={() => void save(false)}>{saving === 'draft' ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Save size={14} />保存草稿</>}</button>
             <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save(true)}>{saving === 'start' ? <><LoaderCircle size={14} className="spin" />准备资源…</> : <><Play size={14} />创建并选择资源</>}</button>
@@ -821,12 +759,16 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       <section className="app-modal smart-browser" role="dialog" aria-modal="true" aria-label={browser.mode === 'project' ? '选择项目目录' : '选择数据目录'}>
         <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><FolderOpen size={18} /></div><div><h2>{browser.mode === 'project' ? '选择项目目录' : '选择数据目录'}</h2><p>{browser.view?.path ?? '正在读取服务器目录'}</p></div></div><button type="button" className="icon-button" onClick={() => setBrowser(null)} aria-label="关闭" disabled={browser.busy}><X size={16} /></button></header>
         <div className="smart-browser-body">
-          {browser.busy ? <p className="smart-note"><LoaderCircle size={14} className="spin" /> 正在读取目录…</p> : browser.error ? <div><p className="intel-error" role="alert">{browser.error}</p><button type="button" className="secondary-button" onClick={() => void browse(browser.view?.path)}>重试</button></div> : browser.view ? <>
-            <div className="smart-browser-path"><code>{browser.view.path}</code><div><button type="button" className="wb-text-button" onClick={() => void browse(browser.view!.home)}>主目录</button>{browser.view.parent && <button type="button" className="wb-text-button" onClick={() => void browse(browser.view!.parent ?? undefined)}>上一级</button>}</div></div>
+          <div className="smart-browser-path">
+            <div className="smart-browser-location"><input aria-label="浏览目录路径" value={browser.pathInput} onChange={event => setBrowser(current => current ? { ...current, pathInput: event.target.value } : current)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); submitBrowserPath() } }} placeholder="输入服务器目录，例如 /mnt/data" spellCheck={false} disabled={browser.busy} /><button type="button" className="secondary-button" onClick={submitBrowserPath} disabled={browser.busy}>打开目录</button></div>
+            <div className="smart-browser-navigation"><button type="button" className="wb-text-button" disabled={browser.busy} onClick={() => void browse(browser.view?.home)}>主目录</button>{browser.view?.parent && <button type="button" className="wb-text-button" disabled={browser.busy} onClick={() => void browse(browser.view!.parent ?? undefined)}>上一级</button>}</div>
+          </div>
+          <p className="smart-note">输入路径后按回车打开，也可以点击下方文件夹逐级选择。</p>
+          {browser.busy ? <p className="smart-note"><LoaderCircle size={14} className="spin" /> 正在读取目录…</p> : browser.error ? <div><p className="intel-error" role="alert">{browser.error}</p><button type="button" className="secondary-button" onClick={submitBrowserPath}>重试</button></div> : browser.view ? <>
             <div className="smart-browser-list">{browser.view.entries.map(entry => <button type="button" key={entry.path} onClick={() => void browse(entry.path)}><FolderOpen size={14} /><span>{entry.name}</span></button>)}{browser.view.entries.length === 0 && <p className="smart-note">没有子目录</p>}</div>
           </> : null}
         </div>
-        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => setBrowser(null)} disabled={browser.busy}>取消</button><button type="button" className="primary-button" disabled={!browser.view || browser.busy} onClick={() => browser.view && chooseBrowserPath(browser.view.path)}>选择此目录</button></footer>
+        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => setBrowser(null)} disabled={browser.busy}>取消</button><button type="button" className="primary-button" disabled={!browser.view || browser.busy || !!browser.error || browser.pathInput.trim() !== browser.view.path} onClick={() => browser.view && chooseBrowserPath(browser.view.path)}>选择此目录</button></footer>
       </section>
     </div>}
   </section>

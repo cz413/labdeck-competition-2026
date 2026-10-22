@@ -598,8 +598,13 @@ export class AppStore {
     return structuredClone(this.ensureData().experimentTasks)
   }
 
-  async saveExperimentTask(rawInput: ExperimentTaskDraft): Promise<ExperimentTask> {
+  async saveExperimentTask(rawInput: ExperimentTaskDraft, preparationId?: string): Promise<ExperimentTask> {
     const input = experimentTaskDraftSchema.parse(rawInput)
+    if (preparationId) {
+      experimentTaskDraftSchema.shape.id.parse(preparationId)
+      const prior=this.ensureData().experimentTasks.find(task=>task.preparationId===preparationId)
+      if(prior)input.id=prior.id
+    }
     input.scriptPath = input.scriptPath.trim()
     if (input.launchMode === 'script' && input.scriptPath) validateExperimentScriptPath(input.scriptPath)
     for (const [label, path] of [['代码目录', input.codePath], ['数据目录', input.dataPath], ['产物路径', input.artifactPath]] as const) {
@@ -640,6 +645,7 @@ export class AppStore {
     const task: ExperimentTask = experimentTaskSchema.parse({
       ...input,
       id: existing?.id ?? randomUUID(),
+      preparationId: existing?.preparationId ?? preparationId,
       status: activeRunIndex >= 0 ? existing!.status : input.status,
       serverNameSnapshot: server?.name ?? input.serverNameSnapshot,
       createdAt: existing?.createdAt ?? timestamp,
