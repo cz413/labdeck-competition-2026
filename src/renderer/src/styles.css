@@ -2931,3 +2931,42 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 @media (max-width: 760px) {
 }
+
+/* Remote task and GPU process logs */
+.experiment-log-panel { min-width: 0; margin: 2px 0 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); }
+.experiment-log-toolbar, .experiment-log-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.experiment-log-toolbar { justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--separator); }
+.experiment-log-toolbar button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.experiment-log-toolbar button:hover { color: var(--teal); }
+.experiment-log-toolbar button:disabled { opacity: .5; cursor: default; }
+.experiment-log-toggle strong { color: var(--text); font-size: 12px; }
+.experiment-log-toggle .expanded { transform: rotate(180deg); }
+.experiment-log-state, .experiment-log-controls label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+.experiment-log-controls input { accent-color: var(--teal); }
+.experiment-log-output { box-sizing: border-box; height: 240px; max-height: 45vh; margin: 0; padding: 12px; overflow: auto; color: var(--text); background: var(--panel-soft); font: 11px/1.7 Consolas, 'Cascadia Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.experiment-log-error { padding: 7px 12px; color: var(--red); font-size: 11px; overflow-wrap: anywhere; }
+.experiment-log-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px 12px; padding: 6px 12px; border-top: 1px solid var(--separator); color: var(--muted-2); font-size: 10px; }
+.experiment-log-footer > span { min-width: 0; overflow-wrap: anywhere; }
+.process-log-view { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+.process-log-heading, .process-log-sources, .process-log-path, .my-task-log-actions { display: flex; align-items: center; gap: 8px; }
+.process-log-heading { justify-content: space-between; margin-bottom: 10px; }
+.process-log-heading > div { display: grid; gap: 5px; min-width: 0; }
+.process-log-heading strong { font-size: 12px; }
+.process-log-heading span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.process-log-sources { flex-wrap: wrap; margin-bottom: 10px; }
+.process-log-sources .active { border-color: var(--teal); color: var(--teal); }
+.process-log-help { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.process-log-path { flex-wrap: wrap; margin-bottom: 12px; }
+.process-log-path label { display: flex; align-items: center; flex: 1; min-width: 200px; gap: 8px; font-size: 11px; color: var(--muted); }
+.process-log-path input { flex: 1; width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--control-bg); font: 11px Consolas, monospace; }
+.my-task-row .my-task-process { padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.my-task-table-head, .my-task-row { grid-template-columns: minmax(180px, 1.2fr) minmax(130px, 1fr) 90px 90px 150px; }
+.my-task-table { overflow-x: auto; }
+.my-task-table-head, .my-task-row { min-width: 740px; }
+.my-task-log-actions { justify-content: flex-end; }
+.my-task-log-actions .secondary-button { white-space: nowrap; padding: 5px 7px; font-size: 11px; }
+.gpu-process-actions { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 0; }
+.gpu-process-actions .gpu-log-action { padding: 5px 7px; font-size: 11px; }
+@media (max-width: 1180px) {
+  .my-task-table-head, .my-task-row { grid-template-columns: minmax(180px, 1.2fr) minmax(130px, 1fr) 90px 150px; min-width: 650px; }
+}

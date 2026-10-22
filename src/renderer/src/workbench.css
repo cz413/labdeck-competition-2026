@@ -423,7 +423,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .wb-device-page .gpu-hardware-strip svg { color: var(--muted); }
 .workbench-shell .wb-device-page .gpu-process-head { color: var(--muted); background: var(--panel-soft); font-size: 13px; }
 .wb-device-page .gpu-process-row { font-size: 14px; }
-.wb-device-page .gpu-process-head, .wb-device-page .gpu-process-row { grid-template-columns: 110px 64px 85px minmax(150px, 1fr) 90px 120px; }
+.wb-device-page .gpu-process-head, .wb-device-page .gpu-process-row { grid-template-columns: 85px 60px 75px minmax(120px, 1fr) 75px 200px; }
 .wb-device-page .gpu-process-row .gpu-watch-action { justify-content: center; font-size: 14px; padding: 5px 7px; }
 .task-notification-settings { padding: 20px; }
 .task-notification-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; }

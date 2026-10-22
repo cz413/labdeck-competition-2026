@@ -5,6 +5,7 @@ import { gpuLoadState } from '@shared/gpu-status'
 import { formatGpuProcessMemory } from '@shared/gpu-memory'
 import { getAccessRoute } from '@shared/access-routes'
 import { GpuHistoryChart } from './GpuHistoryChart'
+import { ProcessLogPanel } from './ProcessLogPanel'
 
 interface GpuDetailPanelProps {
   server: ServerProfile
@@ -49,6 +50,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
   const [processWatches, setProcessWatches] = useState<ProcessWatch[]>([])
   const [watchingPid, setWatchingPid] = useState<number | null>(null)
   const [watchError, setWatchError] = useState('')
+  const [logProcess, setLogProcess] = useState<{ pid: number; processName: string } | null>(null)
   const gpus = snapshot?.gpus ?? []
   const selected = useMemo(
     () => gpus.find((gpu) => gpu.index === selectedIndex) ?? gpus[0],
@@ -88,6 +90,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
   }
 
   useEffect(() => { setSelectedIndex(initialGpuIndex) }, [server.id, initialGpuIndex])
+  useEffect(() => { setLogProcess(null) }, [server.id, route.id, selectedIndex])
 
   useEffect(() => {
     const handler = (event: KeyboardEvent): void => {
@@ -155,15 +158,16 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
             {watchError && <p className="wb-notice error" role="alert">{watchError}</p>}
             {selected.processMemoryInconsistent && <p className="wb-notice" role="status">本次进程显存与整卡读数不一致，自动重采样后仍未确认。进程信息保留，显存暂显示“待确认”；下一次采样会重新检查。</p>}
             {selected.processes.length ? <div className="gpu-process-table">
-              <div className="gpu-process-head"><span>用户</span><span>PID</span><span>运行时长</span><span>进程</span><span>显存占用</span><span>结束通知</span></div>
+              <div className="gpu-process-head"><span>用户</span><span>PID</span><span>运行时长</span><span>进程</span><span>显存占用</span><span>日志 / 结束通知</span></div>
               {selected.processes.map((process) => {
                 const watch = processWatches.find(item => item.serverId === server.id && item.pid === process.pid && item.status !== 'ended')
                 return <div className="gpu-process-row" key={`${process.pid}-${process.processName}`}>
                 <span className="gpu-user"><UserRound size={15} />{process.username}</span><code>{process.pid}</code><time>{formatDuration(process.elapsedSeconds)}</time><span title={process.processName}>{process.processName}</span><strong>{formatGpuProcessMemory(process, selected.processMemoryInconsistent)}</strong>
-                <button type="button" className={`gpu-watch-action ${watch ? 'active' : ''}`} disabled={watchingPid !== null || (!watch && (!live || server.mode !== 'real'))} title={watch ? `${watch.message}；点击取消提醒` : '进程结束后通知，无法确认退出码；多进程任务请关注主进程'} onClick={() => void toggleProcessWatch(process.pid, process.processName)}><Bell size={13} />{watchingPid === process.pid ? '处理中…' : watch?.status === 'interrupted' ? '监控中断' : watch ? '已订阅' : '结束时提醒'}</button>
+                <div className="gpu-process-actions"><button type="button" className="secondary-button gpu-log-action" disabled={!live || server.mode !== 'real'} onClick={() => setLogProcess({ pid: process.pid, processName: process.processName })}><SquareTerminal size={13} />实时日志</button><button type="button" className={`gpu-watch-action ${watch ? 'active' : ''}`} disabled={watchingPid !== null || (!watch && (!live || server.mode !== 'real'))} title={watch ? `${watch.message}；点击取消提醒` : '进程结束后通知，无法确认退出码；多进程任务请关注主进程'} onClick={() => void toggleProcessWatch(process.pid, process.processName)}><Bell size={13} />{watchingPid === process.pid ? '处理中…' : watch?.status === 'interrupted' ? '监控中断' : watch ? '已订阅' : '结束时提醒'}</button></div>
               </div>})}
             </div> : <div className="gpu-idle-state"><CheckIcon /><div><strong>{!live ? '上次采集时没有进程' : '未发现计算进程'}</strong><span>{!live ? '请刷新以确认当前状态。' : '提交任务前仍会检查显存和 GPU 负载。'}</span></div></div>}
           </section>
+          {logProcess && <ProcessLogPanel key={`${server.id}:${route.id}:${logProcess.pid}`} serverId={server.id} accessRouteId={route.id} {...logProcess} onClose={() => setLogProcess(null)} />}
         </section>
       </div>}
     </div>

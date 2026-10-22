@@ -20,6 +20,15 @@ export interface RequiredHostKey {
 }
 
 export class SshService {
+  async runCommand(profile: ServerProfile, secrets: ServerSecrets, command: string, timeoutMs = 10_000): Promise<string> {
+    const { client } = await this.connect(profile, secrets)
+    try {
+      return await this.exec(client, command, timeoutMs)
+    } finally {
+      client.end()
+    }
+  }
+
   async scanRequiredHostKey(
     profile: ServerProfile,
     secrets: ServerSecrets

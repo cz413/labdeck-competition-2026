@@ -15,6 +15,8 @@ import { TerminalManager } from './terminal-manager'
 import { VsCodeService } from './vscode-service'
 import { CondaService } from './conda-service'
 import { ExperimentScheduler } from './experiment-scheduler'
+import { readExperimentRunLog } from './experiment-logs'
+import { inspectProcessLog, readProcessLog } from './process-logs'
 import { TunnelManager } from './tunnel-manager'
 import { IntelligenceService } from './intelligence-service'
 import { ResearchService } from './research-service'
@@ -702,6 +704,9 @@ function registerIpc(store: AppStore): void {
   })
 
   ipcMain.handle('experiments:list', () => store.listExperimentTasks())
+  ipcMain.handle('experiments:readRunLog', (_event, taskId: string, runId: string) => readExperimentRunLog(store, ssh, taskId, runId))
+  ipcMain.handle('processLogs:inspect', (_event, input) => inspectProcessLog(store, ssh, input))
+  ipcMain.handle('processLogs:read', (_event, input) => readProcessLog(store, ssh, input))
   ipcMain.handle('experiments:save', (_event, input: ExperimentTaskDraft) => store.saveExperimentTask(input))
   ipcMain.handle('experiments:setStatus', async (_event, taskId: string, status: ExperimentTaskStatus) => {
     const task = await store.setExperimentTaskStatus(taskId, status)
