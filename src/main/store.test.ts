@@ -172,3 +172,28 @@ describe('task project evidence persistence',()=>{
     }
   })
 })
+
+describe('preparation save identity',()=>{
+  it('reuses a preparation task after restarting and removes its creation key from copies',async()=>{
+    const directory=await mkdtemp(join(tmpdir(),'labdeck-preparation-task-'))
+    const {resolve}=await import('node:path'),target=resolve(directory),parent=resolve(tmpdir())
+    try{
+      const filePath=join(directory,'store.json'),store=new AppStore()
+      Object.assign(store,{filePath});await store.initialize()
+      const draft=(await import('../shared/schemas')).experimentTaskDraftSchema.parse({title:'可恢复实验'})
+      const key='22222222-2222-4222-8222-222222222222'
+      const saved=await store.saveExperimentTask(draft,key)
+      const restarted=new AppStore();Object.assign(restarted,{filePath});await restarted.initialize()
+      const again=await restarted.saveExperimentTask({...draft,title:'恢复后的实验'},key)
+      expect(again.id).toBe(saved.id);expect(restarted.listExperimentTasks()).toHaveLength(1)
+      const copied=await restarted.saveExperimentTask({...again,id:undefined,title:'复制实验'})
+      expect(copied.preparationId).toBeUndefined()
+      expect(restarted.listExperimentTasks()).toHaveLength(2)
+      const edited=await restarted.saveExperimentTask({...again,preparationId:undefined,title:'手动完善'})
+      expect(edited.preparationId).toBe(key)
+    }finally{
+      if(!target.startsWith(parent+'\\')&&!target.startsWith(parent+'/'))throw new Error('Unsafe temporary test path')
+      await rm(target,{recursive:true,force:true})
+    }
+  })
+})

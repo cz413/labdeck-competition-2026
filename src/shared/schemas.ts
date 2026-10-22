@@ -164,6 +164,7 @@ const experimentRunSchema = z.object({
 })
 
 export const experimentTaskSchema = z.object({
+  preparationId: z.string().uuid().optional(),
   projectPreparation: taskProjectContextSchema.optional(),
   id: z.string().uuid(),
   title: z.string().trim().min(1).max(160),

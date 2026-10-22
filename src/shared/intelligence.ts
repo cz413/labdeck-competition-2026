@@ -1,3 +1,4 @@
+import type { PreparationApi } from './preparation'
 import type { ModelUsage } from './model-usage'
 import type { ExternalExperimentContext, ExternalLogSnapshot, ExternalDraftInput } from './external-experiment'
 import type { ExperimentTask, ExperimentTaskDraft } from './types'
@@ -31,6 +32,7 @@ export interface ExperimentPlan { draft: ExperimentTaskDraft; assumptions: strin
 export interface PlanInput { useReadme?: boolean; condaManagerPath?: string; accessRouteId?: string; readmePath?: string; intent: string; serverId: string; codePath: string; environmentName: string }
 export interface Verification { status: 'waiting' | 'running' | 'completed' | 'failed' | 'unknown'; message: string; runId?: string; diagnosis?: DiagnosisReport; exitCode?: number; checkedAt?: string }
 export interface IntelligenceApi {
+  preparations: PreparationApi;
   settings(): Promise<ModelSettings>;
   saveSettings(input: ModelSettingsInput): Promise<ModelSettings>;
   testModel(): Promise<string>;

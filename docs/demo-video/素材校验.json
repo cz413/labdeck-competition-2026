@@ -1,0 +1,35 @@
+{
+  "referenceCount": 6,
+  "dimensions": {
+    "A01-research-fragmented.png": [
+      1672,
+      941
+    ],
+    "A02-title.png": [
+      1920,
+      1080
+    ],
+    "A03-smart-flow.png": [
+      1920,
+      1080
+    ],
+    "A04a-budget-blocked.png": [
+      1920,
+      1080
+    ],
+    "A04b-budget-reviewed.png": [
+      1920,
+      1080
+    ],
+    "A05-research-connected.png": [
+      1672,
+      941
+    ]
+  },
+  "animationSeconds": 53,
+  "timelineSeconds": 360,
+  "timelineContinuous": true,
+  "allReferencesPresent": true,
+  "imageGeneration": "内置 imagegen；A01 与 A05",
+  "diagramGeneration": "代码绘制 SVG，已安装 Chrome 离线渲染 PNG"
+}
