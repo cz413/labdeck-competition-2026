@@ -1,3 +1,4 @@
+import { applyModelRefinement, refinementPayload, refinementPrompt } from './plan-refinement'
 import { PreparationService } from './preparation-service'
 import type { AgentTraceObserver, AgentTraceEvent } from '../shared/agent-trace'
 import { planCommandEntry } from '../shared/experiment-plan'
@@ -36,7 +37,7 @@ import type { CondaService } from './conda-service'
 
 const diagnosisInputSchema = z.object({ force:z.boolean().default(false), external:externalExperimentSchema.optional(), taskId: z.string().uuid().optional(), runId: z.string().uuid().optional(), logText: z.string().max(200_000).optional(), sample: z.enum(['oom', 'dependency', 'path']).optional(), useModel: z.boolean(), depth:z.enum(['quick','inspect']).optional(), requestId: z.string().uuid().optional() }).refine(v => Number(Boolean(v.taskId)) + Number(v.logText !== undefined) + Number(Boolean(v.sample)) + Number(Boolean(v.external)) === 1, '请选择一个日志来源')
 const evidenceSchema = z.object({ id: z.string(), source: z.enum(['log', 'resource', 'environment', 'runtime']), label: z.string(), text: z.string(), line: z.number().optional() })
-const findingSchema = z.object({ category: z.string().max(80), title: z.string().max(160), confidence: z.enum(['high', 'medium', 'low']), explanation: z.string().max(2500), evidenceIds: z.array(z.string()).max(10), steps: z.array(z.string().max(500)).max(8) })
+const findingSchema = z.object({ origin:z.enum(['rules','model']).optional(), category: z.string().max(80), title: z.string().max(160), confidence: z.enum(['high', 'medium', 'low']), explanation: z.string().max(2500), evidenceIds: z.array(z.string()).max(10), steps: z.array(z.string().max(500)).max(8) })
 const closureSchema=z.object({enabled:z.boolean(),useModelOnFailure:z.boolean().optional(),status:z.enum(['waiting','running','verifying','passed','failed','attention','paused']),message:z.string(),updatedAt:z.string(),attempts:z.number().int().min(0),checkedAt:z.string().optional(),nextCheckAt:z.string().optional(),exitCode:z.number().int().nonnegative().optional(),nextDiagnosisId:z.string().uuid().optional()})
 const usageSchema=z.object({requests:z.number().int().nonnegative(),elapsedMs:z.number().nonnegative(),promptTokens:z.number().nonnegative().optional(),completionTokens:z.number().nonnegative().optional(),totalTokens:z.number().nonnegative().optional()})
 const reportSchema = z.object({ usage:usageSchema.optional(),cacheKey:z.string().optional(), id: z.string().uuid(), createdAt: z.string(), title: z.string(), source: z.enum(['remote', 'external', 'pasted', 'sample']), engine: z.enum(['rules', 'model+rules', 'agent+rules']), externalContext:externalExperimentSchema.optional(),externalLog:z.object({segments:z.array(z.object({offset:z.number(),length:z.number()})).optional(),selection:z.enum(['errors_and_tail','tail']).optional(),collectedAt:z.string(),modifiedAt:z.string().optional(),sizeBytes:z.number(),bytesRead:z.number(),resolvedPath:z.string(),truncated:z.boolean(),changed:z.boolean()}).optional(),importedTaskId:z.string().uuid().optional(),taskId: z.string().optional(), runId: z.string().optional(), logExcerpt: z.string(), evidence: z.array(evidenceSchema), findings: z.array(findingSchema), warnings: z.array(z.string()), summary: z.string().optional(), investigation: z.object({status:z.enum(['completed','partial','cancelled','failed']),rounds:z.number().int().min(0).max(4),inspections:z.number().int().min(0).max(4),trace:z.array(z.object({round:z.number().int(),kind:z.enum(['model','tool']),label:z.string(),status:z.enum(['completed','failed','unavailable']),reason:z.string().optional(),tool:z.enum(['search_log','inspect_path','read_project_file','inspect_package','inspect_environment','inspect_gpu']).optional(),arguments:z.record(z.string(),z.string()).optional(),evidenceIds:z.array(z.string()),elapsedMs:z.number().min(0)})).max(16)}).optional(), repair: z.object({kind:z.literal('reduce-batch'),before:z.string(),after:z.string(),previousBatch:z.number(),nextBatch:z.number()}).optional(), retryRunId: z.string().optional(),useModel:z.boolean().optional(),closure:closureSchema.optional() })
@@ -59,6 +60,13 @@ export class IntelligenceService {
   private preparationTaskChanged:()=>void=()=>{}
   private preparationService?:PreparationService
   private preparations():PreparationService {return this.preparationService??=new PreparationService({
+    refine:async(plan,instruction,context,signal,observer)=>{
+      await this.ready()
+      if(!this.config.enabled||!this.config.model.trim())throw new Error('请先启用并配置模型，再修改方案')
+      const startedAt=new Date().toISOString(),id=randomUUID()
+      const answer=await requestModel({...this.config},this.key(),refinementPrompt,refinementPayload(plan,instruction,context),signal,usage=>observer({id,kind:'model',name:'修改方案模型调用',status:'completed',startedAt,finishedAt:new Date().toISOString(),summary:'结合当前方案与项目文件生成修改建议',usage}))
+      return applyModelRefinement(plan,answer,context)
+    },
     scan:input=>readRepository(this.store,this.ssh,input),
     environments:async input=>{const server=this.store.getServer(input.serverId);if(server.mode!=='real')throw new Error('请选择真实服务器');const profile=applyAccessRoute(server,input.accessRouteId);return (await this.conda.listEnvironments(profile,this.store.getSecrets(server.id),'conda')).environments},
     analyze:(input,signal,observer)=>this.analyzeRepository(input,undefined,signal,observer),
@@ -452,7 +460,7 @@ export class IntelligenceService {
       if (run.status!=='failed') throw new Error('原运行状态已变化，请重新诊断')
       const repair = proposeBatchRepair(run.launchCommand??'',diagnoseEvidence(report.evidence).some(f=>f.category==='oom'),run.launchMode)
       if (!repair || repair.before!==report.repair.before || repair.after!==report.repair.after) throw new Error('运行命令已变化，请重新诊断')
-      const input: ExperimentRunStartInput = experimentRunStartInputSchema.parse({serverId:run.serverId??task.serverId??null,accessRouteId:run.accessRouteId??task.accessRouteId??null,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:run.codePath??task.codePath,dataPath:run.dataPath??task.dataPath,launchCommand:repair.after,launchMode:'command',scriptPath:'',condaEnvironment:run.condaEnvironment??null,artifactPath:run.artifactPath??'',minimumFreeVramGiB:run.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??null,notes:`[诊断:${id}] 从第 ${run.number} 次运行创建；batch size ${repair.previousBatch} → ${repair.nextBatch}。原运行保留。`})
+      const input: ExperimentRunStartInput = experimentRunStartInputSchema.parse({serverId:run.serverId??task.serverId??null,accessRouteId:run.accessRouteId??task.accessRouteId??null,computeDevice:run.computeDevice??task.computeDevice,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:run.codePath??task.codePath,dataPath:run.dataPath??task.dataPath,launchCommand:repair.after,launchMode:'command',scriptPath:'',condaEnvironment:run.condaEnvironment??null,artifactPath:run.artifactPath??'',minimumFreeVramGiB:run.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??null,notes:`[诊断:${id}] 从第 ${run.number} 次运行创建；batch size ${repair.previousBatch} → ${repair.nextBatch}。原运行保留。`})
       if(this.reports.filter(r=>r.closure?.enabled).length>=20)throw new Error('自动跟踪已达到 20 项，请先完成或暂停已有跟踪')
       const updated=await this.store.startExperimentRun(task.id,input)
       await this.record({...report,retryRunId:updated.runs.at(-1)!.id,closure:initialClosure(true,useModelOnFailure??!!report.useModel)})
@@ -519,6 +527,8 @@ export class IntelligenceService {
     ipcMain.handle('intelligence:preparation-get',(_e,id)=>this.preparations().get(id))
     ipcMain.handle('intelligence:preparation-list',()=>this.preparations().list())
     ipcMain.handle('intelligence:preparation-action',(_e,id,action)=>this.preparations().act(id,action))
+    ipcMain.handle('intelligence:preparation-refine',(_e,id,instruction,revision)=>this.preparations().refine(id,instruction,revision))
+    ipcMain.handle('intelligence:preparation-remove',(_e,id)=>this.preparations().remove(id))
     ipcMain.handle('intelligence:preparation-cancel',(_e,id)=>this.preparations().cancel(id))
     ipcMain.handle('intelligence:settings',()=>this.settings())
     ipcMain.handle('intelligence:saveSettings',(_e,input)=>this.saveSettings(input))

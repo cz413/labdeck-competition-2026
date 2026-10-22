@@ -162,7 +162,7 @@ export class ResearchService {
       let run=task.runs.find(r=>r.notes.split('\n')[0]===marker)
       if(!run&&task.runs.length)throw new Error('对照任务已经存在其他运行，但无法核对本批去重标记；请审查已有记录后再继续')
       if(!run){
-        task=await this.store.startExperimentRun(task.id,experimentRunStartInputSchema.parse({serverId:draft.serverId??null,accessRouteId:draft.accessRouteId??null,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:draft.codePath,dataPath:draft.dataPath,launchCommand:draft.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:draft.condaEnvironment??null,artifactPath:draft.artifactPath,minimumFreeVramGiB:draft.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:draft.maximumGpuUtilizationPercent??null,notes:`${marker}\n${variant.key}`}))
+        task=await this.store.startExperimentRun(task.id,experimentRunStartInputSchema.parse({serverId:draft.serverId??null,accessRouteId:draft.accessRouteId??null,computeDevice:draft.computeDevice,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:draft.codePath,dataPath:draft.dataPath,launchCommand:draft.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:draft.condaEnvironment??null,artifactPath:draft.artifactPath,minimumFreeVramGiB:draft.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:draft.maximumGpuUtilizationPercent??null,notes:`${marker}\n${variant.key}`}))
         run=task.runs.at(-1)!
       }
       members.push({...variant,taskId:task.id,runId:run.id})

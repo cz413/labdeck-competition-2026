@@ -1,6 +1,6 @@
 import { cleanDiagnosisText, diagnosisPresentation } from '@shared/diagnosis-presentation'
 import { useEffect, useRef, useState } from 'react'
-import type { DiagnosisProgress, DiagnosisReport } from '@shared/intelligence'
+import type { DiagnosisReport } from '@shared/intelligence'
 import type { ExperimentTask } from '@shared/types'
 import type { ConfirmationRequest } from './ConfirmDialog'
 import { RepairClosurePanel } from './RepairClosurePanel'
@@ -29,7 +29,7 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
   async function analyze(refresh=false,inspect=false):Promise<void>{
     if(request.current)return
     const requestId=crypto.randomUUID();request.current=requestId
-    setBusy('analysis');setError('');setMessage('正在收集本次运行的证据…')
+    setBusy('analysis');setError('');setMessage('正在分析本次运行，请稍候…')
     try{
       const result=await window.labApi.intelligence.diagnoseTask({taskId:props.task.id,runId:currentReport.current?.runId??props.runId,requestId,refresh,inspect})
       if(mounted.current&&request.current===requestId)show(result)
@@ -40,9 +40,6 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
   useEffect(()=>{
     mounted.current=true
     let live=true
-    const progress=window.labApi.intelligence.onDiagnosisProgress((event:DiagnosisProgress)=>{
-      if(live&&event.requestId===request.current)setMessage(event.message)
-    })
     const reload=async()=>{
       const history=await window.labApi.intelligence.history()
       if(!live)return
@@ -57,7 +54,7 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
       if(existing){show(existing);setBusy('')}
       else void analyze()
     }).catch(()=>{if(live)void analyze()})
-    return()=>{live=false;mounted.current=false;progress();historyChanged();if(request.current)void window.labApi.intelligence.cancelDiagnosis(request.current).catch(()=>{})}
+    return()=>{live=false;mounted.current=false;historyChanged();if(request.current)void window.labApi.intelligence.cancelDiagnosis(request.current).catch(()=>{})}
   },[])
 
   async function operate(name:string,action:()=>Promise<void>):Promise<void>{
@@ -99,6 +96,6 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
         <pre>{cleanDiagnosisText(report.logExcerpt)||'未读取到日志'}</pre>
       </details>
     </>}
-    {!busy&&<footer className="task-diagnosis-actions"><button type="button" className="secondary-button" onClick={props.onEdit}>编辑任务配置</button><button type="button" className="secondary-button" onClick={()=>void analyze(true)}>{report?'重新分析':'重试分析'}</button>{report&&!strongest?.confidence.startsWith('high')&&report.investigation?.inspections===0&&report.engine!=='rules'&&<button type="button" className="secondary-button" onClick={()=>void analyze(true,true)}>进一步检查</button>}</footer>}
+    {!busy&&<footer className="task-diagnosis-actions"><button type="button" className="secondary-button" onClick={props.onEdit}>编辑配置</button><button type="button" className="secondary-button" onClick={()=>void analyze(true)}>{report?'重新分析':'重试分析'}</button>{report&&!strongest?.confidence.startsWith('high')&&report.investigation?.inspections===0&&report.engine!=='rules'&&<button type="button" className="secondary-button" onClick={()=>void analyze(true,true)}>进一步检查</button>}</footer>}
   </section>
 }

@@ -52,6 +52,14 @@ describe('script task persistence and queue', () => {
     const later = await store.saveExperimentTask({ ...draft(), id: taskId, scriptPath: '/another/train.sh' })
     expect(later.runs[0].scriptPath).toBe('/new/train.sh')
   })
+  it('persists CPU selection, ignores stale GPU constraints and updates existing device arguments', async () => {
+    const { store } = fixture()
+    await store.saveExperimentTask({ ...draft(), id: taskId, computeDevice: 'cpu' })
+    const queued = await store.startExperimentRun(taskId, { ...input(), launchMode: 'command', codePath: '/project', launchCommand: 'python main.py --device=cuda', gpuUuid: 'stale-gpu', gpuIndex: 0, minimumFreeVramGiB: 20 })
+    expect(queued.computeDevice).toBe('cpu')
+    expect(queued.runs[0]).toMatchObject({ computeDevice: 'cpu', launchCommand: 'python main.py --device=cpu', gpuUuid: undefined, gpuIndex: undefined, minimumFreeVramGiB: null })
+    expect(resolveExperimentLaunch({ computeDevice: 'cpu', codePath: '/project', launchCommand: 'python train.py' }).launchCommand).toBe('python train.py')
+  })
   it('retains script mode after saving and reopening the settings file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'labdock-script-'))
     const filePath = join(directory, 'settings.json')
@@ -71,9 +79,9 @@ describe('script task persistence and queue', () => {
 })
 
 describe('remote script scheduling', () => {
-  async function schedulerFixture() {
+  async function schedulerFixture(computeDevice: 'gpu' | 'cpu' = 'gpu') {
     const { store } = fixture()
-    const task = await store.startExperimentRun(taskId, input())
+    const task = await store.startExperimentRun(taskId, { ...input(), computeDevice })
     const exec = vi.fn(async (_client: unknown, command: string) => command.includes('base64 -d') ? '/home/user/runs/test\n123\n' : '')
     const ssh = { connect: vi.fn(async () => ({ client: { end: vi.fn() } })), exec }
     const monitor = { snapshot: vi.fn(async () => ({ status: 'online', gpus: [{ uuid: 'gpu', index: 0, name: 'GPU', memoryTotalMiB: 24576, memoryUsedMiB: 0, utilizationPercent: 0, temperatureC: 30, processes: [] }] })) }
@@ -82,6 +90,23 @@ describe('remote script scheduling', () => {
     const prepare = Reflect.get(scheduler, 'prepareAndLaunch').bind(scheduler) as (task: ExperimentTask, run: ExperimentRun) => Promise<boolean>
     return { store, task, exec, conda, monitor, prepare }
   }
+  it('starts CPU jobs without querying GPUs and hides CUDA devices', async () => {
+    const { task, store, exec, monitor, prepare } = await schedulerFixture('cpu')
+    monitor.snapshot.mockRejectedValue(new Error('GPU monitoring unavailable'))
+    expect(await prepare(task, task.runs[0])).toBe(true)
+    expect(monitor.snapshot).not.toHaveBeenCalled()
+    const command = exec.mock.calls.find(call => call[1].includes('base64 -d'))![1]
+    const wrapper = Buffer.from(command.match(/printf '%s' '([^']+)' \| base64 -d/)![1], 'base64').toString('utf8')
+    expect(wrapper).toContain("CUDA_VISIBLE_DEVICES=''")
+    expect(store.listExperimentTasks()[0].runs[0]).toMatchObject({ computeDevice: 'cpu', status: 'running', gpuIndex: undefined, message: expect.stringContaining('CPU') })
+  })
+  it('keeps CPU jobs queued when the remote directory is unavailable', async () => {
+    const { task, store, exec, monitor, prepare } = await schedulerFixture('cpu')
+    exec.mockRejectedValueOnce(new Error('代码目录不存在'))
+    expect(await prepare(task, task.runs[0])).toBe(false)
+    expect(monitor.snapshot).not.toHaveBeenCalled()
+    expect(store.listExperimentTasks()[0].runs[0]).toMatchObject({ status: 'queued', message: expect.stringContaining('代码目录不存在') })
+  })
   it('checks the readable script, launches it and keeps GPU/log/exit tracking', async () => {
     const { task, store, exec, prepare } = await schedulerFixture()
     expect(await prepare(task, task.runs[0])).toBe(true)

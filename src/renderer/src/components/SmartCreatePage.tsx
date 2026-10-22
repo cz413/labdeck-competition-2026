@@ -1,11 +1,12 @@
+import { CondaEnvironmentFields } from './CondaEnvironmentFields'
 import type { PreparationView, PreparationSummary, PreparationEdit } from '@shared/preparation'
 import { PreparationTimeline } from './PreparationTimeline'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Circle, Code2, Database, FileCode2,
-  FolderOpen, LoaderCircle, Play, RotateCcw, Save, Server, SlidersHorizontal, Sparkles, Undo2, X
+  FolderOpen, History, LoaderCircle, Play, RotateCcw, Save, Server, SlidersHorizontal, Sparkles, Trash2, Undo2, X
 } from 'lucide-react'
-import type { CondaEnvironmentInfo, ExperimentTask, ExperimentTaskDraft, RemoteCondaResult, ServerProfile } from '@shared/types'
+import type { CondaEnvironmentConfig, CondaEnvironmentInfo, ExperimentTask, ExperimentTaskDraft, RemoteCondaResult, ServerProfile } from '@shared/types'
 import type { RepositoryCandidate, RepositoryDirectoryView, RepositorySnapshot } from '@shared/repository-guide'
 import { getAccessRoutes, getDefaultAccessRouteId } from '@shared/access-routes'
 import { commandDataPath, syncCommandDataPath, projectConfigurationKey } from '@shared/project-task'
@@ -13,8 +14,8 @@ import type { ConfirmationRequest } from './ConfirmDialog'
 import { AccessRouteSelect } from './AccessRouteSelect'
 import {
   experimentDraftChanges, experimentModeFromGoal, markUserFields,
-  planCommandConfig, planCommandEntry, planEnvironmentName, planGaps, planModeLabels, planRootPath,
-  planSourceLabels, refineExperimentPlan, resolvePlanGap,
+  planCommandConfig, planCommandEntry, planGaps, planModeLabels, planRootPath,
+  planSourceLabels, resolvePlanGap,
   suggestPlanTitle, switchPlanMode, planLaunchCitations,
   type ExperimentMode, type ExperimentPlan, type PlanConflict, type PlanDataCandidate,
   type PlanField, type PlanFieldState, type PlanFields, type PlanGap, type PlanSource
@@ -65,6 +66,8 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [stage, setStage] = useState<Stage>('start')
   const [preparation,setPreparation]=useState<PreparationView|null>(null)
   const [sessions,setSessions]=useState<PreparationSummary[]>([])
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [syncError,setSyncError]=useState('')
   const [syncing,setSyncing]=useState(false)
   const preparationId=useRef<string|null>(null),preparationRevision=useRef(0)
@@ -87,12 +90,15 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [envs, setEnvs] = useState<CondaEnvironmentInfo[]>([])
   const [envLoading, setEnvLoading] = useState(false)
   const [envChecking, setEnvChecking] = useState(false)
+  const environmentRequest = useRef(0)
   const [browser, setBrowser] = useState<BrowserState | null>(null)
   const browserRequest = useRef(0)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [conflicts, setConflicts] = useState<PlanConflict[]>([])
   const [deferredGaps, setDeferredGaps] = useState<string[]>([])
   const [refineText, setRefineText] = useState('')
+  const [refining,setRefining]=useState(false)
+  const latestPlan=useRef(plan);latestPlan.current=plan
   const [scopeOpen, setScopeOpen] = useState(false)
   const [dataCandidates, setDataCandidates] = useState<PlanDataCandidate[]>([])
   const [repositories, setRepositories] = useState<RepositoryCandidate[]>([])
@@ -119,7 +125,10 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const visibleRecent = recentProjects.filter(item => !serverId || item.serverId === serverId).slice(0, 5)
   const gaps = useMemo(() => plan ? planGaps(plan, { environments: envs, dataCandidates }).filter(gap => !deferredGaps.includes(gap.id)) : [], [plan, envs, dataCandidates, deferredGaps])
   const canAnalyze = Boolean(server && accessRouteId && root.trim().startsWith('/') && !/[\0\r\n]/.test(root) && goal.trim() && props.modelEnabled && !busy)
-  const canSave = Boolean(server && plan && plan.draft.title.trim() && !saving && !envChecking)
+  const canSave = Boolean(server && plan && plan.draft.title.trim() && !saving && !envChecking && !envLoading && !busy && !deletingId)
+  const linkedTaskId = preparation?.taskId ?? savedTask?.id
+  const linkedTask = props.tasks.find(task => task.id === linkedTaskId || task.preparationId === preparationId.current)
+  const taskDeleted = Boolean(linkedTaskId && !linkedTask)
 
   useEffect(() => {
     setServerId(initialServerId)
@@ -204,6 +213,22 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     pendingEdit.current={edit,signature}
     void pumpEdits().catch(cause=>{if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))})
   },[plan,history,conflicts,deferredGaps,stage])
+  async function deletePreparation(item:PreparationSummary):Promise<void>{
+    if(deletingId||busy||saving)return
+    const confirmed=await props.confirm({title:'删除准备记录？',description:'此操作无法撤销',message:'将删除这条准备记录及其分析进度。\n实验池中的任务和服务器文件不受影响。',details:item.title,detailsLabel:'准备记录',confirmLabel:'删除记录',tone:'danger'})
+    if(!confirmed)return
+    setDeletingId(item.id)
+    const active=preparationId.current===item.id
+    try{
+      if(active&&plan)await flushEdits(currentEdit(plan))
+      if(active){preparationId.current=null;fetchRevision.current++}
+      await window.labApi.intelligence.preparations.remove(item.id)
+      if(active){resetSession();setStage('start');setSavedTask(null)}
+      await refreshSessions()
+      props.notify('实验准备记录已删除')
+    }catch(cause){if(active)preparationId.current=item.id;props.notify(cause instanceof Error?cause.message:'无法删除准备记录','error')}
+    finally{setDeletingId(null)}
+  }
   async function resumePreparation(id:string):Promise<void>{
     try{
       if(plan)await flushEdits(currentEdit(plan))
@@ -243,19 +268,46 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     }
     return result.status === 'success' ? result.value : null
   }
-  async function loadEnvironments(): Promise<CondaEnvironmentInfo[]> {
-    if (!server || !accessRouteId) return []
+  function updateEnvironment(patch: Partial<CondaEnvironmentConfig>): void {
+    if (!plan) return
+    if ('manager' in patch || 'managerPath' in patch) { environmentRequest.current++; setEnvs([]) }
+    updateDraft({condaEnvironment: {...(plan.draft.condaEnvironment ?? {manager: 'conda'}), ...patch}}, {field: 'environment', state: {source: 'user', note: '已手动配置运行环境'}})
+  }
+  async function loadEnvironments(): Promise<void> {
+    if (!server || !accessRouteId || !plan?.draft.condaEnvironment) return
+    const config = {...plan.draft.condaEnvironment}, id = ++environmentRequest.current, session = preparationId.current
     setEnvLoading(true)
     try {
-      const value = await trustRemote(() => window.labApi.experiments.listCondaEnvironments(server.id, accessRouteId, 'conda'))
-      const environments = value?.environments ?? []
-      setEnvs(environments)
-      return environments
+      const value = await trustRemote(() => window.labApi.experiments.listCondaEnvironments(server.id, accessRouteId, config.manager, config.managerPath))
+      if (!live.current || id !== environmentRequest.current || session !== preparationId.current) return
+      setEnvs(value?.environments ?? [])
+      if (value) {
+        setPlan(current => current?.draft.condaEnvironment ? {...current, draft: {...current.draft, condaEnvironment: {...current.draft.condaEnvironment, managerPath: value.managerPath}}} : current)
+        setDirty(true)
+      }
     } catch {
-      setEnvs([])
-      return []
+      if (live.current && id === environmentRequest.current) setEnvs([])
     } finally {
-      setEnvLoading(false)
+      if (live.current && id === environmentRequest.current) setEnvLoading(false)
+    }
+  }
+  useEffect(() => {
+    if (plan?.draft.condaEnvironment && server && accessRouteId) void loadEnvironments()
+    return () => { environmentRequest.current++; setEnvLoading(false); setEnvChecking(false) }
+  }, [server?.id, accessRouteId, preparationId.current, !!plan, plan?.draft.condaEnvironment?.manager])
+  async function checkEnvironment(): Promise<void> {
+    if (!server || !accessRouteId || !plan?.draft.condaEnvironment) return
+    const config = {...plan.draft.condaEnvironment}, id = ++environmentRequest.current, session = preparationId.current
+    setEnvChecking(true)
+    try {
+      const checked = await trustRemote(() => window.labApi.experiments.checkCondaEnvironment(server.id, accessRouteId, config))
+      if (!live.current || id !== environmentRequest.current || session !== preparationId.current || !checked) return
+      setPlan(current => current?.draft.condaEnvironment ? {...current, draft: {...current.draft, condaEnvironment: {...config, managerPath: checked.managerPath ?? config.managerPath, lastCheckStatus: checked.found ? 'found' : 'missing', lastCheckedAt: new Date().toISOString(), pythonInterpreterPath: checked.pythonInterpreterPath, pythonVersion: checked.pythonVersion}}, fields: {...current.fields, environment: {source: checked.found ? 'server' : 'user', note: checked.found ? '已在服务器确认所选环境存在' : '未找到所选环境，请重新读取并选择'}}} : current)
+      setDirty(true)
+    } catch {
+      if (live.current && id === environmentRequest.current) setNotice('暂时无法检查环境，请核对安装目录后重新读取。')
+    } finally {
+      if (live.current && id === environmentRequest.current) setEnvChecking(false)
     }
   }
   async function analyze(scope?:{snapshot:RepositorySnapshot;files:string[]}):Promise<void>{
@@ -348,41 +400,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     setPlan({ ...plan, draft: result.draft, mode: result.mode, fields: result.fields })
     setDirty(true); setNotice(`已更新：${result.change.summary}`)
   }
-  async function chooseEnvironment(name: string): Promise<void> {
-    if (!plan) return
-    if (!name) {
-      pushHistory('改为使用服务器默认环境')
-      updateDraft({ condaEnvironment: undefined }, { field: 'environment', state: { source: 'user', note: '使用服务器默认环境' } })
-      setNotice('已改为使用服务器默认环境；运行时不激活 Conda。')
-      return
-    }
-    const environment = envs.find(item => item.name === name)
-    pushHistory(`环境设为 ${name}`)
-    updateDraft({ condaEnvironment: { manager: 'conda', environmentName: name, environmentPrefix: undefined, lastCheckStatus: environment ? 'found' : 'unknown' } }, { field: 'environment', state: environment ? { source: 'server', note: '已在服务器的 Conda 环境列表中确认' } : { source: 'suggested', note: '这个环境名未在服务器列表中找到，请在运行前核对' } })
-    setNotice(environment ? `已选择服务器环境 ${name}。` : `已填写 ${name}，但服务器环境列表中没有找到它，请核对。`)
-    if (environment && server && accessRouteId) {
-      setEnvChecking(true)
-      try {
-        const checked = await trustRemote(() => window.labApi.experiments.checkCondaEnvironment(server.id, accessRouteId, { manager: 'conda', environmentName: name }))
-        const applyChecked = (condaEnvironment: NonNullable<ExperimentTaskDraft['condaEnvironment']>, state: PlanFieldState): void => {
-          setPlan(current => current && current.draft.condaEnvironment?.environmentName === name
-            ? { ...current, draft: { ...current.draft, condaEnvironment }, fields: { ...current.fields, environment: state } }
-            : current)
-          setDirty(true)
-        }
-        if (checked?.found) {
-          applyChecked({ manager: 'conda', environmentName: name, environmentPrefix: undefined, lastCheckStatus: 'found', lastCheckedAt: new Date().toISOString(), pythonInterpreterPath: checked.pythonInterpreterPath, pythonVersion: checked.pythonVersion }, { source: 'server', note: `环境已在服务器确认${checked.pythonVersion ? ` · Python ${checked.pythonVersion}` : ''}` })
-          setNotice(`环境 ${name} 已确认存在${checked.pythonVersion ? `，Python ${checked.pythonVersion}` : ''}。`)
-        } else {
-          setNotice(`服务器上没有找到环境 ${name}，已保留你的填写，请核对。`)
-        }
-      } catch (caught) {
-        setNotice(caught instanceof Error ? caught.message : '环境检查失败')
-      } finally {
-        setEnvChecking(false)
-      }
-    }
-  }
   async function verifyDataPath(path: string): Promise<void> {
     if (!server || !accessRouteId || !path.startsWith('/')) return
     const preserve = (source?: PlanSource): PlanSource => source === 'user' || source === 'recent' || source === 'file' ? source : 'server'
@@ -436,26 +453,30 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     else if (key === 'artifactPath') updateDraft({ artifactPath: value }, { field, state: { source: 'user', note: '你修改了输出位置' } })
     else markField(field)
   }
-  function submitRefine(): void {
-    if (!plan || busy) return
-    const instruction = refineText.trim()
-    if (!instruction) { setNotice('请先写下要修改的内容。'); return }
-    const result = refineExperimentPlan(plan, instruction, { environments: envs })
-    if (result.conflicts.length) {
-      setConflicts(current => [...current, ...result.conflicts.filter(conflict => !current.some(item => item.id === conflict.id))])
-      setNotice(result.notes.join(' ') || '这些字段你手动改过，请选择保留哪个值。')
-      return
-    }
-    if (!result.matched) { setNotice(result.notes.join(' ')); return }
-    pushHistory(result.changes.map(change => change.summary).join('；'))
-    setPlan({ ...plan, draft: result.draft, mode: result.mode, fields: result.fields })
-    setDirty(true); setRefineText('')
-    setNotice(`已更新：${result.changes.map(change => change.summary).join('；')}`)
+  async function submitRefine():Promise<void>{
+    if(!plan||busy||refining)return
+    const instruction=refineText.trim(),id=preparationId.current,current=plan
+    if(!instruction){setNotice('请先写下要修改的内容。');return}
+    if(!id){setNotice('请先完成项目分析，再修改方案。');return}
+    setRefining(true);setBusy(true);setError('');setNotice('正在结合当前方案与项目文件分析修改要求…')
+    try{
+      await flushEdits(currentEdit(current))
+      if(id!==preparationId.current)return
+      const result=await window.labApi.intelligence.preparations.refine(id,instruction,preparationRevision.current)
+      if(!live.current||id!==preparationId.current)return
+      if(latestPlan.current!==current){setNotice('方案在分析期间已变化，本次建议未应用，请重试。');return}
+      if(result.conflicts.length){setConflicts(existing=>[...existing,...result.conflicts].slice(-30));setNotice('本次修改涉及你手动编辑的字段，请确认是否采用整组建议。');return}
+      if(!result.matched){setNotice(result.notes.join(' '));return}
+      pushHistory(result.changes.map(change=>change.summary).join('；').slice(0,1900))
+      setPlan({...current,draft:result.draft,mode:result.mode,fields:result.fields})
+      setDirty(true);setRefineText('');setNotice(['已更新：'+result.changes.map(change=>change.summary).join('；'),...result.notes].join(' '))
+    }catch(cause){if(live.current)setNotice(cause instanceof Error?cause.message:String(cause))}
+    finally{if(live.current){setRefining(false);setBusy(false)}}
   }
   function applyConflict(conflict: PlanConflict): void {
     if (!plan) return
     pushHistory(`采用建议：${conflict.label}`)
-    const fields: PlanFields = { ...plan.fields, [conflict.suggestedField.field]: conflict.suggestedField.state }
+    const fields: PlanFields = { ...plan.fields, ...conflict.suggestedFields, [conflict.suggestedField.field]: conflict.suggestedField.state }
     if (conflict.suggestedMode) fields.mode = { source: 'suggested', note: `改为${planModeLabels[conflict.suggestedMode]}` }
     setPlan({
       ...plan,
@@ -530,9 +551,9 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       condaEnvironment
     }
   }
-  async function save(start: boolean): Promise<void> {
+  async function save(start: boolean, asNew = false): Promise<void> {
     if (!plan || !server) return
-    if (savedTask && !dirty) {
+    if (savedTask && !dirty && !taskDeleted && !asNew) {
       if (start) props.onCreated(savedTask, true)
       else props.notify('草稿已经保存；继续修改会更新这份草稿')
       return
@@ -548,7 +569,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     try {
       if(!preparationId.current)throw new Error('准备流程尚未保存，请重新打开方案')
       await flushEdits({...currentEdit(plan),draft})
-      const view=await window.labApi.intelligence.preparations.act(preparationId.current,{kind:'save',expectedRevision:preparationRevision.current})
+      const view=await window.labApi.intelligence.preparations.act(preparationId.current,{kind:asNew?'save-as-new':'save',expectedRevision:preparationRevision.current})
       if(view.error)throw new Error(view.error)
       const saved=view.task
       if(!saved)throw new Error('没有找到保存后的实验任务')
@@ -556,7 +577,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       lastSynced.current=JSON.stringify({...currentEdit(plan),draft:view.plan!.draft})
       setSavedTask(saved)
       setPlan(current => current ? { ...current, draft: view.plan!.draft } : current)
-      setDirty(false)
+      setDirty(false);setError('');setSyncError('')
       props.onChanged(saved)
       props.notify(start ? '实验草稿已保存，正在打开资源选择' : '实验草稿已保存；继续修改会更新这份草稿')
       if (start) props.onCreated(saved, true)
@@ -588,24 +609,28 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   }
   const recommendedMode = plan ? experimentModeFromGoal(plan.goal) : 'train'
   const launchCitations = plan ? planLaunchCitations(plan) : []
-  const envName = plan ? planEnvironmentName(plan.draft) : ''
   const envState = plan?.fields.environment
   const activeGap = gaps[0]
 
   return <section className="smart-create" aria-label="智能创建实验">
     <header className="smart-create-head">
-      <button type="button" className="wb-text-button smart-back" onClick={() => void leave()}><ArrowLeft size={14} />返回实验任务</button>
-      <div className="smart-create-title">
-        <span className="smart-create-kicker"><Sparkles size={14} />智能创建</span>
-        <h2>实验准备</h2>
-        <p>说明项目与目标，系统完成项目理解、入口匹配和环境核对，再给出可审查的实验方案。</p>
+      <div className="smart-create-toolbar">
+        <button type="button" className="smart-return-button" aria-label="返回实验任务" title="返回实验任务" onClick={() => void leave()}><ArrowLeft size={18} /><span>返回</span></button>
+        <button type="button" className="secondary-button preparation-sessions-trigger" aria-haspopup="dialog" disabled={busy || !!saving} onClick={() => { setSessionsOpen(true); void refreshSessions() }}><History size={15} />实验准备记录</button>
       </div>
-      <span className="smart-create-shared">与手动创建共用任务数据与 GPU 调度</span>
+      <div className="smart-create-title"><h2>实验准备</h2><p>选择项目，描述目标，生成可编辑的实验方案。</p></div>
     </header>
 
     {syncError&&<div className="intel-error" role="alert">准备进度保存失败：{syncError}<button type="button" className="secondary-button" onClick={()=>void flushEdits(plan?currentEdit(plan):undefined).then(()=>setSyncError('')).catch(cause=>setSyncError(String(cause)))}>重试保存进度</button></div>}
-    {preparation&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}。已完成的节点会保留，未完成的模型步骤可能需要重新请求。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
-    {stage==='start'&&sessions.length>0&&<section className="preparation-sessions" aria-label="继续实验准备"><header><h3>继续准备</h3><p>恢复分析、补充信息和未提交的方案。</p></header>{sessions.slice(0,8).map(item=><article key={item.id}><div><strong>{item.title}</strong><small>{props.servers.find(server=>server.id===item.input.serverId)?.name??'服务器已移除'} · {item.input.path}</small></div><span>{{analyzing:'正在处理',needs_input:'等待补充',review:'可审阅',saved:'草稿已保存',paused:'已暂停',failed:'需要处理'}[item.phase]}</span><button type="button" className="secondary-button" disabled={busy||!props.servers.some(server=>server.id===item.input.serverId)} onClick={()=>void resumePreparation(item.id)}>继续准备</button></article>)}</section>}
+    {preparation&&!taskDeleted&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}。已完成的节点会保留，未完成的模型步骤可能需要重新请求。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
+    {sessionsOpen && <div className="app-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) setSessionsOpen(false) }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSessionsOpen(false) } }}>
+      <section className="app-modal preparation-sessions-dialog" role="dialog" aria-modal="true" aria-labelledby="preparation-sessions-title">
+        <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><History size={18} /></div><div><h2 id="preparation-sessions-title">实验准备记录</h2><p>查看已保存的准备进度，继续补充和审阅方案。</p></div></div><button type="button" className="icon-button" aria-label="关闭实验准备记录" autoFocus onClick={() => setSessionsOpen(false)}><X size={16} /></button></header>
+        <div className="preparation-sessions preparation-sessions-list">
+          {sessions.length ? sessions.map(item => <article key={item.id}><div><strong>{item.title}</strong><small title={item.input.path}>{props.servers.find(server => server.id === item.input.serverId)?.name ?? '服务器已移除'} · {item.input.path}</small><small>更新于 {new Date(item.updatedAt).toLocaleString('zh-CN')}</small></div><span>{{analyzing:'正在处理',needs_input:'等待补充',review:'可审阅',saved:'草稿已保存',paused:'已暂停',failed:'需要处理'}[item.phase]}</span><button type="button" className="secondary-button" disabled={busy || !!deletingId || !props.servers.some(server => server.id === item.input.serverId)} onClick={() => { setSessionsOpen(false); void resumePreparation(item.id) }}>继续准备</button><button type="button" className="icon-button preparation-delete-button" aria-label={`删除准备记录：${item.title}`} title={item.busy ? '正在处理，请先停止后再删除' : '删除准备记录'} disabled={busy || !!saving || !!deletingId || item.busy} onClick={() => void deletePreparation(item)}>{deletingId === item.id ? <LoaderCircle size={15} className="spin" /> : <Trash2 size={15} />}</button></article>) : <p className="smart-note">暂无实验准备记录。</p>}
+        </div>
+      </section>
+    </div>}
     {stage === 'start' && <div className="smart-start">
       <div className="smart-start-main">
         <section className="smart-start-card">
@@ -630,10 +655,10 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         </section>
       </div>
       {props.modelEnabled === false && <div className="smart-model-warning"><AlertTriangle size={15} /><span>模型尚未启用，系统无法完成项目理解。</span><button type="button" className="wb-text-button" onClick={props.onModelSettings}>前往模型设置</button><button type="button" className="wb-text-button" onClick={props.onManualCreate}>改为手动创建</button></div>}
-      {error && <div className="intel-error" role="alert">{error}</div>}
+      {error && !(taskDeleted && /关联任务已删除/.test(error)) && <div className="intel-error" role="alert">{error}</div>}
       {notice && <p className="smart-note" role="status">{notice}</p>}
       <footer className="smart-start-footer">
-        <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}分析项目并准备实验</button><button type="button" className="secondary-button" onClick={props.onManualCreate}>手动创建</button></div>
+        <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}分析项目并准备实验</button></div>
         <p>只读检查项目与环境，不安装依赖或启动实验；所选文件内容会发送给已配置模型，保存草稿时才创建任务。</p>
       </footer>
     </div>}
@@ -648,7 +673,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           <div className="smart-scope-list">{snapshot.files.map(file => <label key={file.path}><input type="checkbox" disabled={busy} checked={files.includes(file.path)} onChange={event => setFiles(current => event.target.checked ? [...current, file.path] : current.filter(path => path !== file.path))} /><span>{file.path}</span></label>)}</div>
           {snapshot.warnings.map((warning, index) => <p key={index} className="smart-note">{warning}</p>)}
         </details>}
-        {error && <div className="intel-error" role="alert">{error}</div>}
+        {error && !(taskDeleted && /关联任务已删除/.test(error)) && <div className="intel-error" role="alert">{error}</div>}
         {stage === 'analyzing' && notice && <p className="smart-note" role="status">{notice}</p>}
       </section>
 
@@ -695,12 +720,8 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
 
           <article className="smart-card">
             <header><div className="smart-card-icon"><Database size={16} /></div><div><h3>环境与数据</h3><p>运行环境和本次使用的数据</p></div><SourceBadge state={envState} /></header>
-            <label className="smart-field">推荐环境<select aria-label="推荐环境" value={envName} disabled={busy || envChecking} onChange={event => void chooseEnvironment(event.target.value)}>
-              <option value="">不使用 Conda（服务器默认环境）</option>
-              {envs.map(environment => <option key={environment.prefix} value={environment.name}>{environment.name} · {environment.prefix}</option>)}
-              {envName && !envs.some(environment => environment.name === envName) && <option value={envName}>{envName}（未在服务器找到）</option>}
-            </select></label>
-            <p className="smart-verify">{envLoading ? '正在读取服务器环境…' : envChecking ? '正在检查所选环境…' : envName ? (envs.some(environment => environment.name === envName) ? '已在服务器确认这个环境存在' : '服务器环境列表中没有这个名字，请在运行前核对') : '将直接使用登录 shell 的 Python'}</p>
+            <label className="experiment-conda-toggle"><input type="checkbox" checked={Boolean(plan.draft.condaEnvironment)} disabled={busy || envLoading || envChecking} onChange={event => { pushHistory(event.target.checked ? '配置 Conda 环境' : '使用服务器默认环境'); updateDraft({condaEnvironment: event.target.checked ? {manager: 'conda', lastCheckStatus: 'unknown'} : undefined}, {field: 'environment', state: {source: 'user', note: event.target.checked ? '选择服务器已有环境' : '使用服务器默认环境'}}) }} /><span><strong>配置 Conda 环境</strong><small>自动读取服务器上已有的环境，选择后运行任务会使用该环境。</small></span></label>
+            {plan.draft.condaEnvironment && <CondaEnvironmentFields serverId={server?.id} accessRouteId={accessRouteId} config={plan.draft.condaEnvironment} environments={envs} busy={envLoading || envChecking} disabled={busy || !server} onChange={updateEnvironment} onReload={() => void loadEnvironments()} onCheck={() => void checkEnvironment()} />}
             <div className="smart-field"><div className="smart-field-head"><span>数据目录</span><SourceBadge state={plan.fields.dataPath} /></div><div className="smart-path-row"><input aria-label="数据目录" value={plan.draft.dataPath} onChange={event => editField('dataPath', event.target.value, 'dataPath')} onBlur={event => { if (event.target.value.trim().startsWith('/')) void verifyDataPath(event.target.value.trim()) }} placeholder="/mnt/nas/datasets/experiment" /><button type="button" className="secondary-button" onClick={() => openBrowser('data')}><FolderOpen size={14} />选择数据</button></div></div>
             <p className="smart-card-note">{plan.fields.dataPath?.note ?? '尚未确定数据位置'}</p>
             {!plan.draft.dataPath.trim() && <p className="smart-card-warn"><AlertTriangle size={13} />这次实验还没有确定数据位置。</p>}
@@ -728,13 +749,13 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
 
         {deferredGaps.length > 0 && <p className="smart-note">已暂后补充 {deferredGaps.length} 项（{deferredGaps.map(id => id === 'data' ? '数据' : id === 'environment' ? '环境' : '入口').join('、')}），不会阻塞保存。<button type="button" className="wb-text-button" onClick={() => setDeferredGaps([])}>重新查看</button></p>}
 
-        {plan.questions.length > 0 && <details className="smart-questions"><summary>项目分析提出的其他确认事项 · {plan.questions.length}</summary><ul>{plan.questions.map((question, index) => <li key={index}>{question}</li>)}</ul><p className="smart-note">这些事项不阻塞保存，可在「编辑完整配置」或任务备注中补充。</p></details>}
+        {plan.questions.length > 0 && <details className="smart-questions"><summary>项目分析提出的其他确认事项 · {plan.questions.length}</summary><ul>{plan.questions.map((question, index) => <li key={index}>{question}</li>)}</ul><p className="smart-note">这些事项不阻塞保存，可在「编辑配置」或任务备注中补充。</p></details>}
         {[...new Set([...plan.guide.warnings, ...plan.guide.snapshot.warnings])].length > 0 && <details className="smart-questions"><summary>分析警告与读取范围说明 · {new Set([...plan.guide.warnings, ...plan.guide.snapshot.warnings]).size}</summary><ul>{[...new Set([...plan.guide.warnings, ...plan.guide.snapshot.warnings])].map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
 
         <section className="smart-refine" aria-label="继续修改方案">
           <label htmlFor="smart-refine-input"><Sparkles size={14} />继续修改这份方案</label>
-          <div className="smart-refine-row"><input id="smart-refine-input" value={refineText} onChange={event => setRefineText(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); submitRefine() } }} placeholder="例如：改成只评估已有权重 / 使用 vision 环境 / 先跑少量数据验证流程" /><button type="button" className="secondary-button" disabled={busy || !refineText.trim()} onClick={submitRefine}>修改方案</button></div>
-          <div className="smart-goal-examples">{['改成只评估已有权重', '使用 vision 环境', '先跑少量数据验证流程'].map(example => <button type="button" key={example} onClick={() => setRefineText(example)}>{example}</button>)}</div>
+          <div className="smart-refine-row"><input id="smart-refine-input" value={refineText} onChange={event => setRefineText(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void submitRefine() } }} placeholder="例如：把训练轮数改为 1 / 把 batch size 改为 16 / 把学习率改为 0.001" /><button type="button" className="secondary-button" disabled={busy || !refineText.trim()} onClick={()=>void submitRefine()}>{refining?'正在修改…':'修改方案'}</button></div>
+          <div className="smart-goal-examples">{['把训练轮数改为 1', '把 batch size 改为 16', '把学习率改为 0.001'].map(example => <button type="button" key={example} onClick={() => setRefineText(example)}>{example}</button>)}</div>
           {(notice || history.length > 0) && <div className="smart-refine-feedback">{notice && <p className="smart-refine-note" role="status">{notice}</p>}{history.length > 0 && <button type="button" className="wb-text-button" onClick={undo}><Undo2 size={13} />撤销上次修改</button>}</div>}
           {conflicts.map(conflict => <div className="smart-conflict" role="alert" key={conflict.id}><strong>{conflict.label}已被你手动修改</strong><p>当前：<code>{conflict.current || '未填写'}</code><br />建议：<code>{conflict.suggested}</code></p><div><button type="button" className="primary-button" onClick={() => applyConflict(conflict)}>采用新值</button><button type="button" className="secondary-button" onClick={() => keepConflict(conflict)}>保留我的</button></div></div>)}
         </section>
@@ -743,13 +764,16 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
 
         {recheckResult && <details className="smart-questions" open><summary>服务器路径核对 · {recheckResult.configurationKey===projectConfigurationKey(plan.draft)?'当前配置':'配置已变更，以下为原核对结果'} · {new Date(recheckResult.at).toLocaleTimeString('zh-CN')}</summary><ul>{recheckResult.lines.map((line, index) => <li key={index} className={line.ok ? '' : 'smart-recheck-failed'}>{line.ok ? '✓' : '×'} {line.text}</li>)}</ul><p className="smart-note">这是当前配置的只读路径检查，结果已保存；运行时还会再次检查。</p></details>}
 
+        {taskDeleted && <p className="smart-inline-warning">原实验任务已删除，当前准备方案仍保留。点击“另存为新任务”可重新创建实验草稿。</p>}
         {!server && <p className="smart-inline-warning">原服务器已不可用，当前方案无法保存。请返回任务池重新选择服务器并分析。</p>}
         <footer className="smart-plan-footer">
-          <div><button type="button" className="secondary-button" onClick={editFullConfig}><SlidersHorizontal size={14} />编辑完整配置</button><button type="button" className="secondary-button" disabled={rechecking || saving !== null} onClick={() => void recheckPlan()}>{rechecking ? <LoaderCircle size={14} className="spin" /> : <Server size={14} />}重新核对路径</button><span className="smart-footer-hint">返回方案后仍可继续让系统检查与修改。</span></div>
+          <div><button type="button" className="secondary-button" onClick={editFullConfig}><SlidersHorizontal size={14} />编辑配置</button><button type="button" className="secondary-button" disabled={rechecking || saving !== null} onClick={() => void recheckPlan()}>{rechecking ? <LoaderCircle size={14} className="spin" /> : <Server size={14} />}重新核对路径</button><span className="smart-footer-hint">返回方案后仍可继续让系统检查与修改。</span></div>
           <div className="smart-plan-save"><span className="smart-saved" role="status">{syncing?'正在保存准备进度…':syncError?'进度尚未保存':'准备进度已保存'}</span>
-            {savedTask && <span className="smart-saved"><CheckCircle2 size={14} />草稿已保存{!dirty ? '' : ' · 有未保存修改'}<button type="button" className="wb-text-button" disabled={saving !== null} onClick={() => props.onOpenTask(savedTask)}>在任务池查看</button></span>}
+            {savedTask && !taskDeleted && <span className="smart-saved"><CheckCircle2 size={14} />草稿已保存{!dirty ? '' : ' · 有未保存修改'}<button type="button" className="wb-text-button" disabled={saving !== null} onClick={() => props.onOpenTask(savedTask)}>在任务池查看</button></span>}
+            {taskDeleted ? <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save(false, true)}>{saving === 'draft' ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Save size={14} />另存为新任务</>}</button> : <>
             <button type="button" className="secondary-button" disabled={!canSave} onClick={() => void save(false)}>{saving === 'draft' ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Save size={14} />保存草稿</>}</button>
             <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save(true)}>{saving === 'start' ? <><LoaderCircle size={14} className="spin" />准备资源…</> : <><Play size={14} />创建并选择资源</>}</button>
+            </>}
           </div>
         </footer>
       </div>}

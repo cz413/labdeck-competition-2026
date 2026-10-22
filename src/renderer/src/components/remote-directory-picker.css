@@ -1,0 +1,17 @@
+.smart-path-row { display:flex; gap:8px; align-items:center; min-width:0; }
+.smart-path-row>input { flex:1; min-width:0; width:auto; }
+.smart-path-row>button { flex-shrink:0; height:32px; display:inline-flex; align-items:center; gap:5px; }
+.smart-browser { width:min(620px,calc(100vw - 36px)); }
+.smart-browser-body { display:grid; gap:12px; padding:16px 20px; min-height:240px; max-height:58vh; overflow:auto; }
+.smart-browser-path { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:9px 11px; background:var(--surface-subtle); border:1px solid var(--border-soft); border-radius:4px; }
+.smart-browser-location { display:flex; align-items:center; gap:8px; flex:1 1 300px; min-width:0; }
+.smart-browser-location input { min-width:0; width:100%; flex:1; padding:8px 10px; color:var(--text); background:var(--control-bg); border:1px solid var(--border-soft); border-radius:4px; font:12px/1.6 'Cascadia Code',Consolas,monospace; }
+.smart-browser-location input:focus-visible { outline:2px solid var(--interactive-border); outline-offset:1px; }
+.smart-browser-location button { flex-shrink:0; }
+.smart-browser-navigation { display:flex; gap:10px; }
+.smart-browser-list { display:grid; gap:5px; }
+.smart-browser-list button { display:flex; align-items:center; gap:8px; padding:9px 10px; text-align:left; color:var(--text); background:transparent; border:1px solid var(--border-soft); border-radius:4px; cursor:pointer; font-size:13px; }
+.smart-browser-list button:hover { background:var(--control-hover); border-color:var(--interactive-border); }
+.smart-browser-list svg { color:var(--accent-text); flex-shrink:0; }
+
+.remote-directory-overlay { z-index: 1300; }

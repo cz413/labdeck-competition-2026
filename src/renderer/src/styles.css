@@ -2931,3 +2931,28 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 @media (max-width: 760px) {
 }
+
+/* Confirmation details must be available before the intelligence page is loaded. */
+.confirm-dialog-details { margin:0 22px 22px; padding:14px 16px; color:var(--text); background:var(--panel-soft); border:1px solid var(--border); border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.7 Consolas,"Microsoft YaHei UI",monospace; max-height:260px; overflow:auto; }
+.confirm-dialog-record { font-family:inherit; }
+.confirm-dialog-record>span { display:block; margin-bottom:6px; color:var(--muted); font-size:12px; }
+.confirm-dialog-record>p { margin:0; color:var(--text); font-size:14px; line-height:1.7; font-weight:500; }
+.confirm-dialog-message { font-size:14px; line-height:1.8; }
+
+.experiment-failure-summary.compact { margin:8px 0; }
+.experiment-failure-summary .experiment-failure-reason { margin:0; color:var(--text); font-size:13px; line-height:1.6; }
+
+.experiment-run-result { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:6px; min-width:0; }
+.experiment-run-result>p { flex:1; min-width:0; margin:0; }
+.experiment-run-result>button { flex-shrink:0; }
+
+.experiment-run-result-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.experiment-log-panel { margin-top:14px; border:1px solid var(--border); border-radius:7px; overflow:hidden; background:var(--control-bg); }
+.experiment-log-panel>header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); }
+.experiment-log-panel>header h4 { margin:0 0 4px; color:var(--text); font-size:13px; }
+.experiment-log-panel>header span { color:var(--muted); font-size:11px; }
+.experiment-log-panel>header>div:last-child { display:flex; align-items:center; gap:8px; }
+.experiment-log-panel>header button { display:inline-flex; align-items:center; gap:5px; }
+.experiment-log-panel>pre { height:280px; overflow:auto; padding:14px; margin:0; color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.7 Consolas,"Microsoft YaHei UI",monospace; }
+.experiment-log-panel>p { margin:0; padding:10px 14px; color:var(--muted); font-size:12px; }
+.experiment-log-panel>.experiment-log-error { color:var(--red); }

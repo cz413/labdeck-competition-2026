@@ -1,3 +1,4 @@
+import { readExperimentRunLog } from './experiment-run-log'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -461,7 +462,7 @@ function showTaskNotification(event: TaskFinishedEvent): void {
   const label = { completed: '运行成功', failed: '运行失败', cancelled: '已取消', unknown: '已结束，结果未知' }[event.outcome]
   const notification = new Notification({
     title: `${event.serverName} · ${label}`,
-    body: `${event.title}\n${event.message || '点击查看任务详情'}`.slice(0, 500),
+    body: `${event.title}\n${event.outcome === 'failed' ? '点击查看运行记录并分析原因' : event.message || '点击查看任务详情'}`.slice(0, 500),
     icon: appIconPath
   })
   taskNotifications.add(notification)
@@ -701,6 +702,7 @@ function registerIpc(store: AppStore): void {
     return vscode.openRemote(resolveConnectionProfile(store, id, accessRouteId), accessRouteId, remotePath)
   })
 
+  ipcMain.handle('experiments:readRunLog', (_event,taskId:string,runId:string) => readExperimentRunLog(store,ssh,taskId,runId))
   ipcMain.handle('experiments:list', () => store.listExperimentTasks())
   ipcMain.handle('experiments:save', (_event, input: ExperimentTaskDraft) => store.saveExperimentTask(input))
   ipcMain.handle('experiments:setStatus', async (_event, taskId: string, status: ExperimentTaskStatus) => {

@@ -327,6 +327,7 @@ export interface ExperimentRun {
   serverId?: string
   serverNameSnapshot?: string
   accessRouteId?: string
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid?: string
   gpuIndex?: number
   gpuNameSnapshot?: string
@@ -347,9 +348,12 @@ export interface ExperimentRun {
   notes: string
 }
 
+export interface ExperimentRunLog { path: string; text: string; truncated: boolean; readAt: string }
+
 export interface ExperimentRunStartInput {
   serverId: string | null
   accessRouteId: string | null
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid: string | null
   gpuIndex: number | null
   gpuNameSnapshot: string | null
@@ -378,6 +382,7 @@ export interface ExperimentTask {
   serverId?: string
   serverNameSnapshot?: string
   accessRouteId?: string
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid?: string
   gpuIndex?: number
   gpuNameSnapshot?: string
@@ -499,6 +504,7 @@ export interface AppApi {
     openRemote(serverId: string, accessRouteId?: string, remotePath?: string): Promise<VsCodeRemoteResult>
   }
   experiments: {
+    readRunLog(taskId: string, runId: string): Promise<ExperimentRunLog>
     list(): Promise<ExperimentTask[]>
     save(input: ExperimentTaskDraft): Promise<ExperimentTask>
     setStatus(taskId: string, status: ExperimentTaskStatus): Promise<ExperimentTask>

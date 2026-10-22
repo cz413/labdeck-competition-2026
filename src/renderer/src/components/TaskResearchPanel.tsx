@@ -12,7 +12,7 @@ interface Props {
 }
 const stages = {review: '待确认', waiting: '跟踪中', analysis: '已记录分析'}
 const statuses: Record<string, string> = {
-  planned: '草稿', queued: '等待 GPU', preparing: '准备运行', running: '运行中',
+  planned: '草稿', queued: '排队中', preparing: '准备运行', running: '运行中',
   paused: '已暂停', completed: '正常结束', failed: '运行故障', cancelled: '已取消'
 }
 

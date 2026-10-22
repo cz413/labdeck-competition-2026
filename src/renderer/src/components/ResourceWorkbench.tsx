@@ -32,7 +32,7 @@ interface ResourceWorkbenchProps {
   onToggleWatch(uuid: string): void
 }
 
-const stateNames = { planned: '待开始', queued: '等待 GPU', preparing: '准备运行', running: '运行中', paused: '已暂停', completed: '已完成', failed: '失败', cancelled: '已取消' }
+const stateNames = { planned: '待开始', queued: '排队中', preparing: '准备运行', running: '运行中', paused: '已暂停', completed: '已完成', failed: '失败', cancelled: '已取消' }
 const gb = (value: number | null | undefined) => value == null ? '—' : `${(value / 1024 ** 3).toFixed(0)} GB`
 const pct = (value: number | null | undefined) => value == null ? '—' : `${Math.round(value)}%`
 const elapsed = (startedAt?: string) => {
@@ -78,9 +78,9 @@ export function ResourceWorkbench(props: ResourceWorkbenchProps): React.JSX.Elem
 
   const queue = <section className="wb-queue">
     <header className="wb-section-heading"><h3>实验队列 <small>{tasks.length}</small></h3><button className="secondary-button" onClick={() => props.onNewTask()}><Plus size={14} />新建任务</button></header>
-    {tasks.length ? <div className="wb-table-scroll"><table className="wb-table wb-task-table"><thead><tr><th>任务名称</th><th>状态</th><th>GPU</th><th>运行时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{(tab === 'tasks' ? tasks : tasks.slice(0, 4)).map((task) => {
+    {tasks.length ? <div className="wb-table-scroll"><table className="wb-table wb-task-table"><thead><tr><th>任务名称</th><th>状态</th><th>运行设备</th><th>运行时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{(tab === 'tasks' ? tasks : tasks.slice(0, 4)).map((task) => {
       const run = task.runs.find((item) => ['queued', 'preparing', 'running'].includes(item.status)) ?? task.runs.at(-1)
-      return <tr key={task.id}><td><button className="wb-text-button" onClick={() => props.onTask(task)}>{task.title}</button></td><td><span className={`wb-state ${task.status}`}><i />{stateNames[task.status]}</span></td><td>{run?.gpuIndex != null ? `GPU ${run.gpuIndex}` : '自动分配'}</td><td className="wb-numeric">{run?.status === 'running' ? elapsed(run.startedAt) : '—'}</td><td><button className="icon-button small" aria-label={`查看任务 ${task.title}`} onClick={() => props.onTask(task)}><MoreHorizontal size={16} /></button></td></tr>
+      return <tr key={task.id}><td><button className="wb-text-button" onClick={() => props.onTask(task)}>{task.title}</button></td><td><span className={`wb-state ${task.status}`}><i />{stateNames[task.status]}</span></td><td>{(run?.computeDevice ?? task.computeDevice) === 'cpu' ? 'CPU' : run?.gpuIndex != null ? `GPU ${run.gpuIndex}` : '自动分配'}</td><td className="wb-numeric">{run?.status === 'running' ? elapsed(run.startedAt) : '—'}</td><td><button className="icon-button small" aria-label={`查看任务 ${task.title}`} onClick={() => props.onTask(task)}><MoreHorizontal size={16} /></button></td></tr>
     })}</tbody></table></div> : <div className="wb-empty-inline">这台服务器还没有实验任务。新建任务后可加入队列。</div>}
     {tasks.length > 4 && tab !== 'tasks' && <button className="wb-text-button wb-see-all" onClick={() => setTab('tasks')}>查看全部 {tasks.length} 个任务</button>}
   </section>

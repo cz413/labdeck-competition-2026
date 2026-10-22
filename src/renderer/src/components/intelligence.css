@@ -33,7 +33,6 @@
 @media(max-width:1200px){.intel-layout{grid-template-columns:225px minmax(0,1fr);gap:20px;}.intel-input-column{padding-right:16px;}.intel-heading{align-items:flex-start;}.intel-plan-layout{gap:24px;}.intel-plan-output{padding-left:20px;}.intel-model-status{max-width:190px;}.intel-finding header{align-items:flex-start;flex-wrap:wrap;}}
 @media(max-width:800px){.intel-layout,.intel-plan-layout{grid-template-columns:1fr;}.intel-input-column,.intel-plan-output{border:0;padding:0;}.intel-history{display:none;}.intel-heading{flex-direction:column;gap:12px;}.intel-empty{min-height:250px;}.intel-model-status{max-width:none;}}
 
-.confirm-dialog-details { margin:0 24px 20px;padding:14px;background:var(--panel-soft);border:1px solid var(--border);border-radius:4px;white-space:pre-wrap;overflow-wrap:anywhere;font:15px/1.8 Consolas,"Microsoft YaHei UI",monospace;max-height:260px;overflow:auto; }
 
 .intel-progress {margin-top:14px;border-left:2px solid var(--teal);padding:2px 0 3px 12px;}.intel-progress p{margin:0 0 11px;}.intel-progress button{font-size:14px;padding:7px 10px;}
 .intel-investigation {border-bottom:1px solid var(--border);padding:21px 0 16px;}.intel-investigation>header{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}.intel-investigation>header>span{font-size:14px;color:var(--muted);}.intel-investigation>p{font-size:15px;line-height:1.7;color:var(--muted);margin:10px 0 17px;}

@@ -531,3 +531,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .workbench-statusbar { height: auto; min-height: 30px; padding-top: 4px; padding-bottom: 4px; line-height: 1.4; }
 
 .workbench-page-heading h1.experiment-page-title { font-size: 23px; }
+
+/* Expanded task details belong to the selected row, before the next task. */
+.experiment-pool-table > tbody > .experiment-pool-detail-row > td { height:auto; max-width:none; padding:0 0 12px; white-space:normal; }
+.experiment-pool-detail-row > td > .experiment-task-card { border-top:0; border-radius:0 0 6px 6px; }

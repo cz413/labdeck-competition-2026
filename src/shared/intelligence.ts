@@ -7,7 +7,7 @@ import type { RepositoryInput, RepositorySnapshot, RepositoryAnalysisInput, Repo
 export interface ModelSettings { enabled: boolean; endpoint: string; model: string; hasApiKey: boolean }
 export interface ModelSettingsInput { enabled: boolean; endpoint: string; model: string; apiKey?: string; clearApiKey?: boolean }
 export interface Evidence { id: string; source: 'log' | 'resource' | 'environment' | 'runtime'; label: string; text: string; line?: number }
-export interface Finding { category: string; title: string; confidence: 'high' | 'medium' | 'low'; explanation: string; evidenceIds: string[]; steps: string[] }
+export interface Finding { origin?: 'rules' | 'model'; category: string; title: string; confidence: 'high' | 'medium' | 'low'; explanation: string; evidenceIds: string[]; steps: string[] }
 export interface BatchRepair { kind: 'reduce-batch'; before: string; after: string; previousBatch: number; nextBatch: number }
 export type DiagnosticToolName = 'search_log' | 'inspect_path' | 'read_project_file' | 'inspect_package' | 'inspect_environment' | 'inspect_gpu'
 export interface DiagnosticToolCall { tool: DiagnosticToolName; arguments: Record<string, string>; reason: string; evidenceIds: string[] }

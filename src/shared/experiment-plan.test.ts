@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { RepositoryGuide, RepositorySnapshot } from './repository-guide'
 import {
   createExperimentPlan, experimentDraftChanges, experimentModeFromGoal, markUserFields,
-  planEntryOptions, planGaps, planLaunchCitations, projectSignals, recommendProjectFiles, refineExperimentPlan,
+  planEntryOptions, planGaps, planLaunchCitations, projectSignals, recommendProjectFiles,
   resolvePlanGap, switchPlanMode
 } from './experiment-plan'
 import type { CondaEnvironmentInfo } from './types'
@@ -77,6 +77,13 @@ describe('project signals', () => {
 })
 
 describe('building the plan', () => {
+  it('recognizes an absolute Conda prefix without treating it as an environment name', () => {
+    const value = createExperimentPlan({guide: {...guide, environmentName: environments[0].prefix}, goal: '训练', environments, now})
+    expect(value.draft.condaEnvironment).toMatchObject({environmentPrefix: environments[0].prefix})
+    expect(value.draft.condaEnvironment?.environmentName).toBeUndefined()
+    expect(value.fields.environment?.source).toBe('server')
+  })
+
   it('turns the analysis into a reviewed draft with sources', () => {
     const value = plan()
     expect(value.mode).toBe('train')
@@ -121,12 +128,12 @@ describe('building the plan', () => {
   it('keeps manual edits and asks before replacing them', () => {
     const value = plan()
     const edited = { ...value, draft: { ...value.draft, launchCommand: 'python custom.py' }, fields: markUserFields(value.fields, [{ field: 'launchCommand', label: '启动命令', before: '', after: 'python custom.py' }]) }
-    const result = refineExperimentPlan(edited, '改成只评估已有权重')
+    const result = switchPlanMode(edited, 'evaluate')
     expect(result.mode).toBe('train')
-    expect(result.conflicts).toHaveLength(1)
-    expect(result.conflicts[0]).toMatchObject({ label: '运行方式', current: 'python custom.py' })
-    expect(result.conflicts[0].suggestedMode).toBe('evaluate')
-    expect({ ...edited.draft, ...result.conflicts[0].suggestedDraft }.launchCommand).toBe('python evaluate.py --checkpoint weights/model.pth --data /data/train')
+    expect(result.conflict).toBeDefined()
+    expect(result.conflict!).toMatchObject({ label: '运行方式', current: 'python custom.py' })
+    expect(result.conflict!.suggestedMode).toBe('evaluate')
+    expect({ ...edited.draft, ...result.conflict!.suggestedDraft }.launchCommand).toBe('python evaluate.py --checkpoint weights/model.pth --data /data/train')
   })
 })
 
@@ -162,41 +169,7 @@ describe('gaps and focused questions', () => {
   })
 })
 
-describe('iterative refinement', () => {
-  it('switches to evaluation and reports only the changed part', () => {
-    const result = refineExperimentPlan(plan(), '改成只评估已有权重')
-    expect(result.matched).toBe(true)
-    expect(result.mode).toBe('evaluate')
-    expect(result.changes.map(change => change.field)).toEqual(['mode'])
-    expect(result.draft.launchCommand).toContain('evaluate.py')
-  })
-  it('selects a server environment and marks it verified', () => {
-    const base = plan(environments)
-    const result = refineExperimentPlan({ ...base, draft: { ...base.draft, condaEnvironment: undefined }, fields: { ...base.fields, environment: undefined } }, '使用 vision 环境', { environments })
-    expect(result.draft.condaEnvironment).toMatchObject({ environmentName: 'vision', lastCheckStatus: 'found' })
-    expect(result.fields.environment?.source).toBe('server')
-  })
-  it('shrinks a documented epoch argument for a smoke run', () => {
-    const result = refineExperimentPlan(plan(), '先跑少量数据验证流程')
-    expect(result.draft.launchCommand).toContain('--epochs 1')
-    expect(result.changes.map(change => change.label)).toContain('启动命令')
-  })
-  it('does not invent a parameter when nothing can be reduced', () => {
-    const value = plan()
-    const result = refineExperimentPlan({ ...value, draft: { ...value.draft, launchCommand: 'python train.py --config configs/base.yaml' } }, '先跑少量数据验证流程')
-    expect(result.draft.launchCommand).toBe('python train.py --config configs/base.yaml')
-    expect(result.notes.join('')).toContain('没有找到')
-  })
-  it('updates a parameter that already exists in the command', () => {
-    const result = refineExperimentPlan(plan(), '把训练轮数改成 2')
-    expect(result.draft.launchCommand).toContain('--epochs 2')
-    expect(result.fields.launchCommand?.source).toBe('user')
-  })
-  it('reports a parameter that the command does not document', () => {
-    const result = refineExperimentPlan(plan(), '把学习率改成 0.001')
-    expect(result.draft.launchCommand).toBe(plan().draft.launchCommand)
-    expect(result.notes.join('')).toContain('没有找到')
-  })
+describe('draft changes', () => {
   it('reports changes between drafts so user edits can be kept', () => {
     const value = plan()
     const after = { ...value.draft, dataPath: '/data/actual', launchCommand: 'python custom.py' }

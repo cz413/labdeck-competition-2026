@@ -38,6 +38,8 @@ const api: AppApi = {
       get: id => ipcRenderer.invoke('intelligence:preparation-get',id),
       list: () => ipcRenderer.invoke('intelligence:preparation-list'),
       act: (id,action) => ipcRenderer.invoke('intelligence:preparation-action',id,action),
+      refine: (id,instruction,revision) => ipcRenderer.invoke('intelligence:preparation-refine',id,instruction,revision),
+      remove: id => ipcRenderer.invoke('intelligence:preparation-remove',id),
       cancel: id => ipcRenderer.invoke('intelligence:preparation-cancel',id),
       onChanged: listener => {const handler=(_event:Electron.IpcRendererEvent,id:string):void=>listener(id);ipcRenderer.on('intelligence:preparation-changed',handler);return()=>ipcRenderer.removeListener('intelligence:preparation-changed',handler)}
     },
@@ -169,6 +171,7 @@ const api: AppApi = {
     openRemote: (serverId: string, accessRouteId?: string, remotePath?: string) => ipcRenderer.invoke('vscode:openRemote', serverId, accessRouteId, remotePath)
   },
   experiments: {
+    readRunLog: (taskId,runId) => ipcRenderer.invoke('experiments:readRunLog',taskId,runId),
     list: () => ipcRenderer.invoke('experiments:list'),
     save: (input: ExperimentTaskDraft) => ipcRenderer.invoke('experiments:save', input),
     setStatus: (taskId: string, status: ExperimentTaskStatus) => ipcRenderer.invoke('experiments:setStatus', taskId, status),
