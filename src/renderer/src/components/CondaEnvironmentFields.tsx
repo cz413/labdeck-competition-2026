@@ -28,12 +28,12 @@ export function CondaEnvironmentFields({ serverId, accessRouteId, config, enviro
     <label className="field field-wide"><span>服务器已有环境</span><select aria-label="服务器已有 Conda 环境" style={{color: value ? undefined : 'var(--text-muted, #9aa0a6)'}} value={value} disabled={locked || !environments.length} onChange={event => {
       const env = environments.find(item => item.prefix === event.target.value)
       if (env) onChange({ ...reset, environmentPrefix: env.prefix, environmentName: undefined })
-    }}><option value="" disabled hidden>{busy ? '正在读取服务器环境…' : environments.length ? '选择环境' : '未找到环境，请手动指定路径后重新读取'}</option>{value && !selected && <option value={value} disabled>{value}（待核对）</option>}{environments.map(env => <option key={env.prefix} value={env.prefix}>{env.name} · {env.prefix}</option>)}</select>{value && !selected && !busy && <small className="field-help">当前环境尚未在服务器列表中确认，可重新读取或检查所选环境。</small>}</label>
+    }}><option value="" disabled hidden>{busy ? '正在读取服务器环境…' : environments.length ? '选择环境' : '未找到环境，请手动指定路径后重新读取'}</option>{value && !selected && <option value={value} disabled>{value}（待核对）</option>}{environments.map(env => <option key={env.prefix} value={env.prefix}>{env.name} · {env.prefix}</option>)}</select>{value && !selected && !busy && <small className="field-help">未在环境列表中找到，请重新读取或检查环境。</small>}</label>
     <div className="experiment-conda-actions field-wide">
       <button type="button" className="secondary-button" onClick={onReload} disabled={locked}>{busy ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}重新读取</button>
       <button type="button" className="secondary-button" onClick={onCheck} disabled={locked || !value}>检查所选环境</button>
     </div>
-    {config.lastCheckStatus && <p className="experiment-conda-python field-wide">最近检查：{config.lastCheckStatus === 'found' ? '环境存在' : config.lastCheckStatus === 'missing' ? '环境不存在' : '状态未知'}{config.lastCheckedAt ? ` · ${new Date(config.lastCheckedAt).toLocaleString('zh-CN')}` : ''}{config.pythonVersion ? ` · ${config.pythonVersion}` : ''}</p>}
+    {config.lastCheckedAt && config.lastCheckStatus && <p className="experiment-conda-python field-wide">最近检查：{config.lastCheckStatus === 'found' ? '环境存在' : config.lastCheckStatus === 'missing' ? '环境不存在' : '状态未知'}{config.lastCheckedAt ? ` · ${new Date(config.lastCheckedAt).toLocaleString('zh-CN')}` : ''}{config.pythonVersion ? ` · ${config.pythonVersion}` : ''}</p>}
   </div>
     {picking && serverId && accessRouteId && <RemoteDirectoryPicker key={`${serverId}:${accessRouteId}`} serverId={serverId} accessRouteId={accessRouteId} initialPath={config.managerPath?.replace(/\/bin\/(?:conda|mamba|micromamba)$/, '')} onClose={() => setPicking(false)} onSelect={path => { onChange({...reset, managerPath: path}); setPicking(false) }} />}
   </>

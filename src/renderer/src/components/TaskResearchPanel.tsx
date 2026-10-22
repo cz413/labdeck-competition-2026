@@ -48,7 +48,7 @@ export function TaskResearchPanel(props: Props): React.JSX.Element | null {
         })}</ul>
         {campaign.analysis && <p className="experiment-result"><strong>本批分析：</strong>{campaign.analysis.summary}</p>}
         {observations.length > 0 ? <details><summary>查看已采集的指标与产物（{observations.length} 条运行记录）</summary><ResearchResults observations={observations} /></details> : <p className="research-note">尚无本批运行的结果快照，可打开批次查看跟踪进度。</p>}
-        <p className="research-note">运行状态随任务更新；指标与分析来自批次采集快照。独立重跑不会沿用旧运行结果，指标未提升也不判运行失败。</p>
+        <p className="research-note">重新运行后，请重新采集结果以更新对比。</p>
       </details>
     })}
   </section>

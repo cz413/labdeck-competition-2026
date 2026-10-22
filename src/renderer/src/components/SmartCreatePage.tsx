@@ -431,7 +431,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       const view=await window.labApi.intelligence.preparations.act(preparationId.current,{kind:'recheck',expectedRevision:preparationRevision.current})
       if(view.error)throw new Error(view.error)
       preparationRevision.current=view.revision;setPreparation(view);setRecheckResult(view.checks??null)
-      setNotice('当前配置已完成只读核对，检查结果已保存在分析过程。')
+      setNotice('路径核对完成。')
     }catch(cause){setError(cause instanceof Error?cause.message:String(cause))}finally{setRechecking(false)}
   }
   function answerGap(gap: PlanGap, option: PlanGap['options'][number]): void {    if (!plan) return
@@ -444,7 +444,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   }
   function deferGap(id: string): void {
     setDeferredGaps(items => items.includes(id) ? items : [...items, id])
-    setNotice('已暂后补充，这项不会阻塞保存；可在卡片中随时补上。')
+    setNotice('已暂后补充，可继续保存。')
   }
   function editField(field: PlanField, value: string, key?: 'title' | 'dataPath' | 'artifactPath'): void {
     if (!plan) return
@@ -622,7 +622,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     </header>
 
     {syncError&&<div className="intel-error" role="alert">准备进度保存失败：{syncError}<button type="button" className="secondary-button" onClick={()=>void flushEdits(plan?currentEdit(plan):undefined).then(()=>setSyncError('')).catch(cause=>setSyncError(String(cause)))}>重试保存进度</button></div>}
-    {preparation&&!taskDeleted&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}。已完成的节点会保留，未完成的模型步骤可能需要重新请求。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
+    {preparation&&!taskDeleted&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}，可继续准备。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
     {sessionsOpen && <div className="app-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) setSessionsOpen(false) }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSessionsOpen(false) } }}>
       <section className="app-modal preparation-sessions-dialog" role="dialog" aria-modal="true" aria-labelledby="preparation-sessions-title">
         <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><History size={18} /></div><div><h2 id="preparation-sessions-title">实验准备记录</h2><p>查看已保存的准备进度，继续补充和审阅方案。</p></div></div><button type="button" className="icon-button" aria-label="关闭实验准备记录" autoFocus onClick={() => setSessionsOpen(false)}><X size={16} /></button></header>
@@ -651,7 +651,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           <header><span><Sparkles size={15} /></span><div><h3>想做什么</h3><p>用一句实验目的描述即可</p></div></header>
           <textarea aria-label="实验目标" rows={4} maxLength={2000} value={goal} onChange={event => setGoal(event.target.value)} placeholder="例如：先跑一次基线 / 评估已有权重 / 复现 README 的训练配置" />
           <div className="smart-goal-examples">{['先跑一次基线', '评估已有权重', '复现 README 的训练配置'].map(example => <button type="button" key={example} onClick={() => setGoal(example)}>{example}</button>)}</div>
-          <p className="smart-note">环境、命令、数据位置和任务名称由系统在分析后给出；这里不需要先填写整套表单。</p>
         </section>
       </div>
       {props.modelEnabled === false && <div className="smart-model-warning"><AlertTriangle size={15} /><span>模型尚未启用，系统无法完成项目理解。</span><button type="button" className="wb-text-button" onClick={props.onModelSettings}>前往模型设置</button><button type="button" className="wb-text-button" onClick={props.onManualCreate}>改为手动创建</button></div>}
@@ -659,7 +658,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       {notice && <p className="smart-note" role="status">{notice}</p>}
       <footer className="smart-start-footer">
         <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}分析项目并准备实验</button></div>
-        <p>只读检查项目与环境，不安装依赖或启动实验；所选文件内容会发送给已配置模型，保存草稿时才创建任务。</p>
+        <p>分析时会将所选项目文件发送给已配置的模型，实验需确认后运行。</p>
       </footer>
     </div>}
 
@@ -669,7 +668,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         {snapshot && <details className="smart-scope" open={scopeOpen} onToggle={event => setScopeOpen((event.target as HTMLDetailsElement).open)}>
           <summary>分析范围 · 已选 {files.length} / {snapshot.files.length} 个相关文件 · 可展开调整</summary>
           <div className="smart-scope-actions"><button type="button" className="wb-text-button" disabled={busy} onClick={() => setFiles(snapshot.files.map(file => file.path))}>全选</button><button type="button" className="wb-text-button" disabled={busy} onClick={() => setFiles([])}>清空</button><button type="button" className="secondary-button" disabled={busy || !files.length} onClick={() => void analyze({ snapshot, files })}>按此范围重新分析</button></div>
-          <p className="smart-note">仅勾选文件的内容会发送给模型用于项目理解；取消勾选的文件不会读取或发送。</p>
+          <p className="smart-note">仅将勾选的文件发送给模型。</p>
           <div className="smart-scope-list">{snapshot.files.map(file => <label key={file.path}><input type="checkbox" disabled={busy} checked={files.includes(file.path)} onChange={event => setFiles(current => event.target.checked ? [...current, file.path] : current.filter(path => path !== file.path))} /><span>{file.path}</span></label>)}</div>
           {snapshot.warnings.map((warning, index) => <p key={index} className="smart-note">{warning}</p>)}
         </details>}
@@ -684,7 +683,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         </header>
         <div className="smart-plan-grid">
           <article className="smart-card">
-            <header><div className="smart-card-icon"><Sparkles size={16} /></div><div><h3>本次实验</h3><p>目标、任务名称与运行方式</p></div><SourceBadge state={plan.fields.mode} /></header>
+            <header><div className="smart-card-icon"><Sparkles size={16} /></div><div><h3>本次实验</h3></div><SourceBadge state={plan.fields.mode} /></header>
             <label className="smart-field">任务名称<input aria-label="任务名称" value={plan.draft.title} maxLength={160} onChange={event => editField('title', event.target.value, 'title')} /></label>
             <div className="smart-objective"><span>实验目标</span><p>{plan.draft.objective || plan.goal}</p></div>
             <div className="smart-mode-switch" role="radiogroup" aria-label="实验方式">
@@ -702,7 +701,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           </article>
 
           <article className="smart-card">
-            <header><div className="smart-card-icon"><Code2 size={16} /></div><div><h3>运行方式</h3><p>入口、配置文件与实际命令</p></div><SourceBadge state={plan.fields.launchCommand} /></header>
+            <header><div className="smart-card-icon"><Code2 size={16} /></div><div><h3>运行方式</h3></div><SourceBadge state={plan.fields.launchCommand} /></header>
             <dl className="smart-kv">
               <div><dt>入口</dt><dd>{planCommandEntry(plan.draft.launchCommand) ?? '待确认'}</dd></div>
               <div><dt>配置文件</dt><dd>{planCommandConfig(plan.draft.launchCommand) ?? '命令中没有指定配置文件'}</dd></div>
@@ -719,8 +718,8 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           </article>
 
           <article className="smart-card">
-            <header><div className="smart-card-icon"><Database size={16} /></div><div><h3>环境与数据</h3><p>运行环境和本次使用的数据</p></div><SourceBadge state={envState} /></header>
-            <label className="experiment-conda-toggle"><input type="checkbox" checked={Boolean(plan.draft.condaEnvironment)} disabled={busy || envLoading || envChecking} onChange={event => { pushHistory(event.target.checked ? '配置 Conda 环境' : '使用服务器默认环境'); updateDraft({condaEnvironment: event.target.checked ? {manager: 'conda', lastCheckStatus: 'unknown'} : undefined}, {field: 'environment', state: {source: 'user', note: event.target.checked ? '选择服务器已有环境' : '使用服务器默认环境'}}) }} /><span><strong>配置 Conda 环境</strong><small>自动读取服务器上已有的环境，选择后运行任务会使用该环境。</small></span></label>
+            <header><div className="smart-card-icon"><Database size={16} /></div><div><h3>环境与数据</h3></div><SourceBadge state={envState} /></header>
+            <label className="experiment-conda-toggle"><input type="checkbox" checked={Boolean(plan.draft.condaEnvironment)} disabled={busy || envLoading || envChecking} onChange={event => { pushHistory(event.target.checked ? '配置 Conda 环境' : '使用服务器默认环境'); updateDraft({condaEnvironment: event.target.checked ? {manager: 'conda', lastCheckStatus: 'unknown'} : undefined}, {field: 'environment', state: {source: 'user', note: event.target.checked ? '选择服务器已有环境' : '使用服务器默认环境'}}) }} /><span><strong>配置 Conda 环境</strong></span></label>
             {plan.draft.condaEnvironment && <CondaEnvironmentFields serverId={server?.id} accessRouteId={accessRouteId} config={plan.draft.condaEnvironment} environments={envs} busy={envLoading || envChecking} disabled={busy || !server} onChange={updateEnvironment} onReload={() => void loadEnvironments()} onCheck={() => void checkEnvironment()} />}
             <div className="smart-field"><div className="smart-field-head"><span>数据目录</span><SourceBadge state={plan.fields.dataPath} /></div><div className="smart-path-row"><input aria-label="数据目录" value={plan.draft.dataPath} onChange={event => editField('dataPath', event.target.value, 'dataPath')} onBlur={event => { if (event.target.value.trim().startsWith('/')) void verifyDataPath(event.target.value.trim()) }} placeholder="/mnt/nas/datasets/experiment" /><button type="button" className="secondary-button" onClick={() => openBrowser('data')}><FolderOpen size={14} />选择数据</button></div></div>
             <p className="smart-card-note">{plan.fields.dataPath?.note ?? '尚未确定数据位置'}</p>
@@ -745,8 +744,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           {activeGap.detail && <p>{activeGap.detail}</p>}
           {activeGap.options.length > 0 && <div className="smart-gap-options">{activeGap.options.map(option => <button type="button" key={option.id} onClick={() => answerGap(activeGap, option)}><span>{option.source === 'server' ? <Server size={14} /> : option.source === 'file' ? <FileCode2 size={14} /> : <FolderOpen size={14} />}</span><div><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</div><em className={`smart-source ${option.source}`}>{sourceTitle(option.source)}</em></button>)}</div>}
           <div className="smart-gap-actions">{activeGap.allowBrowse && <button type="button" className="secondary-button" onClick={() => openBrowser('data')}><FolderOpen size={14} />浏览其他目录</button>}{activeGap.allowLater && <button type="button" className="wb-text-button" onClick={() => deferGap(activeGap.id)}>暂后补充</button>}</div>
-        </section> : <p className="smart-gap-ok"><CheckCircle2 size={15} />启动所需的信息已经齐备，可以保存草稿或直接选择资源。</p>}
-
+        </section> : <p className="smart-gap-ok"><CheckCircle2 size={15} />方案已就绪</p>}
         {deferredGaps.length > 0 && <p className="smart-note">已暂后补充 {deferredGaps.length} 项（{deferredGaps.map(id => id === 'data' ? '数据' : id === 'environment' ? '环境' : '入口').join('、')}），不会阻塞保存。<button type="button" className="wb-text-button" onClick={() => setDeferredGaps([])}>重新查看</button></p>}
 
         {plan.questions.length > 0 && <details className="smart-questions"><summary>项目分析提出的其他确认事项 · {plan.questions.length}</summary><ul>{plan.questions.map((question, index) => <li key={index}>{question}</li>)}</ul><p className="smart-note">这些事项不阻塞保存，可在「编辑配置」或任务备注中补充。</p></details>}
@@ -761,13 +759,11 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         </section>
 
         {history.length > 0 && <details className="smart-history"><summary>本次修改记录 · {history.length} 项</summary><ol>{history.map(entry => <li key={entry.id}><time>{entry.at}</time><span>{entry.label}</span></li>)}</ol><div><button type="button" className="wb-text-button" onClick={resetPlan}><RotateCcw size={13} />恢复初始方案</button></div></details>}
-
-        {recheckResult && <details className="smart-questions" open><summary>服务器路径核对 · {recheckResult.configurationKey===projectConfigurationKey(plan.draft)?'当前配置':'配置已变更，以下为原核对结果'} · {new Date(recheckResult.at).toLocaleTimeString('zh-CN')}</summary><ul>{recheckResult.lines.map((line, index) => <li key={index} className={line.ok ? '' : 'smart-recheck-failed'}>{line.ok ? '✓' : '×'} {line.text}</li>)}</ul><p className="smart-note">这是当前配置的只读路径检查，结果已保存；运行时还会再次检查。</p></details>}
-
+        {recheckResult && <details className="smart-questions" open><summary>服务器路径核对 · {recheckResult.configurationKey===projectConfigurationKey(plan.draft)?'当前配置':'配置已变更，以下为原核对结果'} · {new Date(recheckResult.at).toLocaleTimeString('zh-CN')}</summary><ul>{recheckResult.lines.map((line, index) => <li key={index} className={line.ok ? '' : 'smart-recheck-failed'}>{line.ok ? '✓' : '×'} {line.text}</li>)}</ul></details>}
         {taskDeleted && <p className="smart-inline-warning">原实验任务已删除，当前准备方案仍保留。点击“另存为新任务”可重新创建实验草稿。</p>}
         {!server && <p className="smart-inline-warning">原服务器已不可用，当前方案无法保存。请返回任务池重新选择服务器并分析。</p>}
         <footer className="smart-plan-footer">
-          <div><button type="button" className="secondary-button" onClick={editFullConfig}><SlidersHorizontal size={14} />编辑配置</button><button type="button" className="secondary-button" disabled={rechecking || saving !== null} onClick={() => void recheckPlan()}>{rechecking ? <LoaderCircle size={14} className="spin" /> : <Server size={14} />}重新核对路径</button><span className="smart-footer-hint">返回方案后仍可继续让系统检查与修改。</span></div>
+          <div><button type="button" className="secondary-button" onClick={editFullConfig}><SlidersHorizontal size={14} />编辑配置</button><button type="button" className="secondary-button" disabled={rechecking || saving !== null} onClick={() => void recheckPlan()}>{rechecking ? <LoaderCircle size={14} className="spin" /> : <Server size={14} />}重新核对路径</button></div>
           <div className="smart-plan-save"><span className="smart-saved" role="status">{syncing?'正在保存准备进度…':syncError?'进度尚未保存':'准备进度已保存'}</span>
             {savedTask && !taskDeleted && <span className="smart-saved"><CheckCircle2 size={14} />草稿已保存{!dirty ? '' : ' · 有未保存修改'}<button type="button" className="wb-text-button" disabled={saving !== null} onClick={() => props.onOpenTask(savedTask)}>在任务池查看</button></span>}
             {taskDeleted ? <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save(false, true)}>{saving === 'draft' ? <><LoaderCircle size={14} className="spin" />保存中…</> : <><Save size={14} />另存为新任务</>}</button> : <>
