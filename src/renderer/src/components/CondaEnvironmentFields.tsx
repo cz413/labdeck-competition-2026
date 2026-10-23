@@ -35,6 +35,6 @@ export function CondaEnvironmentFields({ serverId, accessRouteId, config, enviro
     </div>
     {config.lastCheckedAt && config.lastCheckStatus && <p className="experiment-conda-python field-wide">最近检查：{config.lastCheckStatus === 'found' ? '环境存在' : config.lastCheckStatus === 'missing' ? '环境不存在' : '状态未知'}{config.lastCheckedAt ? ` · ${new Date(config.lastCheckedAt).toLocaleString('zh-CN')}` : ''}{config.pythonVersion ? ` · ${config.pythonVersion}` : ''}</p>}
   </div>
-    {picking && serverId && accessRouteId && <RemoteDirectoryPicker key={`${serverId}:${accessRouteId}`} serverId={serverId} accessRouteId={accessRouteId} initialPath={config.managerPath?.replace(/\/bin\/(?:conda|mamba|micromamba)$/, '')} onClose={() => setPicking(false)} onSelect={path => { onChange({...reset, managerPath: path}); setPicking(false) }} />}
+    {picking && serverId && accessRouteId && <RemoteDirectoryPicker key={`${serverId}:${accessRouteId}`} serverId={serverId} accessRouteId={accessRouteId} manager={config.manager} initialPath={config.managerPath?.replace(/\/bin\/(?:conda|mamba|micromamba)$/, '')} onClose={() => setPicking(false)} onSelect={path => { onChange({...reset, managerPath: path}); setPicking(false) }} />}
   </>
 }

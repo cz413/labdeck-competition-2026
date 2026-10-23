@@ -1,7 +1,8 @@
+import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, BookOpen, CheckCircle2, FileCode2, FolderOpen, LoaderCircle } from 'lucide-react'
 import type { CondaEnvironmentInfo, ExperimentTask, ServerProfile } from '@shared/types'
-import type { RepositoryCandidate, RepositoryCitation, RepositoryDirectoryView, RepositoryGuideStep, RepositoryProgress, RepositorySnapshot, RepositoryWorkflowAction, RepositoryWorkflowView } from '@shared/repository-guide'
+import type { RepositoryCandidate, RepositoryCitation, RepositoryGuideStep, RepositoryProgress, RepositorySnapshot, RepositoryWorkflowAction, RepositoryWorkflowView } from '@shared/repository-guide'
 import { recommendRepositoryFiles, repositoryReviewQuestions, repositoryFieldAnswer } from '@shared/repository-guide'
 import { getDefaultAccessRouteId } from '@shared/access-routes'
 import { AccessRouteSelect } from './AccessRouteSelect'
@@ -38,10 +39,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
   const [condaLoading,setCondaLoading]=useState(false)
   const [repositories,setRepositories]=useState<RepositoryCandidate[]>([])
   const [discovering,setDiscovering]=useState(false)
-  const [browser,setBrowser]=useState<RepositoryDirectoryView|null>(null)
   const [browserOpen,setBrowserOpen]=useState(false)
-  const [browserBusy,setBrowserBusy]=useState(false)
-  const [browserError,setBrowserError]=useState('')
   const busyRef=useRef(false),initialized=useRef(false),snapshotScope=useRef('')
   const server=real.find(s=>s.id===serverId),accessRouteId=server?(routeId||getDefaultAccessRouteId(server)):''
   const scope=`${serverId}\n${accessRouteId}\n${path.trim()}`
@@ -109,17 +107,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
     }catch(e){setError(e instanceof Error?e.message:String(e))}
     finally{setDiscovering(false)}
   }
-  async function openBrowser(): Promise<void>{
-    setBrowserOpen(true);setBrowser(null);setBrowserError('')
-    await browse(path.trim().startsWith('/')?path.trim():undefined)
-  }
-  async function browse(target?:string):Promise<void>{
-    if(!server||!accessRouteId||browserBusy)return
-    setBrowserBusy(true);setBrowserError('')
-    try{const view=await window.labApi.intelligence.browseRepositoryDirectory({serverId,accessRouteId,path:target});setBrowser(view)}
-    catch(e){setBrowserError(e instanceof Error?e.message:String(e))}
-    finally{setBrowserBusy(false)}
-  }
+  function openBrowser(): void { setBrowserOpen(true) }
   async function inspect():Promise<{snapshot:RepositorySnapshot;files:string[]}>{
     const result=await window.labApi.intelligence.inspectRepository({source:'remote',serverId,path:path.trim(),accessRouteId})
     const selected=recommendRepositoryFiles(result.files,goal)
@@ -170,7 +158,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
         <fieldset disabled={locked}>
           <label>服务器<select value={serverId} onChange={e=>{setServerId(e.target.value);setRouteId('');fresh()}}><option value="">选择实际服务器</option>{real.map(s=><option value={s.id} key={s.id}>{s.name}</option>)}</select></label>
           {server&&<AccessRouteSelect server={server} value={accessRouteId} onChange={value=>{setRouteId(value);fresh()}}/>}
-          <label>仓库目录<div className="repository-path-input"><input list="repository-recent-paths" maxLength={4096} value={path} onChange={e=>{setPath(e.target.value);fresh()}} placeholder="例如：/home/user/SASRec.pytorch"/><button type="button" className="secondary-button" disabled={!server||discovering} onClick={()=>void discover()}>{discovering?'扫描中…':'扫描'}</button><button type="button" className="secondary-button" disabled={!server||browserBusy} onClick={()=>void openBrowser()}>{browserBusy?'读取中…':'浏览'}</button></div><datalist id="repository-recent-paths">{recentPaths.map(item=><option key={item} value={item}/>)}</datalist></label>
+          <label>仓库目录<div className="repository-path-input"><input list="repository-recent-paths" maxLength={4096} value={path} onChange={e=>{setPath(e.target.value);fresh()}} placeholder="例如：/home/user/SASRec.pytorch"/><button type="button" className="secondary-button" disabled={!server||discovering} onClick={()=>void discover()}>{discovering?'扫描中…':'扫描'}</button><button type="button" className="secondary-button" disabled={!server} onClick={()=>void openBrowser()}>浏览</button></div><datalist id="repository-recent-paths">{recentPaths.map(item=><option key={item} value={item}/>)}</datalist></label>
           {repositories.length>0&&<div className="repository-repo-list"><p className="repository-note">扫描到 {repositories.length} 个候选仓库，点击填入：</p>{repositories.map(repo=><button type="button" key={repo.path} className="repository-repo" onClick={()=>{setPath(repo.path);fresh()}}><strong>{repo.name}</strong><span>{repo.path}</span></button>)}</div>}
           <label>这次想跑什么<textarea rows={4} maxLength={2000} value={goal} onChange={e=>{setGoal(e.target.value);fresh(false);if(snapshot)setFiles(recommendRepositoryFiles(snapshot.files,e.target.value))}} placeholder="例如：先用已有数据跑通一次 SASRec 训练，运行 1 个 epoch。"/></label>
           <button className="primary-button repository-analyze" disabled={!props.modelEnabled||!server||!path.trim().startsWith('/')||!goal.trim()} onClick={()=>void analyze()}>{busy==='analyze'?<LoaderCircle size={15} className="spin"/>:<BookOpen size={15}/>} {busy==='analyze'?'正在读取与分析…':guide?'重新分析启动方式':'分析启动方式'}</button>
@@ -204,17 +192,11 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
         </>}
       </section>
     </div>
-    {browserOpen&&<div className="app-modal-overlay" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget&&!browserBusy)setBrowserOpen(false)}}>
-      <section className="app-modal repository-browser" role="dialog" aria-modal="true" aria-label="浏览服务器目录">
-        <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><FolderOpen size={19}/></div><div><h2>选择仓库目录</h2><p>{browser?.path??'正在读取服务器目录'}</p></div></div><button type="button" className="icon-button" onClick={()=>setBrowserOpen(false)} disabled={browserBusy} aria-label="关闭">×</button></header>
-        <div className="repository-browser-body">
-          {browserBusy?<p className="repository-note">正在读取目录…</p>:browserError?<div><p className="intel-error" role="alert">{browserError}</p><button type="button" className="secondary-button" onClick={()=>void browse()}>回到主目录</button></div>:browser?<>
-            <div className="repository-browser-path"><code>{browser.path}</code><div><button type="button" className="wb-text-button" disabled={browserBusy} onClick={()=>void browse(browser.home)}>主目录</button>{browser.parent&&<button type="button" className="wb-text-button" disabled={browserBusy} onClick={()=>void browse(browser.parent??undefined)}>上一级</button>}</div></div>
-            <div className="repository-browser-list">{browser.entries.map(entry=><button type="button" key={entry.path} className="repository-browser-entry" onClick={()=>void browse(entry.path)}><FolderOpen size={14}/><span>{entry.name}</span></button>)}{browser.entries.length===0&&<p className="repository-note">没有子目录</p>}</div>
-          </>:null}
-        </div>
-        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={()=>setBrowserOpen(false)} disabled={browserBusy}>取消</button><button type="button" className="primary-button" disabled={!browser||browserBusy} onClick={()=>{if(browser){setPath(browser.path);setBrowserOpen(false);fresh()}}}>选择此目录</button></footer>
-      </section>
-    </div>}
+    {browserOpen && server && accessRouteId && <RemoteDirectoryPicker
+      key={`${serverId}:${accessRouteId}`} serverId={serverId} accessRouteId={accessRouteId}
+      initialPath={path.trim().startsWith('/') ? path.trim() : undefined} title="选择仓库目录"
+      onClose={() => setBrowserOpen(false)}
+      onSelect={value => { setPath(value); setBrowserOpen(false); fresh() }}
+    />}
   </section>
 }

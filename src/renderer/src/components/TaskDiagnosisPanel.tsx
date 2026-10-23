@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { cleanDiagnosisText, diagnosisPresentation } from '@shared/diagnosis-presentation'
 import { useEffect, useRef, useState } from 'react'
 import type { DiagnosisReport } from '@shared/intelligence'
@@ -33,7 +34,7 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
     try{
       const result=await window.labApi.intelligence.diagnoseTask({taskId:props.task.id,runId:currentReport.current?.runId??props.runId,requestId,refresh,inspect})
       if(mounted.current&&request.current===requestId)show(result)
-    }catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:String(cause))}
+    }catch(cause){if(mounted.current)setError(userFacingError(cause,'诊断未完成，请稍后重试。'))}
     finally{if(request.current===requestId){request.current=null;if(mounted.current)setBusy('')}}
   }
 
@@ -60,7 +61,7 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
   async function operate(name:string,action:()=>Promise<void>):Promise<void>{
     if(busy)return
     setBusy(name);setError('')
-    try{await action()}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:String(cause))}
+    try{await action()}catch(cause){if(mounted.current)setError(userFacingError(cause,'诊断未完成，请稍后重试。'))}
     finally{if(mounted.current)setBusy('')}
   }
   async function refreshReport():Promise<void>{

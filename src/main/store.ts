@@ -673,6 +673,18 @@ export class AppStore {
     await this.persist()
   }
 
+  async deleteExperimentTasks(taskIds: string[]): Promise<void> {
+    const data = this.ensureData()
+    const ids = new Set(taskIds)
+    const selected = data.experimentTasks.filter(task => ids.has(task.id))
+    if (selected.some(task => ['preparing', 'running'].includes(task.status) || task.runs.some(run => ['preparing', 'running'].includes(run.status)))) {
+      throw new Error('本批任务正在准备或运行，请先取消运行再删除整批实验')
+    }
+    if (!selected.length) return
+    data.experimentTasks = data.experimentTasks.filter(task => !ids.has(task.id))
+    await this.persist()
+  }
+
   async setExperimentTaskStatus(taskId: string, status: ExperimentTaskStatus): Promise<ExperimentTask> {
     status = experimentTaskStatusSchema.parse(status)
     const data = this.ensureData()

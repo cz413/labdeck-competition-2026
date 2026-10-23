@@ -1,3 +1,4 @@
+import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 import { CondaEnvironmentFields } from './CondaEnvironmentFields'
 import type { PreparationView, PreparationSummary, PreparationEdit } from '@shared/preparation'
 import { PreparationTimeline } from './PreparationTimeline'
@@ -7,7 +8,7 @@ import {
   FolderOpen, History, LoaderCircle, Play, RotateCcw, Save, Server, SlidersHorizontal, Sparkles, Trash2, Undo2, X
 } from 'lucide-react'
 import type { CondaEnvironmentConfig, CondaEnvironmentInfo, ExperimentTask, ExperimentTaskDraft, RemoteCondaResult, ServerProfile } from '@shared/types'
-import type { RepositoryCandidate, RepositoryDirectoryView, RepositorySnapshot } from '@shared/repository-guide'
+import type { RepositorySnapshot } from '@shared/repository-guide'
 import { getAccessRoutes, getDefaultAccessRouteId } from '@shared/access-routes'
 import { commandDataPath, syncCommandDataPath, projectConfigurationKey } from '@shared/project-task'
 import type { ConfirmationRequest } from './ConfirmDialog'
@@ -43,7 +44,7 @@ interface Props {
 
 type Stage = 'start' | 'analyzing' | 'review'
 interface HistoryEntry { id: number; label: string; at: string; before: { draft: ExperimentTaskDraft; mode: ExperimentMode; fields: PlanFields } }
-interface BrowserState { mode: 'project' | 'data'; view: RepositoryDirectoryView | null; pathInput: string; busy: boolean; error: string }
+interface BrowserState { mode: 'project' | 'data'; initialPath?: string }
 
 const clonePlanState = (plan: ExperimentPlan): HistoryEntry['before'] => ({
   draft: structuredClone(plan.draft), mode: plan.mode, fields: structuredClone(plan.fields)
@@ -92,7 +93,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const [envChecking, setEnvChecking] = useState(false)
   const environmentRequest = useRef(0)
   const [browser, setBrowser] = useState<BrowserState | null>(null)
-  const browserRequest = useRef(0)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [conflicts, setConflicts] = useState<PlanConflict[]>([])
   const [deferredGaps, setDeferredGaps] = useState<string[]>([])
@@ -101,9 +101,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const latestPlan=useRef(plan);latestPlan.current=plan
   const [scopeOpen, setScopeOpen] = useState(false)
   const [dataCandidates, setDataCandidates] = useState<PlanDataCandidate[]>([])
-  const [repositories, setRepositories] = useState<RepositoryCandidate[]>([])
-  const [discovering, setDiscovering] = useState(false)
-  const [discoverNote, setDiscoverNote] = useState('')
   const revision = useRef(0)
   const historyId = useRef(0)
   const server = realServers.find(item => item.id === serverId)
@@ -133,10 +130,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   useEffect(() => {
     setServerId(initialServerId)
     setRouteId(props.seed?.accessRouteId ?? '')
-    const recent = [...props.tasks]
-      .filter(task => task.serverId === initialServerId && task.codePath)
-      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0]
-    setRoot(props.seed?.path ?? recent?.codePath ?? '')
+    setRoot(props.seed?.path ?? '')
     setGoal(props.seed?.goal ?? '')
     preparationId.current=null;setPreparation(null);pendingEdit.current=null;lastSynced.current='';analysisPending.current=false
     setStage('start'); setSnapshot(null); setFiles([]); setPlan(null); setInitialPlan(null); setSavedTask(null)
@@ -247,7 +241,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     preparationId.current=null;setPreparation(null);pendingEdit.current=null;lastSynced.current='';analysisPending.current=false
     setSnapshot(null); setFiles([]); setPlan(null); setInitialPlan(null); setSavedTask(null)
     setDirty(false); setHistory([]); setConflicts([]); setDeferredGaps([]); setDataCandidates([])
-    setError(''); setNotice(''); setScopeOpen(false); setRepositories([]); setDiscoverNote(''); setRecheckResult(null)
+    setError(''); setNotice(''); setScopeOpen(false); setRecheckResult(null)
     if (nextServerId !== serverId) setServerId(nextServerId)
     setRoot(nextRoot)
   }
@@ -327,30 +321,11 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     setNotice('正在暂停；已完成的节点会保留。')
     void window.labApi.intelligence.preparations.cancel(preparationId.current).catch(cause=>setError(String(cause)))
   }
-  async function browse(path?: string): Promise<void> {
-    if (!server || !accessRouteId) return
-    const request = ++browserRequest.current
-    setBrowser(current => current ? { ...current, pathInput: path ?? current.pathInput, busy: true, error: '' } : current)
-    try {
-      const view = await window.labApi.intelligence.browseRepositoryDirectory({ serverId: server.id, accessRouteId, path })
-      if (request !== browserRequest.current) return
-      setBrowser(current => current ? { ...current, view, pathInput: view.path, busy: false, error: '' } : current)
-    } catch (caught) {
-      if (request !== browserRequest.current) return
-      setBrowser(current => current ? { ...current, busy: false, error: caught instanceof Error ? caught.message : String(caught) } : current)
-    }
-  }
-  function submitBrowserPath(): void {
-    if (!browser || browser.busy) return
-    const trimmed = browser.pathInput.trim()
-    void browse(trimmed.startsWith('/') ? trimmed : `/${trimmed}`)
-  }
   function openBrowser(mode: 'project' | 'data'): void {
     const start = mode === 'data'
       ? (plan?.draft.dataPath.trim().startsWith('/') ? plan.draft.dataPath.trim() : root.trim().startsWith('/') ? root.trim() : undefined)
       : (root.trim().startsWith('/') ? root.trim() : undefined)
-    setBrowser({ mode, view: null, pathInput: start ?? '', busy: true, error: '' })
-    void browse(start)
+    setBrowser({ mode, initialPath: start })
   }
   function chooseBrowserPath(value: string): void {
     if (!browser) return
@@ -594,19 +569,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       props.onExit()
     }catch(cause){setSyncError(cause instanceof Error?cause.message:String(cause))}
   }
-  async function discover(): Promise<void> {
-    if (!server || !accessRouteId || discovering) return
-    setDiscovering(true); setDiscoverNote(''); setRepositories([])
-    try {
-      const found = await window.labApi.intelligence.discoverRepositories({ serverId: server.id, accessRouteId })
-      setRepositories(found)
-      setDiscoverNote(found.length ? `找到 ${found.length} 个带 .git 或 README 的目录，点击填入。` : '没有找到带 .git 或 README 的目录，请手动填写路径或浏览。')
-    } catch (caught) {
-      setDiscoverNote(caught instanceof Error ? caught.message : '扫描项目失败')
-    } finally {
-      setDiscovering(false)
-    }
-  }
   const recommendedMode = plan ? experimentModeFromGoal(plan.goal) : 'train'
   const launchCitations = plan ? planLaunchCitations(plan) : []
   const envState = plan?.fields.environment
@@ -631,20 +593,18 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         </div>
       </section>
     </div>}
-    {stage === 'start' && <div className="smart-start">
-      <div className="smart-start-main">
+    {stage !== 'review' && <div className="smart-start">
+      <fieldset className="smart-start-main" disabled={busy || stage === 'analyzing'} aria-label="项目与实验目标">
         <section className="smart-start-card">
           <header><span><Server size={15} /></span><div><h3>项目位置</h3><p>服务器上的代码目录</p></div></header>
           {realServers.length === 0 ? <p className="smart-inline-warning">还没有真实服务器。请先在「资源」中添加并确认 SSH 主机指纹。</p> : <>
             <div className="smart-server-row">
-              <label>服务器<select value={serverId} onChange={event => { setServerId(event.target.value); setRouteId(''); resetSession(event.target.value, props.tasks.find(task => task.serverId === event.target.value && task.codePath)?.codePath ?? '') }}>{realServers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label>服务器<select value={serverId} onChange={event => { setServerId(event.target.value); setRouteId(''); resetSession(event.target.value, '') }}>{realServers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
               {server && getAccessRoutes(server).length > 1 && <div className="smart-route"><span>连接路径</span><AccessRouteSelect server={server} value={accessRouteId} onChange={value => setRouteId(value)} /></div>}
             </div>
-            <label className="smart-field">目录<div className="smart-path-row"><input aria-label="项目目录" value={root} onChange={event => { setRoot(event.target.value); resetSession(serverId, event.target.value) }} placeholder="/home/user/project" /><button type="button" className="secondary-button" disabled={!server} onClick={() => openBrowser('project')}><FolderOpen size={14} />浏览</button><button type="button" className="secondary-button" disabled={!server || discovering || !accessRouteId} onClick={() => void discover()}>{discovering ? <LoaderCircle size={14} className="spin" /> : <SlidersHorizontal size={14} />}扫描项目</button></div></label>
-            {discoverNote && <p className="smart-note">{discoverNote}</p>}
+            <label className="smart-field">目录<div className="smart-path-row"><input aria-label="项目目录" value={root} onChange={event => { setRoot(event.target.value); resetSession(serverId, event.target.value) }} placeholder="/home/user/project" /><button type="button" className="secondary-button" disabled={!server} onClick={() => openBrowser('project')}><FolderOpen size={14} />浏览</button></div></label>
             {root.trim() && !root.trim().startsWith('/') && <p className="smart-inline-warning">项目目录必须是服务器上的绝对路径。</p>}
-            {repositories.length > 0 && <div className="smart-candidates">{repositories.map(repository => <button type="button" key={repository.path} onClick={() => { setRoot(repository.path); resetSession(serverId, repository.path) }}><FolderOpen size={13} /><span>{repository.name}<small>{repository.path}</small></span></button>)}</div>}
-            {visibleRecent.length > 0 && <div className="smart-recent"><span>最近项目</span><div>{visibleRecent.map(item => <button type="button" key={`${item.serverId}:${item.path}`} onClick={() => { setServerId(item.serverId); setRouteId(''); setRoot(item.path); resetSession(item.serverId, item.path) }}><FolderOpen size={13} /><span>{item.name}<small>{item.serverId === serverId ? item.path : `${item.serverName} · ${item.path}`}</small></span></button>)}</div></div>}
+            {visibleRecent.length > 0 && <div className="smart-recent"><span>最近项目</span><div>{visibleRecent.map(item => <button type="button" key={`${item.serverId}:${item.path}`} onClick={() => { if (item.serverId !== serverId) setRouteId(''); resetSession(item.serverId, item.path) }}><FolderOpen size={13} /><span>{item.name}<small>{item.serverId === serverId ? item.path : `${item.serverName} · ${item.path}`}</small></span></button>)}</div></div>}
           </>}
         </section>
         <section className="smart-start-card">
@@ -652,15 +612,20 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           <textarea aria-label="实验目标" rows={4} maxLength={2000} value={goal} onChange={event => setGoal(event.target.value)} placeholder="例如：先跑一次基线 / 评估已有权重 / 复现 README 的训练配置" />
           <div className="smart-goal-examples">{['先跑一次基线', '评估已有权重', '复现 README 的训练配置'].map(example => <button type="button" key={example} onClick={() => setGoal(example)}>{example}</button>)}</div>
         </section>
-      </div>
+      </fieldset>
       {props.modelEnabled === false && <div className="smart-model-warning"><AlertTriangle size={15} /><span>模型尚未启用，系统无法完成项目理解。</span><button type="button" className="wb-text-button" onClick={props.onModelSettings}>前往模型设置</button><button type="button" className="wb-text-button" onClick={props.onManualCreate}>改为手动创建</button></div>}
       {error && !(taskDeleted && /关联任务已删除/.test(error)) && <div className="intel-error" role="alert">{error}</div>}
       {notice && <p className="smart-note" role="status">{notice}</p>}
       <footer className="smart-start-footer">
-        <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}分析项目并准备实验</button></div>
+        <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}{stage === 'analyzing' ? '正在分析项目…' : '分析项目并准备实验'}</button></div>
         <p>分析时会将所选项目文件发送给已配置的模型，实验需确认后运行。</p>
       </footer>
     </div>}
+
+    {stage === 'review' && <section className="smart-project-context" aria-label="本次分析的项目和目标">
+      <div><Server size={14}/><strong>{server?.name ?? '服务器已移除'}</strong><code>{root}</code></div>
+      <p><span>实验目标</span>{goal}</p>
+    </section>}
 
     {stage==='start'&&preparation&&<PreparationTimeline view={preparation}/>}
     {stage !== 'start' && <div className="smart-workbench">
@@ -775,21 +740,11 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       </div>}
     </div>}
 
-    {browser && <div className="app-modal-overlay" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !browser.busy) setBrowser(null) }}>
-      <section className="app-modal smart-browser" role="dialog" aria-modal="true" aria-label={browser.mode === 'project' ? '选择项目目录' : '选择数据目录'}>
-        <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><FolderOpen size={18} /></div><div><h2>{browser.mode === 'project' ? '选择项目目录' : '选择数据目录'}</h2><p>{browser.view?.path ?? '正在读取服务器目录'}</p></div></div><button type="button" className="icon-button" onClick={() => setBrowser(null)} aria-label="关闭" disabled={browser.busy}><X size={16} /></button></header>
-        <div className="smart-browser-body">
-          <div className="smart-browser-path">
-            <div className="smart-browser-location"><input aria-label="浏览目录路径" value={browser.pathInput} onChange={event => setBrowser(current => current ? { ...current, pathInput: event.target.value } : current)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); submitBrowserPath() } }} placeholder="输入服务器目录，例如 /mnt/data" spellCheck={false} disabled={browser.busy} /><button type="button" className="secondary-button" onClick={submitBrowserPath} disabled={browser.busy}>打开目录</button></div>
-            <div className="smart-browser-navigation"><button type="button" className="wb-text-button" disabled={browser.busy} onClick={() => void browse(browser.view?.home)}>主目录</button>{browser.view?.parent && <button type="button" className="wb-text-button" disabled={browser.busy} onClick={() => void browse(browser.view!.parent ?? undefined)}>上一级</button>}</div>
-          </div>
-          <p className="smart-note">输入路径后按回车打开，也可以点击下方文件夹逐级选择。</p>
-          {browser.busy ? <p className="smart-note"><LoaderCircle size={14} className="spin" /> 正在读取目录…</p> : browser.error ? <div><p className="intel-error" role="alert">{browser.error}</p><button type="button" className="secondary-button" onClick={submitBrowserPath}>重试</button></div> : browser.view ? <>
-            <div className="smart-browser-list">{browser.view.entries.map(entry => <button type="button" key={entry.path} onClick={() => void browse(entry.path)}><FolderOpen size={14} /><span>{entry.name}</span></button>)}{browser.view.entries.length === 0 && <p className="smart-note">没有子目录</p>}</div>
-          </> : null}
-        </div>
-        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => setBrowser(null)} disabled={browser.busy}>取消</button><button type="button" className="primary-button" disabled={!browser.view || browser.busy || !!browser.error || browser.pathInput.trim() !== browser.view.path} onClick={() => browser.view && chooseBrowserPath(browser.view.path)}>选择此目录</button></footer>
-      </section>
-    </div>}
+    {browser && server && accessRouteId && <RemoteDirectoryPicker
+      key={`${server.id}:${accessRouteId}:${browser.mode}`}
+      serverId={server.id} accessRouteId={accessRouteId} initialPath={browser.initialPath}
+      title={browser.mode === 'project' ? '选择项目目录' : '选择数据目录'}
+      onClose={() => setBrowser(null)} onSelect={chooseBrowserPath}
+    />}
   </section>
 }

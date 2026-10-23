@@ -197,3 +197,21 @@ describe('preparation save identity',()=>{
     }
   })
 })
+
+
+describe('batch task deletion', () => {
+  it('validates every child before deleting any task', async () => {
+    const { store, data, persist } = taskStore('completed', ['completed'])
+    data.experimentTasks.push({ ...data.experimentTasks[0], id: 'active', status: 'completed', runs: [{ status: 'running' }] } as ExperimentTask)
+    await expect(store.deleteExperimentTasks(['task', 'active'])).rejects.toThrow('先取消运行')
+    expect(data.experimentTasks.map(task => task.id)).toEqual(['task', 'active'])
+    expect(persist).not.toHaveBeenCalled()
+  })
+  it('removes queued and archived children together, preserving unrelated tasks', async () => {
+    const { store, data, persist } = taskStore('queued', ['queued'], true)
+    data.experimentTasks.push({ ...data.experimentTasks[0], id: 'source' })
+    await store.deleteExperimentTasks(['task', 'already-deleted'])
+    expect(data.experimentTasks.map(task => task.id)).toEqual(['source'])
+    expect(persist).toHaveBeenCalledOnce()
+  })
+})

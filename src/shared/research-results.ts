@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { ExperimentRun } from './types'
 import type { ParameterVariant, RunObservation } from './research'
 
-export interface ResultCollectionConfig { metricsFile: string; artifacts: string[] }
+export interface ResultCollectionConfig { metricsFile: string; artifacts: string[]; resultFiles?: string[] }
 export type MetricDirection = 'minimize' | 'maximize' | 'observe'
 export interface ResultMetric {
   name: string; value: number; dataset?: string; split?: string; unit?: string;
@@ -10,10 +10,10 @@ export interface ResultMetric {
   source: 'metrics_json' | 'log'; sourcePath: string;
 }
 export interface ResultFileEvidence {
-  path: string; role: 'metrics' | 'artifact';
+  path: string; role: 'metrics' | 'artifact' | 'result'; text?:string; truncated?:boolean;
   status: 'available' | 'missing' | 'unreadable' | 'unsupported' | 'too_large' | 'changed' | 'invalid';
   kind?: 'file' | 'directory'; sizeBytes?: number; modifiedAt?: string; resolvedPath?: string;
-  association?: 'run_id' | 'run_directory' | 'unverified'; message?: string;
+  association?: 'run_id' | 'run_directory' | 'output_directory' | 'unverified'; message?: string;
 }
 export type ProcessEvidenceState = 'completed' | 'failed' | 'cancelled' | 'unknown'
 export type ResultEvidenceState = 'complete' | 'partial' | 'missing'
@@ -23,8 +23,9 @@ export const resultPathSchema = z.string().trim().max(2048).refine(value => !/[\
   .refine(value => !/[{}]/.test(value.replace(/\{runId\}|\{runDir\}/g, '')), '结果路径只支持 {runId} 和 {runDir} 占位符')
 export const resultConfigSchema = z.object({
   metricsFile: resultPathSchema.default(''),
+  resultFiles:z.array(resultPathSchema.refine(value=>!!value,'结果文件路径不能为空')).max(8).optional(),
   artifacts: z.array(resultPathSchema.refine(value => !!value, '产物路径不能为空')).max(8).default([])
-}).strict().refine(config => new Set(config.artifacts).size === config.artifacts.length, '产物路径不能重复')
+}).strict().refine(config=>new Set(config.resultFiles??[]).size===(config.resultFiles??[]).length,'结果文件路径不能重复').refine(config=>!(config.metricsFile&&config.resultFiles?.length),'请选择一种结果文件配置').refine(config=>(config.resultFiles?.length??0)+config.artifacts.length+(config.metricsFile?1:0)<=9,'结果文件数量超限').refine(config => new Set(config.artifacts).size === config.artifacts.length, '产物路径不能重复')
 export function normalizeResultConfig(config?: ResultCollectionConfig): ResultCollectionConfig {
   return resultConfigSchema.parse(config ?? { metricsFile: '', artifacts: [] })
 }
@@ -88,8 +89,9 @@ export function processEvidenceState(observation: Pick<RunObservation, 'status' 
 }
 export function evidenceState(observation: RunObservation): ResultEvidenceState {
   const points = observationMetrics(observation), files = observation.files ?? []
+  const hasText=files.some(file=>file.role==='result'&&file.status==='available'&&!!file.text)
   if (!points.length && !files.some(file => file.status === 'available')) return 'missing'
-  if (!points.length || processEvidenceState(observation) !== 'completed' || files.some(file => file.status !== 'available' || !file.association || file.association === 'unverified')) return 'partial'
+  if ((!points.length&&!hasText) || processEvidenceState(observation) !== 'completed' || files.some(file => file.status !== 'available' || !file.association || file.association === 'unverified')) return 'partial'
   return 'complete'
 }
 export function metricColumns(observations: RunObservation[]): ResultMetric[] {
@@ -103,8 +105,9 @@ export function legacyMetricValues(points: ResultMetric[]): Record<string, numbe
   for (const point of points) if (points.filter(other => other.name === point.name).length === 1) values[point.name] = point.value
   return values
 }
-export function resultConfigurationWarnings(config: ResultCollectionConfig, members: ParameterVariant[]): string[] {
+export function resultConfigurationWarnings(config: ResultCollectionConfig, members: (ParameterVariant & {outputDirectory?:string})[]): string[] {
   if (members.length < 2) return []
-  return [config.metricsFile, ...config.artifacts].filter(path => path && !path.includes('{runId}') && !path.includes('{runDir}'))
+  const isolated=members.every(member=>!!member.outputDirectory)&&new Set(members.map(member=>member.outputDirectory)).size===members.length
+  return [config.metricsFile, ...(config.resultFiles??[]), ...config.artifacts].filter(path => path && !path.includes('{runId}') && !path.includes('{runDir}')&&(!isolated||path.startsWith('/')))
     .map(path => `结果路径 ${path} 在本批配置间相同，可能被覆盖；请采用独立运行路径或在指标文件声明 runId。`)
 }

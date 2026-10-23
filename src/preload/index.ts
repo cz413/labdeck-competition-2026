@@ -21,13 +21,15 @@ const api: AppApi = {
   research: {
     preview: (command, axes, maxRuns) => ipcRenderer.invoke('research:preview', command, axes, maxRuns),
     list: () => ipcRenderer.invoke('research:list'),
+    remove: id => ipcRenderer.invoke('research:remove',id),
+    removeBatch: id => ipcRenderer.invoke('research:removeBatch',id),
     engine: () => ipcRenderer.invoke('research:engine'),
-    suggest: (id, objective, max) => ipcRenderer.invoke('research:suggest', id, objective, max),
+    suggest: (id, objective, max, runId) => ipcRenderer.invoke('research:suggest', id, objective, max, runId),
     create: input => ipcRenderer.invoke('research:create', input),
     approve: (id, confirmed) => ipcRenderer.invoke('research:approve', id, confirmed),
     refresh: id => ipcRenderer.invoke('research:refresh', id),
     analyze: id => ipcRenderer.invoke('research:analyze', id),
-    recollect: (id) => ipcRenderer.invoke('research:recollect', id),
+    recollect: (id, config) => ipcRenderer.invoke('research:recollect', id, config),
     setPaused: (id, paused) => ipcRenderer.invoke('research:paused', id, paused),
     export: id => ipcRenderer.invoke('research:export', id),
     onChanged: listener => { const handler = (): void => listener(); ipcRenderer.on('research:changed', handler); return () => ipcRenderer.removeListener('research:changed', handler) }

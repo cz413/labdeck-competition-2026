@@ -278,3 +278,12 @@
   .preparation-sessions-list article>div { grid-column:1 / -1; }
   .preparation-sessions-list article>span { justify-self:start; }
 }
+
+/* Preserve project context while the progress panel updates below it. */
+fieldset.smart-start-main { min-width:0; margin:0; padding:0; border:0; }
+.smart-project-context { display:grid; gap:8px; padding:14px 18px; border:1px solid var(--border); border-radius:5px; background:var(--panel); }
+.smart-project-context > div { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
+.smart-project-context svg, .smart-project-context p > span { color:var(--muted); }
+.smart-project-context code { min-width:0; overflow-wrap:anywhere; font-size:12px; }
+.smart-project-context p { margin:0; line-height:1.6; overflow-wrap:anywhere; }
+.smart-project-context p > span { margin-right:10px; font-size:12px; }
