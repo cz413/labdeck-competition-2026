@@ -1,3 +1,4 @@
+import { resultAnalysisPayload } from './research-analysis'
 import { dialog } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -336,6 +337,32 @@ describe('persistent experiment research graph',()=>{
   it('checks suggestion budget before exposing model-generated axes',async()=>{
     requestModel.mockResolvedValue({axes:[{flag:'--lr',values:['1','2','3']}],assumptions:[],hypothesis:'compare',rationale:'compare learning rates'})
     await expect(service().suggest(source.id,'比较学习率',2)).rejects.toThrow('预算');expect(start).not.toHaveBeenCalled()
+  })
+  it('collects each group from its own selection and persists overrides for result analysis',async()=>{
+    const s=service(),batch=await create(s);const waiting=await s.approve(batch.id,true)
+    tasks.slice(1).forEach((task,index)=>{task.status='completed';Object.assign(task.runs[0],{status:'completed',remoteRunDir:`/runs/group-${index}`,logPath:`/runs/group-${index}/stdout.log`})})
+    await s.refresh(batch.id)
+    sshExec.mockImplementation(async(_client,command:string)=>{
+      if(command.includes('__LABDECK_RESULT_FILES__')){
+        const requests=JSON.parse(command.match(/\[\{"path":.*?\}\]/)![0]) as {path:string}[]
+        return '__LABDECK_RESULT_FILES__'+JSON.stringify(requests.map(({path})=>({path,resolvedPath:path,status:'available',kind:'file',sizeBytes:20,content:Buffer.from(path.endsWith('.csv')?'accuracy,0.85':'loss=0.42').toString('base64')})))
+      }
+      return command.includes('__LABDECK_EXIT__')?'__LABDECK_EXIT__0':'console must not replace chosen files'
+    })
+    const secondRun=waiting.members[1].runId!
+    const config={metricsFile:'',artifacts:[],resultFiles:['log.txt'],runResultFiles:{[secondRun]:['/external/evaluation.csv']}}
+    const result=await s.recollect(batch.id,config)
+    expect(result.observations.map(item=>item.files?.map(file=>file.path))).toEqual([[waiting.members[0].outputDirectory+'/log.txt'],['/external/evaluation.csv']])
+    expect((await service().list())[0].resultConfig).toEqual(config)
+    const payload=resultAnalysisPayload(result)
+    expect(payload.runs[0].results).toEqual([{name:'log.txt',text:'loss=0.42'}])
+    expect(payload.runs[1].results).toEqual([{name:'evaluation.csv',text:'accuracy,0.85'}])
+    expect(requestModel).not.toHaveBeenCalled();expect(start).toHaveBeenCalledTimes(2)
+    sshExec.mockClear()
+    await expect(s.recollect(batch.id,{...config,runResultFiles:{[randomUUID()]:['wrong.log']}})).rejects.toThrow('不属于本批运行')
+    expect(sshExec).not.toHaveBeenCalled()
+    await expect(s.recollect(batch.id,{...config,resultFiles:[]})).rejects.toThrow('部分对照组尚未配置')
+    expect(sshExec).not.toHaveBeenCalled()
   })
   it('persists selected files and can reread missing results without requeueing or model calls',async()=>{
     const s=service()

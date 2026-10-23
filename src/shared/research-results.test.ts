@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evidenceState, metricColumns, normalizeResultConfig, parseStructuredMetrics, processEvidenceState, resolveResultPath } from './research-results'
+import { evidenceState, metricColumns, normalizeResultConfig, parseStructuredMetrics, processEvidenceState, resolveResultPath, resultConfigForRun, resultFileSelectionPath, resultConfigSchema } from './research-results'
 import type { RunObservation } from './research'
 const run={id:'run-1',remoteRunDir:'/runs/run-1',codePath:'/workspace/project'}
 function observation():RunObservation{return {key:'seed=1',taskId:'task',runId:run.id,status:'completed',exitCode:0,evidenceId:'evidence',metrics:{},excerpt:''}}
@@ -46,5 +46,32 @@ describe('structured experiment result protocol',()=>{
   it('supports old observations with only numeric metrics without claiming saved metadata',()=>{
     const old={...observation(),metrics:{val_loss:1.4}}
     expect(metricColumns([old])[0]).toMatchObject({name:'val_loss',value:1.4,source:'log',sourcePath:'历史日志（未保存文件来源）'})
+  })
+})
+
+describe('per-run result file selection',()=>{
+  it('uses relative paths from any isolated group without confusing directory prefixes',()=>{
+    const roots=['/project/group-1','/project/group-2/']
+    expect(resultFileSelectionPath('/project/group-2/log.txt',roots)).toBe('log.txt')
+    expect(resultFileSelectionPath('/project/group-1/metrics/results.csv',roots)).toBe('metrics/results.csv')
+    expect(resultFileSelectionPath('/project/group-20/log.txt',roots)).toBe('/project/group-20/log.txt')
+    expect(resultFileSelectionPath('/external/log.txt',roots)).toBe('/external/log.txt')
+    expect(resultFileSelectionPath('/project/group-2/log.txt',['/project/group-1'])).toBe('/project/group-2/log.txt')
+  })
+  it('applies an override to only its run, replacing rather than appending common files',()=>{
+    const config={metricsFile:'',artifacts:[],resultFiles:['log.txt'],runResultFiles:{'run-2':['evaluation.csv','scores.json']}}
+    expect(resultConfigForRun(config,'run-1').resultFiles).toEqual(['log.txt'])
+    expect(resultConfigForRun(config,'run-2').resultFiles).toEqual(['evaluation.csv','scores.json'])
+    expect(resultConfigForRun(config,'run-2')).not.toHaveProperty('runResultFiles')
+    expect(config.resultFiles).toEqual(['log.txt'])
+    expect(resolveResultPath(resultConfigForRun(config,'run-1').resultFiles![0],{id:'run-1',codePath:'/group-1'})).toBe('/group-1/log.txt')
+    expect(resolveResultPath(resultConfigForRun(config,'run-2').resultFiles![0],{id:'run-2',codePath:'/group-2'})).toBe('/group-2/evaluation.csv')
+  })
+  it('allows independent selections without a common file, but rejects empty, duplicate and unsafe overrides',()=>{
+    const config={metricsFile:'',artifacts:[],resultFiles:[],runResultFiles:{'run-1':['a.log'],'run-2':['b.csv']}}
+    expect(resultConfigSchema.safeParse(config).success).toBe(true)
+    for(const files of [[],['a.log','a.log'],['../other.log'],Array.from({length:9},(_,i)=>`${i}.log`)]){
+      expect(resultConfigSchema.safeParse({...config,runResultFiles:{'run-1':files}}).success).toBe(false)
+    }
   })
 })

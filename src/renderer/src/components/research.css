@@ -190,3 +190,50 @@
 .research-history-entry:last-child { border-bottom:0; }
 .research-history .research-history-open { flex:1; min-width:0; width:auto; margin:4px 0; border-top:0; border-right:0; border-bottom:0; }
 .research-history-entry>.icon-button { flex:0 0 32px; width:32px; height:32px; display:grid; place-items:center; padding:0; margin:0; border:0; }
+
+
+/* Result sources: shared files first, compact per-group settings below. */
+.research-common-files { margin-top:16px; padding:14px; border:1px solid var(--border); background:var(--surface-subtle); border-radius:6px; }
+.research-common-files > header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.research-common-files > header > div { display:flex; align-items:center; gap:8px; }
+.research-common-files h4, .research-group-files-heading h4 { font-size:12px; font-weight:600; margin:0; }
+.research-common-files > header > span, .research-group-files-heading > span { font-size:11px; color:var(--muted); }
+.research-common-files > header svg { color:var(--accent-text); }
+.research-page .research-result-files { display:grid; gap:8px; }
+.research-page .research-result-file-row { display:grid; grid-template-columns:minmax(0,1fr) auto 26px; align-items:center; gap:8px; }
+.research-page .research-result-file-row > label { display:flex; align-items:center; gap:8px; margin:0; padding:0 10px; min-width:0; background:var(--control-bg); border:1px solid var(--border); border-radius:4px; }
+.research-result-file-row > label > svg { flex-shrink:0; color:var(--muted); }
+.research-page .research-result-file-row > label > input { height:34px; padding:0; border:0; background:transparent; font:12px/1.6 'Cascadia Code',Consolas,monospace; border-radius:0; }
+.research-page .research-result-file-row > label:focus-within { border-color:var(--accent-text); outline:1px solid var(--accent-text); }
+.research-page .research-result-file-row > label > input:focus-visible { outline:0; }
+.research-page .research-result-file-row > .research-select-file { display:inline-flex; align-items:center; justify-content:center; gap:6px; height:36px; margin:0; padding:0 12px; font-size:12px; }
+.research-page .research-result-file-row > .icon-button { display:grid; place-items:center; width:26px; height:32px; margin:0; color:var(--muted); }
+.research-page .research-result-files > .research-text-button { justify-self:start; padding:2px 0; margin-top:2px; }
+.research-file-help { margin:10px 0 0; color:var(--muted); font-size:11px; line-height:1.7; }
+.research-group-files-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:18px 0 10px; }
+.research-group-result-files { display:grid; gap:6px; }
+.research-group-result-files > details { min-width:0; border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+.research-group-result-files > details[open] { border-color:var(--interactive-border); }
+.research-group-result-files summary { display:flex; align-items:center; gap:10px; min-height:44px; padding:8px 12px; box-sizing:border-box; cursor:pointer; list-style:none; }
+.research-group-result-files summary::-webkit-details-marker { display:none; }
+.research-group-result-files summary:hover { background:var(--control-hover); }
+.research-group-result-files summary > strong { flex:1; min-width:0; font:12px/1.6 'Cascadia Code',Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.research-group-number { display:grid; place-items:center; width:22px; height:22px; flex-shrink:0; border:1px solid var(--border); border-radius:4px; color:var(--muted); font-size:11px; }
+.research-file-mode { flex-shrink:0; font-size:10px; color:var(--muted); }
+.research-file-mode.individual { color:var(--accent-text); }
+.research-group-result-files summary > svg { flex-shrink:0; color:var(--muted); transition:transform .15s; }
+.research-group-result-files details[open] > summary > svg { transform:rotate(180deg); }
+.research-group-result-body { padding:12px; border-top:1px solid var(--border); background:var(--surface-subtle); }
+.research-file-mode-switch { display:inline-flex; gap:3px; padding:3px; margin-bottom:12px; background:var(--control-bg); border:1px solid var(--border); border-radius:5px; }
+.research-file-mode-switch > button { padding:5px 10px; border:1px solid transparent; border-radius:3px; background:transparent; color:var(--muted); cursor:pointer; font:inherit; font-size:11px; }
+.research-file-mode-switch > button[aria-pressed="true"] { background:var(--panel); color:var(--text); border-color:var(--border); }
+.research-file-mode-switch > button:focus-visible { outline:2px solid var(--accent-text); outline-offset:1px; }
+.research-file-mode-switch > button:disabled { opacity:.6; cursor:default; }
+.research-resolved-paths { display:grid; gap:7px; }
+.research-group-result-body > .research-result-files + .research-resolved-paths { margin-top:14px; }
+.research-resolved-paths > span { color:var(--muted); font-size:11px; }
+.research-resolved-file { display:flex; align-items:flex-start; gap:8px; }
+.research-resolved-file > svg { flex-shrink:0; margin-top:3px; color:var(--muted); }
+.research-resolved-file code { display:block; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font:11px/1.8 'Cascadia Code',Consolas,monospace; }
+.research-file-empty { margin:0; color:var(--muted); font-size:11px; line-height:1.7; }
+@media(max-width:480px) { .research-page .research-result-file-row { grid-template-columns:minmax(0,1fr) auto 24px; gap:5px; } .research-page .research-result-file-row > .research-select-file { padding:0 8px; } .research-file-mode-switch > button { padding:5px 7px; } }

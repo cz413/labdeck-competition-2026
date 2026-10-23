@@ -1,8 +1,8 @@
 import { userFacingError } from '@shared/user-facing-error'
 import { parameterExperimentReason } from '@shared/parameter-engine'
-import { resultConfigSchema } from '@shared/research-results'
+import { resultConfigSchema, resultConfigForRun, resultFileSelectionPath, resolveResultPath } from '@shared/research-results'
 import { useEffect, useState } from 'react'
-import { ChevronDown, FileDown, FlaskConical, History, LoaderCircle, FolderOpen, Play, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { ChevronDown, FileDown, FileText, FlaskConical, History, LoaderCircle, FolderOpen, Play, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import type { ExperimentTask, ServerProfile } from '@shared/types'
 import type { ResultCollectionConfig } from '@shared/research-results'
 import { baselineDraft } from '@shared/research'
@@ -15,7 +15,7 @@ interface Props {tasks:ExperimentTask[];servers:ServerProfile[];modelEnabled:boo
 const stageNames={review:'待确认',waiting:'运行跟踪中',analysis:'结果已汇总'}
 const runNames:Record<string,string>={planned:'草稿',queued:'排队中',preparing:'准备中',running:'运行中',paused:'运行暂停',completed:'正常结束',failed:'运行故障',cancelled:'已取消'}
 function baselineReason(task:ExperimentTask,runId?:string):string {try{const draft=baselineDraft(task,runId);return parameterExperimentReason(draft.launchCommand,draft.launchMode)}catch(error){return error instanceof Error?error.message:'配置不可用'}}
-const collectionKey=(config?:ResultCollectionConfig):string=>JSON.stringify([config?.metricsFile??'',config?.resultFiles??[],config?.artifacts??[]])
+const collectionKey=(config?:ResultCollectionConfig):string=>JSON.stringify([config?.metricsFile??'',config?.resultFiles??[],config?.artifacts??[],Object.entries(config?.runResultFiles??{}).sort(([a],[b])=>a.localeCompare(b))])
 const nodes=[['review','确认配置'],['observe','运行跟踪'],['analyze','结果分析']]
 export function ResearchPage(props:Props):React.JSX.Element {
   const candidates=props.tasks.filter(t=>props.servers.some(s=>s.mode==='real'&&(s.id===t.serverId||t.runs.some(run=>run.serverId===s.id))))
@@ -34,7 +34,8 @@ export function ResearchPage(props:Props):React.JSX.Element {
   const [historyOpen,setHistoryOpen]=useState(false)
   const [deletingId,setDeletingId]=useState('')
   const [resultFiles,setResultFiles]=useState([''])
-  const [pickingFile,setPickingFile]=useState<{index:number;campaignId:string}|null>(null)
+  const [runResultFiles,setRunResultFiles]=useState<Record<string,string[]>>({})
+  const [pickingFile,setPickingFile]=useState<{index:number;campaignId:string;runId?:string}|null>(null)
   const [resultSource,setResultSource]=useState<'log'|'file'>('log')
   const selected=history.find(c=>c.id===selectedId),task=props.tasks.find(t=>t.id===taskId)
   let baseline:ReturnType<typeof baselineDraft>|undefined
@@ -43,18 +44,29 @@ export function ResearchPage(props:Props):React.JSX.Element {
     if(task.runs.length&&!sourceRunId)unsupported='请选择作为基准的运行记录'
     else try{baseline=baselineDraft(task,sourceRunId||undefined);unsupported=parameterExperimentReason(baseline.launchCommand,baseline.launchMode)}catch(cause){unsupported=cause instanceof Error?cause.message:'基准配置不可用'}
   }
-  const sampleTask=selected?.members.map(member=>props.tasks.find(task=>task.id===member.taskId)).find(task=>!!task)
-  const sampleMember=selected?.members.find(member=>member.taskId===sampleTask?.id)
-  const sampleRun=sampleTask?.runs.find(run=>run.id===sampleMember?.runId)
-  const browseServerId=sampleRun?.serverId??sampleTask?.serverId??selected?.baseline.serverId
-  const browseRouteId=sampleRun?.accessRouteId??sampleTask?.accessRouteId??selected?.baseline.accessRouteId
-  const browseCodePath=sampleMember?.outputDirectory??sampleRun?.codePath??sampleTask?.codePath??selected?.baseline.codePath
+  const memberSources=(selected?.members??[]).map((member,index)=>{
+    const task=props.tasks.find(task=>task.id===member.taskId)
+    const run=task?.runs.find(run=>run.id===member.runId)
+    return {member,run,label:`对照 ${index+1} · ${member.key}`,root:member.outputDirectory??run?.codePath??task?.codePath??selected?.baseline.codePath??'',serverId:run?.serverId??task?.serverId??selected?.baseline.serverId,routeId:run?.accessRouteId??task?.accessRouteId??selected?.baseline.accessRouteId}
+  })
+  const pickerSource=(pickingFile?.runId?memberSources.find(source=>source.member.runId===pickingFile.runId):memberSources[0])
+  const pickerFiles=pickingFile?.runId?runResultFiles[pickingFile.runId]:resultFiles
+  let pickerStartPath=pickerSource?.root??''
+  if(pickingFile&&pickerSource&&pickerFiles?.[pickingFile.index]?.trim())try{
+    const file=resolveResultPath(pickerFiles[pickingFile.index].trim(),{id:pickerSource.member.runId??'',remoteRunDir:pickerSource.run?.remoteRunDir,codePath:pickerSource.root})
+    pickerStartPath=file.slice(0,file.lastIndexOf('/'))||'/'
+  }catch{/* An incomplete manually typed path starts browsing at the group's root. */}
   const missingRequested=ready&&!!props.initialCampaignId&&selectedId===props.initialCampaignId&&!selected
   const axes:ParameterAxis[]=rows.filter(r=>r.flag.trim()).map(r=>({flag:r.flag.trim(),values:r.values.split(/[,，\n]/).map(v=>v.trim()).filter(Boolean)}))
-  const resultConfig={metricsFile:'',artifacts:[],resultFiles:resultSource==='file'?resultFiles.map(path=>path.trim()).filter(Boolean):[]}
+  const resultConfig={metricsFile:'',artifacts:[],resultFiles:resultSource==='file'?resultFiles.map(path=>path.trim()).filter(Boolean):[],runResultFiles:resultSource==='file'?Object.fromEntries(Object.entries(runResultFiles).map(([id,files])=>[id,files.map(path=>path.trim()).filter(Boolean)])):{}}
   const resultConfigCheck=resultConfigSchema.safeParse(resultConfig)
-  const missingMetricsPath=resultSource==='file'&&!resultConfig.resultFiles.length
-  const sharedResultPaths=[...resultConfig.resultFiles].filter(path=>path&&!path.includes('{runDir}')&&!path.includes('{runId}')&&(selected?.outputIsolation?.status!=='verified'||path.startsWith('/')))
+  const missingMetricsPath=resultSource==='file'&&(!memberSources.length||memberSources.some(source=>!resultConfigForRun(resultConfig,source.member.runId??'').resultFiles?.length))
+  const resolvedGroups=memberSources.map(source=>{
+    const files=resultConfigForRun(resultConfig,source.member.runId??'').resultFiles??[]
+    const paths=files.map(file=>{try{return resolveResultPath(file,{id:source.member.runId??'',remoteRunDir:source.run?.remoteRunDir,codePath:source.root})}catch{return `路径无法解析：${file}`}})
+    return {...source,paths}
+  })
+  const sharedResultPaths=[...new Set(resolvedGroups.flatMap(source=>source.paths.filter(path=>path.startsWith('/'))))].filter(path=>resolvedGroups.filter(source=>source.paths.includes(path)).length>1)
   const resultConfigDirty=!!selected&&collectionKey(resultConfig)!==collectionKey(selected.resultConfig)
   const count=axes.reduce((n,a)=>n*new Set(a.values).size,axes.length?1:0)
   useEffect(()=>{if(props.initialTaskId&&candidates.some(t=>t.id===props.initialTaskId)){setTaskId(props.initialTaskId);setSourceRunId('');setDesign(null)}},[props.initialTaskId])
@@ -72,7 +84,8 @@ export function ResearchPage(props:Props):React.JSX.Element {
     setPickingFile(null)
     const config=selected?.resultConfig
     setResultFiles(config?.resultFiles?.length?config.resultFiles:[config?.metricsFile??''])
-    setResultSource(config?.resultFiles?.length||config?.metricsFile?'file':'log')
+    setRunResultFiles(config?.runResultFiles??{})
+    setResultSource(config?.resultFiles?.length||config?.metricsFile||Object.keys(config?.runResultFiles??{}).length?'file':'log')
   },[selected?.id])
   async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busy)return;setBusy(name);setError('');try{await fn();setHistory(await window.labApi.research.list())}catch(e){setError(userFacingError(e,'本次操作未完成，请检查配置后重试。'))}finally{setBusy('')}}
   async function deleteRecord(campaign:ResearchView):Promise<void>{
@@ -93,6 +106,32 @@ export function ResearchPage(props:Props):React.JSX.Element {
     if(!selected)return
     const accepted=await props.confirm({title:'确认本批对照实验',message:`将 ${selected.members.length} 个配置加入任务队列。运行预算为 ${selected.maxRuns} 次。此确认仅针对当前批次，下一批和故障修复需要重新确认。`,details:`基准：${selected.sourceRunNumber!==undefined?'第 '+selected.sourceRunNumber+' 次运行':'任务配置'}\n服务器：${props.servers.find(s=>s.id===selected.baseline.serverId)?.name??'原服务器'}\n代码目录：${selected.baseline.codePath}\nConda：${selected.baseline.condaEnvironment?.environmentName??selected.baseline.condaEnvironment?.environmentPrefix??'未指定'}\n数据：${selected.baseline.dataPath||'未指定'}\n产物目录：${selected.baseline.artifactPath||'由训练脚本决定'}\n${selected.members.map((m,i)=>`${i+1}. ${m.command}`).join('\n')}`,confirmLabel:'确认本批加入队列'})
     if(accepted)await action('approve',async()=>{await window.labApi.research.approve(selected.id,true);await reloadTasks();props.notify('本批实验已加入任务队列')})
+  }
+  function updateFiles(update:(files:string[])=>string[],runId?:string):void {
+    if(runId)setRunResultFiles(current=>({...current,[runId]:update(current[runId]??[''])}))
+    else setResultFiles(update)
+  }
+  function resultFileFields(paths:string[],runId?:string):React.JSX.Element {
+    const source=runId?memberSources.find(source=>source.member.runId===runId):memberSources[0]
+    return <div className="research-result-files">{paths.map((path,index)=><div className="research-result-file-row" key={index}>
+      <label><FileText size={15}/><input aria-label={`${runId??'共用'}结果文件 ${index+1}`} disabled={!!busy} value={path} onChange={event=>updateFiles(files=>files.map((item,i)=>i===index?event.target.value:item),runId)} placeholder={index===0?'输入文件名或路径，例如 log.txt':'例如 results.csv'}/></label>
+      <button type="button" className="secondary-button research-select-file" disabled={!!busy||!source?.serverId||!source.root.startsWith('/')} onClick={()=>selected&&setPickingFile({index,campaignId:selected.id,runId})}><FolderOpen size={14}/>浏览</button>
+      <button type="button" className="icon-button" aria-label={`移除${runId?'本组':'共用'}文件 ${index+1}`} disabled={!!busy||paths.length===1} onClick={()=>updateFiles(files=>files.filter((_,i)=>i!==index),runId)}><X size={14}/></button>
+    </div>)}<button type="button" className="research-text-button" disabled={!!busy||paths.length>=8} onClick={()=>updateFiles(files=>[...files,''],runId)}><Plus size={13}/>添加结果文件</button></div>
+  }
+  function setIndividualFiles(runId:string,enabled:boolean):void {
+    setRunResultFiles(current=>{
+      if(enabled)return current[runId]?current:{...current,[runId]:resultFiles.some(path=>path.trim())?[...resultFiles]:['']}
+      const next={...current};delete next[runId];return next
+    })
+  }
+  function chooseResultFile(path:string):void {
+    if(!pickingFile||!pickerSource)return
+    const value=resultFileSelectionPath(path,pickingFile.runId?[pickerSource.root]:memberSources.map(source=>source.root))
+    const current=pickingFile.runId?runResultFiles[pickingFile.runId]??[]:resultFiles
+    if(current.some((item,index)=>index!==pickingFile.index&&item.trim()===value)){props.notify('此文件已添加，请选择其他文件。','error');return}
+    updateFiles(files=>files.map((item,index)=>index===pickingFile.index?value:item),pickingFile.runId)
+    setPickingFile(null)
   }
   const currentStep=selected?.stage==='analysis'?2:selected?.stage==='waiting'?1:0
   return <section className="research-page" aria-label="对照实验工作流">
@@ -148,12 +187,30 @@ export function ResearchPage(props:Props):React.JSX.Element {
           <label><input type="radio" name="research-result-source" value="log" checked={resultSource==='log'} disabled={!!busy} onChange={()=>setResultSource('log')}/>控制台输出</label>
           <label><input type="radio" name="research-result-source" value="file" checked={resultSource==='file'} disabled={!!busy} onChange={()=>setResultSource('file')}/>结果日志文件</label>
         </div>
-        {resultSource==='log'?<p className="research-note">采集运行时的控制台输出，运行结束后可选择 AI 分析。</p>:<div className="research-result-files">
-          {resultFiles.map((path,index)=><div className="research-result-file-row" key={index}><label>结果文件 {index+1}<input aria-label={`结果文件 ${index+1}`} disabled={!!busy} value={path} onChange={event=>setResultFiles(current=>current.map((item,i)=>i===index?event.target.value:item))} placeholder={index===0?'outputs/log.txt':'outputs/results.csv'}/></label><button type="button" className="secondary-button research-select-file" disabled={!!busy||!browseServerId||!browseCodePath?.startsWith('/')} onClick={()=>selected&&setPickingFile({index,campaignId:selected.id})}><FolderOpen size={14}/>选择文件</button><button type="button" className="icon-button" aria-label={`移除结果文件 ${index+1}`} disabled={!!busy||resultFiles.length===1} onClick={()=>setResultFiles(current=>current.filter((_,i)=>i!==index))}><X size={14}/></button></div>)}
-          <button type="button" className="research-text-button" disabled={!!busy||resultFiles.length>=8} onClick={()=>setResultFiles(current=>[...current,''])}><Plus size={13}/>添加结果文件</button>
-          <p className="research-note">支持日志、JSON、CSV 等文本格式，最多 8 个文件。相对路径以{selected.outputIsolation?.status==='verified'?'各组独立输出目录':'各次运行的代码目录'}为起点；采集内容会在你点击 AI 分析后发送给模型。</p>
-        </div>}
-        {selected.members.length>1&&sharedResultPaths.length>0&&<p className="research-path-warning" role="status">各组将读取相同的结果路径，可能覆盖结果。请确认脚本会分别保存，并配置对应路径。</p>}
+        {resultSource==='log'?<p className="research-note">采集运行时的控制台输出，运行结束后可选择 AI 分析。</p>:<>
+          <section className="research-common-files">
+            <header><div><FileText size={15}/><h4>共用结果文件</h4></div><span>各组分别读取</span></header>
+            {resultFileFields(resultFiles)}
+            <p className="research-file-help">填写相对于各组输出目录的路径。支持日志、JSON、CSV，每组最多 8 个文件。</p>
+          </section>
+          <div className="research-group-files-heading"><h4>各组文件设置</h4><span>需要不同文件时，展开单独设置</span></div>
+          <div className="research-group-result-files">{resolvedGroups.map((source,index)=>{
+            const runId=source.member.runId
+            const individual=!!(runId&&runResultFiles[runId])
+            return <details key={runId??source.member.key}>
+              <summary><span className="research-group-number">{index+1}</span><strong title={source.member.key}>{source.member.key}</strong><span className={`research-file-mode ${individual?'individual':''}`}>{individual?'单独指定':'共用文件'}</span><ChevronDown size={14}/></summary>
+              <div className="research-group-result-body">
+                {runId&&<div className="research-file-mode-switch" role="group" aria-label={`${source.label}文件设置`}>
+                  <button type="button" aria-pressed={!individual} disabled={!!busy} onClick={()=>setIndividualFiles(runId,false)}>使用共用文件</button>
+                  <button type="button" aria-pressed={individual} disabled={!!busy} onClick={()=>setIndividualFiles(runId,true)}>单独指定文件</button>
+                </div>}
+                {runId&&individual&&resultFileFields(runResultFiles[runId],runId)}
+                <div className="research-resolved-paths"><span>实际读取位置</span>{source.paths.length?source.paths.map((path,index)=><div className="research-resolved-file" key={index}><FileText size={13}/><code title={path}>{path}</code></div>):<p className="research-file-empty">{individual?'请选择本组的结果文件。':'填写上方共用文件后，在此预览读取路径。'}</p>}</div>
+              </div>
+            </details>
+          })}</div>
+          {selected.members.length>1&&sharedResultPaths.length>0&&<p className="research-path-warning" role="status">多个对照组将读取同一文件，请展开各组检查实际采集路径，必要时单独选择。</p>}
+        </>}
         {!resultConfigCheck.success&&<p className="intel-error" role="alert">{userFacingError(resultConfigCheck.error.issues[0]?.message,'结果文件路径有问题，请检查填写内容。')}</p>}
         {missingMetricsPath&&<p className="research-note">请至少填写一个结果文件路径。</p>}
         <div className="research-result-actions">
@@ -162,12 +219,12 @@ export function ResearchPage(props:Props):React.JSX.Element {
         {resultConfigDirty&&<p className="research-note" role="status">结果来源已修改，请先检查并采集，再进行 AI 分析。</p>}
       </section>
       </>}
-      {resultConfigDirty&&selected.observations.length>0&&<p className="research-note">下方为上次采集的结果，重新采集后更新。</p>}
+      {resultConfigDirty&&selected.observations.length>0&&<p className="research-note">{selected.resultConfig?.resultFiles?.length||selected.resultConfig?.metricsFile||Object.keys(selected.resultConfig?.runResultFiles??{}).length?'下方为本次运行按原文件配置采集的内容，重新采集后更新。':'下方为本次运行自动保存的控制台输出，检查并采集后将按当前结果来源更新。'}</p>}
       {selected.observations.length>0&&<ResearchResults observations={selected.observations} config={selected.resultConfig}/>}
       {selected.analysis&&selected.analysis.contentVersion!==2&&<p className="research-note">结果分析已更新，请点击 AI 分析结果重新生成。</p>}
       {selected.analysis?.contentVersion===2&&<section className="research-analysis"><header><h3>结果分析</h3></header><p>{selected.analysis.summary}</p><ul>{selected.analysis.observations.map((item,i)=><li key={i}>{item}</li>)}</ul></section>}
     </>}</div></div>
-    {pickingFile&&selected?.id===pickingFile.campaignId&&browseServerId&&browseCodePath&&<RemoteResultFilePicker serverId={browseServerId} accessRouteId={browseRouteId} initialPath={browseCodePath} serverName={props.servers.find(server=>server.id===browseServerId)?.name} onClose={()=>setPickingFile(null)} onSelect={path=>{const root=browseCodePath.replace(/\/+$/,'');const value=path.startsWith(root+'/')?path.slice(root.length+1):path;setResultFiles(current=>current.map((item,index)=>index===pickingFile.index?value:item));setPickingFile(null)}}/>}
+    {pickingFile&&selected?.id===pickingFile.campaignId&&pickerSource?.serverId&&pickerStartPath&&<RemoteResultFilePicker key={`${pickingFile.runId??'common'}:${pickingFile.index}`} serverId={pickerSource.serverId} accessRouteId={pickerSource.routeId} initialPath={pickerStartPath} serverName={props.servers.find(server=>server.id===pickerSource.serverId)?.name} onClose={()=>setPickingFile(null)} onSelect={chooseResultFile}/>}
     {historyOpen&&<div className="app-modal-overlay" onMouseDown={event=>{if(event.target===event.currentTarget)setHistoryOpen(false)}} onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();setHistoryOpen(false)}}}><section className="app-modal research-history-dialog" role="dialog" aria-modal="true" aria-labelledby="research-history-title"><header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><History size={18}/></div><div><h2 id="research-history-title">对照实验记录</h2></div></div><button type="button" className="icon-button" autoFocus aria-label="关闭对照实验记录" onClick={()=>setHistoryOpen(false)}><X size={16}/></button></header>
 <div className="research-history">{history.length?history.map(c=><article className="research-history-entry" key={c.id}><button type="button" className={`research-history-open ${selectedId===c.id?'active':''}`} disabled={!!busy||!!deletingId} onClick={()=>{setSelectedId(c.id);setHistoryOpen(false)}}><strong>{c.objective}</strong><span>{c.error?'需要处理':c.paused?'跟踪已暂停':stageNames[c.stage]} · {c.members.length} 项配置{c.sourceRunNumber!==undefined?` · 基于第 ${c.sourceRunNumber} 次运行`:''}</span></button><button type="button" className="icon-button" aria-label={`删除对照记录：${c.objective}`} title={c.busy?'正在处理，请稍后再删除':'删除对照记录'} disabled={!!busy||!!deletingId||c.busy} onClick={()=>void deleteRecord(c)}>{deletingId===c.id?<LoaderCircle size={15} className="spin"/>:<Trash2 size={15}/>}</button></article>):<p className="research-note">暂无对照实验记录。</p>}</div>
     </section></div>}

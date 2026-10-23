@@ -23,7 +23,7 @@ import type { ResultCollectionConfig } from '../shared/research-results'
 import { collectRunResults } from './result-collector'
 import { openRepositoryReadSession } from './repository-reader'
 import { researchDesignPrompt, researchImports, researchParameters, researchReadPaths, validateResearchDesign } from './research-design'
-import { evidenceState, metricColumns, metricContext, metricIdentity, normalizeResultConfig, observationMetrics, processEvidenceState, resultConfigSchema, resultConfigurationWarnings } from '../shared/research-results'
+import { evidenceState, metricColumns, metricContext, metricIdentity, normalizeResultConfig, resultConfigForRun, observationMetrics, processEvidenceState, resultConfigSchema, resultConfigurationWarnings } from '../shared/research-results'
 const campaignState=Annotation.Root({campaign:Annotation<ResearchCampaign>()})
 const designSchema=z.object({status:z.literal('ready'),axes:axesSchema,baselineCommand:z.string().max(20000),hypothesis:z.string().max(1500),rationale:z.string().max(1800).optional(),assumptions:z.array(z.string().max(500)).max(12),readFiles:z.array(z.string().max(512)).max(8).optional(),variable:z.object({flag:z.string().max(50),baselineValue:z.string().max(80),source:z.object({path:z.string().max(512),startLine:z.number().int().positive(),quote:z.string().max(1200)})})})
 const inputSchema=z.object({taskId:z.string().uuid(),sourceRunId:z.string().uuid().optional(),objective:z.string().trim().min(1).max(2000),axes:axesSchema,maxRuns:z.number().int().min(1).max(32),useModel:z.boolean().optional(),resultConfig:resultConfigSchema.optional(),expectedBaselineCommand:z.string().max(20000).optional(),design:designSchema.optional()})
@@ -294,6 +294,9 @@ export class ResearchService {
     if(current.stage!=='analysis'||current.pending.length)throw new Error('等待本批运行结束后再重新采集')
     if(current.paused)throw new Error('先恢复流程，再重新采集')
     const collection={...current,resultConfig:normalizeResultConfig(rawConfig??current.resultConfig)}
+    if(Object.keys(collection.resultConfig.runResultFiles??{}).some(runId=>!current.members.some(member=>member.runId===runId)))throw new Error('单独指定的结果文件不属于本批运行，请重新选择')
+    const fromFiles=!!(collection.resultConfig.metricsFile||collection.resultConfig.resultFiles?.length||Object.keys(collection.resultConfig.runResultFiles??{}).length)
+    if(fromFiles&&current.members.some(member=>{const config=resultConfigForRun(collection.resultConfig,member.runId??'');return !config.metricsFile&&!config.resultFiles?.length}))throw new Error('部分对照组尚未配置结果文件，请填写共用文件或为各组单独选择')
     // Explicit read-only refresh; it does not queue, retry or repair remote experiments.
     await this.execute(id,async()=>{
       const observations=await this.collect(collection,{force:true})
@@ -321,7 +324,7 @@ export class ResearchService {
         const profile=applyAccessRoute(server,routeId)
         if(!profile.hostFingerprint||(profile.jumpHost&&!profile.jumpHost.hostFingerprint))throw new Error('主机指纹尚未确认')
         const connected=await this.ssh.connect(profile,this.store.getSecrets(server.id))
-        try{await collectRunResults(this.ssh,connected.client,{...run,codePath:run.codePath??task.codePath},observation,c.resultConfig,member.outputDirectory)}
+        try{await collectRunResults(this.ssh,connected.client,{...run,codePath:run.codePath??task.codePath},observation,resultConfigForRun(c.resultConfig,run.id),member.outputDirectory)}
         finally{connected.client.end()}
       }catch(error){observation.warning=this.errorMessage(error)}
       observation.processState=processEvidenceState(observation);observation.evidenceState=evidenceState(observation)

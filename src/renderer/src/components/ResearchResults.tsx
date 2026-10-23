@@ -2,13 +2,14 @@ import { userFacingError } from '@shared/user-facing-error'
 import { ChevronDown } from 'lucide-react'
 import type { RunObservation } from '@shared/research'
 import type { ResultCollectionConfig, ResultFileEvidence } from '@shared/research-results'
-import { observationMetrics } from '@shared/research-results'
+import { observationMetrics, resultConfigForRun } from '@shared/research-results'
 
 const fileStatus:Record<ResultFileEvidence['status'],string>={available:'未读到内容',missing:'文件不存在',unreadable:'无法读取',unsupported:'不支持的文件类型',too_large:'超过读取范围',changed:'文件正在变化，请重新采集',invalid:'内容或路径无法读取'}
 export function ResearchResults({observations,config}:{observations:RunObservation[];config?:ResultCollectionConfig}):React.JSX.Element {
   const rows=observations.map(observation=>{
+    const runConfig=resultConfigForRun(config,observation.runId)
     const files=(observation.files??[]).filter(file=>file.role==='result'||file.role==='metrics')
-    const fromFiles=!!(config?.resultFiles?.length||config?.metricsFile||files.length)
+    const fromFiles=!!(runConfig.resultFiles?.length||runConfig.metricsFile||files.length)
     const metrics=observationMetrics(observation)
     const readable=files.filter(file=>file.status==='available'&&(file.text?.trim()||(file.role==='metrics'&&metrics.length)))
     const hasContent=fromFiles?readable.length>0:!!observation.excerpt.trim()
