@@ -60,6 +60,18 @@ describe('script task persistence and queue', () => {
     expect(queued.runs[0]).toMatchObject({ computeDevice: 'cpu', launchCommand: 'python main.py --device=cpu', gpuUuid: undefined, gpuIndex: undefined, minimumFreeVramGiB: null })
     expect(resolveExperimentLaunch({ computeDevice: 'cpu', codePath: '/project', launchCommand: 'python train.py' }).launchCommand).toBe('python train.py')
   })
+  it('saves CPU to GPU command changes while retaining earlier run snapshots', async () => {
+    const { store } = fixture()
+    const cpu = await store.saveExperimentTask({...draft(),id:taskId,launchMode:'command',codePath:'/project',launchCommand:'python main.py --device=cuda',computeDevice:'cpu'})
+    expect(cpu.launchCommand).toBe('python main.py --device=cpu')
+    const first = await store.startExperimentRun(taskId,{...input(),launchMode:'command',codePath:'/project',launchCommand:cpu.launchCommand,computeDevice:'cpu'})
+    await store.updateExperimentRunState(taskId,first.runs[0].id,{status:'completed'})
+    const gpu = await store.saveExperimentTask({...cpu,computeDevice:'gpu'})
+    expect(gpu.launchCommand).toBe('python main.py --device=cuda')
+    expect(gpu.runs[0].launchCommand).toBe('python main.py --device=cpu')
+    const second = await store.startExperimentRun(taskId,{...input(),launchMode:'command',codePath:'/project',launchCommand:'python main.py --device=cpu',computeDevice:'gpu'})
+    expect(second.runs[1]).toMatchObject({computeDevice:'gpu',launchCommand:'python main.py --device=cuda'})
+  })
   it('retains script mode after saving and reopening the settings file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'labdock-script-'))
     const filePath = join(directory, 'settings.json')

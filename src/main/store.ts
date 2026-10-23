@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import type { AppSettings, ExperimentRun, ExperimentRunFinishInput, ExperimentRunStartInput, ExperimentTask, ExperimentTaskDraft, ExperimentTaskStatus, GpuHistoryPoint, GpuHistoryRange, JumpHostConfig, ServerAccessRoute, ServerProfile, ServerProfileInput, ServerSnapshot } from '../shared/types'
 import { appSettingsSchema, experimentRunFinishInputSchema, experimentRunStartInputSchema, experimentTaskDraftSchema, experimentTaskSchema, experimentTaskStatusSchema, serverProfileInputSchema } from '../shared/schemas'
 import { getAccessRoutes } from '../shared/access-routes'
-import { resolveExperimentLaunch, validateExperimentScriptPath } from '../shared/experiment-launch'
+import { deviceLaunchCommand, resolveExperimentLaunch, validateExperimentScriptPath } from '../shared/experiment-launch'
 import type { TunnelConfig, TunnelConfigInput } from '../shared/types'
 import { tunnelConfigInputSchema, tunnelConfigSchema } from '../shared/schemas'
 
@@ -600,6 +600,7 @@ export class AppStore {
 
   async saveExperimentTask(rawInput: ExperimentTaskDraft, preparationId?: string): Promise<ExperimentTask> {
     const input = experimentTaskDraftSchema.parse(rawInput)
+    if(input.launchMode!=='script')input.launchCommand=deviceLaunchCommand(input.launchCommand,input.computeDevice??'gpu')
     if (preparationId) {
       experimentTaskDraftSchema.shape.id.parse(preparationId)
       const prior=this.ensureData().experimentTasks.find(task=>task.preparationId===preparationId)
