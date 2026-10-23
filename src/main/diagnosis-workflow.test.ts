@@ -37,6 +37,14 @@ describe('diagnosis workflow',()=>{
     expect(report.repair).toBeUndefined()
     expect(report.engine).toBe('agent+rules')
   })
+  it('tags rule and model findings separately after direct evidence validation',async()=>{
+    const {deps,evidence,analyze}=setup()
+    const id=evidence.evidence.find(item=>item.source==='log'&&/out of memory/i.test(item.text))!.id
+    analyze.mockResolvedValue({evidence:evidence.evidence,investigation:{status:'completed',rounds:1,inspections:0,trace:[]},warnings:[],summary:'本次显存不足',findings:[{category:'oom',title:'当前训练触发显存不足',confidence:'medium',explanation:'日志记录分配失败，失败时的其他进程占用尚未核对。',evidenceIds:[id],steps:['核对本次 batch size 参数。']}]})
+    const result=await runDiagnosis({taskId:'task',runId:'run',useModel:true},new AbortController().signal,vi.fn(),deps)
+    expect(result.findings.some(item=>item.origin==='rules')).toBe(true)
+    expect(result.findings.some(item=>item.origin==='model'&&item.title==='当前训练触发显存不足')).toBe(true)
+  })
   it('retains report if its original run disappears during analysis',async()=>{
     const {deps,findRun,save}=setup()
     findRun.mockImplementation(()=>{throw new Error('removed')})

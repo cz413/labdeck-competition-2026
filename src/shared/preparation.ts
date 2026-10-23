@@ -1,5 +1,5 @@
 import type { ModelUsage } from './model-usage'
-import type { ExperimentPlan, PlanConflict, PlanDataCandidate, PlanFields, ExperimentMode } from './experiment-plan'
+import type { ExperimentPlan, RefineResult, PlanConflict, PlanDataCandidate, PlanFields, ExperimentMode } from './experiment-plan'
 import type { AgentTraceEvent } from './agent-trace'
 import type { ExperimentTask, ExperimentTaskDraft, CondaEnvironmentInfo } from './types'
 import type { RepositorySnapshot } from './repository-guide'
@@ -22,18 +22,21 @@ export interface PreparationView extends PreparationFlow {
   busy:boolean; pending:string[]; error?:string; trace:AgentTraceEvent[]; usage?:ModelUsage; task?:ExperimentTask
 }
 export interface PreparationSummary {
-  id:string;input:PreparationInput;updatedAt:string;phase:PreparationView['phase'];title:string;taskId?:string
+  id:string;input:PreparationInput;updatedAt:string;phase:PreparationView['phase'];title:string;taskId?:string;busy?:boolean
 }
 export type PreparationAction =
   | {kind:'edit';expectedRevision:number;edit:PreparationEdit;label?:string}
   | {kind:'recheck';expectedRevision:number}
   | {kind:'save';expectedRevision:number}
+  | {kind:'save-as-new';expectedRevision:number}
   | {kind:'resume'}
 export interface PreparationApi {
   create(input:PreparationInput,id:string):Promise<PreparationView>
   get(id:string):Promise<PreparationView>
   list():Promise<PreparationSummary[]>
   act(id:string,action:PreparationAction):Promise<PreparationView>
+  refine(id:string,instruction:string,expectedRevision:number):Promise<RefineResult>
+  remove(id:string):Promise<void>
   cancel(id:string):Promise<void>
   onChanged(listener:(id:string)=>void):()=>void
 }

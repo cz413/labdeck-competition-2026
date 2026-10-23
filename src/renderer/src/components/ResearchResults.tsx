@@ -1,22 +1,34 @@
+import { userFacingError } from '@shared/user-facing-error'
+import { ChevronDown } from 'lucide-react'
 import type { RunObservation } from '@shared/research'
-import { evidenceState, metricColumns, metricContext, metricIdentity, observationMetrics, processEvidenceState } from '@shared/research-results'
-const processes = {completed:'正常结束（退出码已核对）',failed:'运行故障',cancelled:'已取消',unknown:'进程状态待确认'}
-const evidence = {complete:'已取得所需证据',partial:'证据部分缺失或待核对',missing:'尚无结果证据'}
-const fileStatus = {available:'已取得',missing:'不存在',unreadable:'无法读取',unsupported:'不支持的文件类型',too_large:'超过读取上限',changed:'采集时发生变化',invalid:'内容或路径无效'}
-export function ResearchResults({observations}:{observations:RunObservation[]}):React.JSX.Element {
-  const columns=metricColumns(observations)
-  return <section className="research-observations" aria-label="结构化实验结果"><h3>记录到的实验结果</h3>
-    <p className="research-note">分别查看运行状态、证据完整度和研究观察。指标按来源与口径分列；缺少元信息不能认定可直接比较。产物存在不代表模型有效，指标未提升不判运行失败。</p>
-    <div className="research-table-wrap"><table className="research-table research-status-table"><thead><tr><th>配置</th><th>进程状态</th><th>结果证据</th><th>研究观察</th><th>退出码</th></tr></thead><tbody>{observations.map(o=>{
-      const process=processEvidenceState(o),state=evidenceState(o),points=observationMetrics(o)
-      return <tr key={o.runId}><td>{o.key}</td><td>{processes[process]}</td><td>{evidence[state]}</td><td>{process==='cancelled'?'已取消，未作结果比较':process==='failed'?'故障运行，指标仅供核对':process==='unknown'?'先核对运行状态':points.length?state==='complete'?'已有指标观察，不设达标阈值':'已记录指标，证据仍需核对':'尚无指标观察'}</td><td>{o.exitCode??'未取得'}</td></tr>
-    })}</tbody></table></div>
-    {columns.length>0&&<div className="research-table-wrap"><table className="research-table research-metric-table"><thead><tr><th>配置</th>{columns.map(metric=><th key={metricIdentity(metric)}><strong>{metric.name}</strong><span>{metricContext(metric)}</span><span>{metric.source==='metrics_json'?'结构化指标文件':'日志末值'}</span></th>)}</tr></thead><tbody>{observations.map(o=><tr key={o.runId}><td>{o.key}</td>{columns.map(metric=><td key={metricIdentity(metric)}>{observationMetrics(o).find(point=>metricIdentity(point)===metricIdentity(metric))?.value??'—'}</td>)}</tr>)}</tbody></table></div>}
-    {observations.map(o=><details className="research-evidence" key={o.runId}><summary>{o.key} · 指标来源与运行证据{o.warning?' · 待核对':''}</summary>
-      {o.collectedAt&&<p className="research-note">采集时间：{new Date(o.collectedAt).toLocaleString('zh-CN')}</p>}{o.warning&&<p>{o.warning}</p>}<code>{o.evidenceId}</code>
-      {observationMetrics(o).length>0&&<ul className="research-metric-sources">{observationMetrics(o).map(metric=><li key={metricIdentity(metric)}><strong>{metric.name} = {metric.value}</strong><span>{metricContext(metric)}</span><code>{metric.source==='metrics_json'?'JSON 文件':'日志'}：{metric.sourcePath}</code></li>)}</ul>}
-      {(o.files?.length??0)>0&&<div className="research-table-wrap"><table className="research-table research-file-table"><thead><tr><th>指定文件或目录</th><th>采集结果</th><th>大小 / 修改时间</th><th>运行归属</th></tr></thead><tbody>{o.files!.map((file,index)=><tr key={`${file.role}-${index}`}><td><span>{file.role==='metrics'?'指标文件':'预期产物'}</span><code>{file.path}</code>{file.resolvedPath&&file.resolvedPath!==file.path&&<code>实际路径：{file.resolvedPath}</code>}</td><td>{fileStatus[file.status]}{file.kind&&<span>{file.kind==='directory'?'目录（未统计目录总大小）':'文件'}</span>}{file.message&&<p>{file.message}</p>}</td><td>{file.kind==='file'&&file.sizeBytes!==undefined?`${file.sizeBytes.toLocaleString()} bytes`:'—'}<span>{file.modifiedAt?new Date(file.modifiedAt).toLocaleString('zh-CN'):'未取得修改时间'}</span></td><td>{file.association==='run_id'?'文件声明当前 runId':file.association==='run_directory'?'位于当前运行目录':'归属待核对'}</td></tr>)}</tbody></table></div>}
-      <h4>日志片段</h4><pre>{o.excerpt||'未取得日志片段；指定指标文件和退出码会独立采集'}</pre>
+import type { ResultCollectionConfig, ResultFileEvidence } from '@shared/research-results'
+import { observationMetrics, resultConfigForRun } from '@shared/research-results'
+
+const fileStatus:Record<ResultFileEvidence['status'],string>={available:'未读到内容',missing:'文件不存在',unreadable:'无法读取',unsupported:'不支持的文件类型',too_large:'超过读取范围',changed:'文件正在变化，请重新采集',invalid:'内容或路径无法读取'}
+export function ResearchResults({observations,config}:{observations:RunObservation[];config?:ResultCollectionConfig}):React.JSX.Element {
+  const rows=observations.map(observation=>{
+    const runConfig=resultConfigForRun(config,observation.runId)
+    const files=(observation.files??[]).filter(file=>file.role==='result'||file.role==='metrics')
+    const fromFiles=!!(runConfig.resultFiles?.length||runConfig.metricsFile||files.length)
+    const metrics=observationMetrics(observation)
+    const readable=files.filter(file=>file.status==='available'&&(file.text?.trim()||(file.role==='metrics'&&metrics.length)))
+    const hasContent=fromFiles?readable.length>0:!!observation.excerpt.trim()
+    const state=fromFiles?readable.length===files.length&&files.length>0?'已采集':readable.length>0?'部分文件已采集':files.some(file=>file.status==='missing')?'文件不存在':'未读到内容':hasContent?'已采集':'未读到内容'
+    return {observation,files,fromFiles,metrics,hasContent,state}
+  })
+  const empty=rows.every(row=>!row.hasContent&&!row.files.length)
+  return <section className="research-observations research-collected-results" aria-label="采集结果"><h3>采集结果</h3>
+    {empty?<p className="research-note">尚未读取到结果，请选择结果来源后检查并采集。</p>:rows.map(({observation,files,fromFiles,metrics,hasContent,state})=><details className="research-collected-row" key={observation.runId}>
+      <summary><strong>{observation.key}</strong><span>{fromFiles?`${files.length||config?.resultFiles?.length||1} 个结果文件`:'控制台输出'}</span><em className={hasContent&&state==='已采集'?'collected':'needs-attention'}>{state}</em><ChevronDown size={14}/></summary>
+      <div className="research-collected-content">
+        {observation.collectedAt&&<p className="research-note">采集于 {new Date(observation.collectedAt).toLocaleString('zh-CN')}</p>}
+        {fromFiles?files.length?files.map((file,index)=><section className="research-collected-file" key={`${file.path}:${index}`}>
+          <header><code>{file.path}</code><span>{file.status==='available'&&(file.text?.trim()||(file.role==='metrics'&&metrics.length))?'已采集':fileStatus[file.status]}{file.truncated?' · 末尾片段':''}</span></header>
+          {file.message&&<p className="research-note">{userFacingError(file.message,'结果文件读取遇到问题，请检查路径及文件内容。')}</p>}
+          {file.text!==undefined&&<pre>{file.text||'文件为空'}</pre>}
+          {file.role==='metrics'&&file.status==='available'&&metrics.length>0&&<pre>{metrics.map(metric=>`${metric.name}: ${metric.value}`).join('\n')}</pre>}
+        </section>):<p className="research-note">未读取到结果文件，请检查路径后重新采集。</p>:<pre>{observation.excerpt||'未读取到控制台输出，请重新采集或选择结果日志文件。'}</pre>}
+      </div>
     </details>)}
   </section>
 }

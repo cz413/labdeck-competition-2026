@@ -91,6 +91,54 @@ describe('durable experiment preparation',()=>{
   })
 })
 
+describe('preparation record lifecycle',()=>{
+  it('only recreates a deleted task through an explicit save-as-new action',async()=>{
+    const {service,tasks,ops}=setup(),s=service(),id=randomUUID()
+    const created=await s.create(input,id)
+    const saved=await s.act(id,{kind:'save',expectedRevision:created.revision})
+    const oldId=saved.task!.id
+    tasks.splice(0)
+    const rejected=await s.act(id,{kind:'save',expectedRevision:saved.revision})
+    expect(rejected.error).toContain('另存为新任务');expect(tasks).toHaveLength(0)
+    const recreated=await s.act(id,{kind:'save-as-new',expectedRevision:rejected.revision})
+    expect(recreated.error).toBeUndefined();expect(recreated.task!.id).not.toBe(oldId)
+    expect(ops.save.mock.calls.at(-1)![0].id).toBeUndefined()
+    expect(recreated.plan!.draft.id).toBe(recreated.task!.id)
+    const restored=await service().get(id)
+    expect(restored.taskId).toBe(recreated.task!.id)
+    await service().act(id,{kind:'save',expectedRevision:restored.revision})
+    expect(tasks).toHaveLength(1)
+  })
+  it('does not save-as-new when the linked task still exists',async()=>{
+    const {service,tasks}=setup(),s=service(),id=randomUUID(),created=await s.create(input,id)
+    const saved=await s.act(id,{kind:'save',expectedRevision:created.revision})
+    const rejected=await s.act(id,{kind:'save-as-new',expectedRevision:saved.revision})
+    expect(rejected.error).toContain('原任务仍存在');expect(tasks).toHaveLength(1)
+  })
+  it('deletes preparation checkpoints permanently without deleting the saved experiment task',async()=>{
+    const {service,tasks}=setup(),s=service(),id=randomUUID(),created=await s.create(input,id)
+    const saved=await s.act(id,{kind:'save',expectedRevision:created.revision})
+    await s.remove(id)
+    expect(await s.list()).toEqual([])
+    expect(tasks[0].id).toBe(saved.task!.id)
+    const restarted=service()
+    expect(await restarted.list()).toEqual([])
+    await expect(restarted.get(id)).rejects.toThrow('准备流程不存在')
+    expect(tasks).toHaveLength(1)
+  })
+  it('refuses to delete a record while its model step is running',async()=>{
+    const {ops,service}=setup(),s=service(),id=randomUUID()
+    let started!:()=>void
+    const ready=new Promise<void>(resolve=>{started=resolve})
+    ops.analyze.mockImplementationOnce(async(_input,signal)=>{started();return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))})
+    const pending=s.create(input,id);await ready
+    try{await expect(s.remove(id)).rejects.toThrow('先停止')}
+    finally{await s.cancel(id);await pending}
+    await s.remove(id)
+    expect(await s.list()).toEqual([])
+  })
+})
+
 describe('preparation checkpoint bounds',()=>{
   it('keeps the recent checkpoints bounded while retaining the editable state',async()=>{
     const {service}=setup(),s=service(),id=randomUUID();let view=await s.create(input,id)

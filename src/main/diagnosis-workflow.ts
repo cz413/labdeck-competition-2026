@@ -29,7 +29,7 @@ export function diagnosisCacheKey(input:DiagnosisInput,collected:CollectedDiagno
       return {...item,text:JSON.stringify(value)}
     }catch{return item}
   })
-  return createHash('sha256').update(JSON.stringify({version:'diagnosis-v5-source',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?model:null})).digest('hex')
+  return createHash('sha256').update(JSON.stringify({version:'diagnosis-v8-actionable-advice',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?model:null})).digest('hex')
 }
 
 export function reusableDiagnosis(input:DiagnosisInput,collected:CollectedDiagnosis,key:string,history:readonly DiagnosisReport[],now=Date.now()):DiagnosisReport|undefined {
@@ -51,7 +51,7 @@ export async function runDiagnosis(input:DiagnosisInput,signal:AbortSignal,emit:
     return {...structuredClone(cached),cacheHit:true,warnings:[...cached.warnings,'本次复用原分析。环境与资源信息仍是原采集时刻，需要更新时请强制重新分析。']}
   }
   // Keep original rule evidence separate from any model-requested inspections.
-  const ruleFindings=diagnoseEvidence(collected.evidence)
+  const ruleFindings=diagnoseEvidence(collected.evidence).map(finding=>({...finding,origin:'rules' as const}))
   const originalOom=ruleFindings.some(finding=>finding.category==='oom')
   const report:DiagnosisReport={...structuredClone(collected),cacheKey:key,id:randomUUID(),createdAt:new Date().toISOString(),engine:'rules',useModel:input.useModel,findings:ruleFindings}
   const usage:ModelUsage[]=[]
@@ -63,7 +63,7 @@ export async function runDiagnosis(input:DiagnosisInput,signal:AbortSignal,emit:
         report.evidence=result.evidence;report.investigation=result.investigation;report.warnings.push(...result.warnings)
         if(result.findings){
           const supported=result.findings.filter(finding=>finding.category!=='unknown'&&finding.evidenceIds.some(id=>report.evidence.some(item=>item.id===id&&item.source==='log'&&/error|exception|traceback|failed|not found|no such|denied|out of memory|arguments.*required/i.test(item.text))))
-          if(supported.length){report.findings=report.findings.filter(item=>item.category!=='unknown');report.findings.push(...supported)}
+          if(supported.length){report.findings=report.findings.filter(item=>item.category!=='unknown');report.findings.push(...supported.map(finding=>({...finding,origin:'model' as const})))}
           report.summary=supported.length?result.summary:undefined
           report.engine=result.investigation.inspections?'agent+rules':'model+rules'
         }

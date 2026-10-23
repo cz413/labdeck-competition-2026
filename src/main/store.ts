@@ -630,6 +630,8 @@ export class AppStore {
         serverId: input.serverId,
         serverNameSnapshot: server?.name ?? input.serverNameSnapshot,
         accessRouteId: input.accessRouteId,
+        computeDevice: input.computeDevice ?? 'gpu',
+        ...(input.computeDevice === 'cpu' ? { gpuUuid: undefined, gpuIndex: undefined, gpuNameSnapshot: undefined } : {}),
         codePath: input.codePath,
         dataPath: input.dataPath,
         launchCommand: input.launchCommand,
@@ -671,6 +673,18 @@ export class AppStore {
     await this.persist()
   }
 
+  async deleteExperimentTasks(taskIds: string[]): Promise<void> {
+    const data = this.ensureData()
+    const ids = new Set(taskIds)
+    const selected = data.experimentTasks.filter(task => ids.has(task.id))
+    if (selected.some(task => ['preparing', 'running'].includes(task.status) || task.runs.some(run => ['preparing', 'running'].includes(run.status)))) {
+      throw new Error('本批任务正在准备或运行，请先取消运行再删除整批实验')
+    }
+    if (!selected.length) return
+    data.experimentTasks = data.experimentTasks.filter(task => !ids.has(task.id))
+    await this.persist()
+  }
+
   async setExperimentTaskStatus(taskId: string, status: ExperimentTaskStatus): Promise<ExperimentTask> {
     status = experimentTaskStatusSchema.parse(status)
     const data = this.ensureData()
@@ -707,6 +721,11 @@ export class AppStore {
     if (index < 0) throw new Error('实验任务不存在或已被删除')
     const task = data.experimentTasks[index]
     if (task.archived) throw new Error('已归档的实验任务不能启动')
+    input.computeDevice ??= task.computeDevice ?? 'gpu'
+    if (input.computeDevice === 'cpu') {
+      input.gpuUuid = null; input.gpuIndex = null; input.gpuNameSnapshot = null
+      input.minimumFreeVramGiB = null; input.maximumGpuUtilizationPercent = null
+    }
     const activeIndex = task.runs.findIndex((run) => run.status === 'queued' || run.status === 'preparing' || run.status === 'running')
     if (activeIndex >= 0) throw new Error('该任务已有正在运行的实验记录')
     for (const [label, path] of [['代码目录', input.codePath], ['数据目录', input.dataPath], ['产物路径', input.artifactPath]] as const) {
@@ -734,19 +753,20 @@ export class AppStore {
       serverId: input.serverId,
       serverNameSnapshot: server?.name,
       accessRouteId: input.accessRouteId,
+      computeDevice: input.computeDevice,
       gpuUuid: input.gpuUuid ?? undefined,
       gpuIndex: input.gpuIndex ?? undefined,
       gpuNameSnapshot: input.gpuNameSnapshot ?? undefined,
       codePath: launch.codePath,
       dataPath: input.dataPath,
-      launchCommand: input.launchCommand,
+      launchCommand: input.launchMode === 'script' ? input.launchCommand : launch.launchCommand,
       launchMode: input.launchMode,
       scriptPath: input.scriptPath.trim(),
       condaEnvironment: input.condaEnvironment ? structuredClone(input.condaEnvironment) : undefined,
       minimumFreeVramGiB: input.minimumFreeVramGiB,
       maximumGpuUtilizationPercent: input.maximumGpuUtilizationPercent,
       artifactPath: input.artifactPath,
-      message: input.gpuUuid || input.gpuIndex !== null ? `等待在指定 GPU ${input.gpuIndex ?? ''} 上立即启动` : '正在等待符合显存和利用率条件的 GPU',
+      message: input.computeDevice === 'cpu' ? '正在准备 CPU 运行' : input.gpuUuid || input.gpuIndex !== null ? `等待在指定 GPU ${input.gpuIndex ?? ''} 上立即启动` : '正在等待符合显存和利用率条件的 GPU',
       resultSummary: '',
       notes: input.notes
     }

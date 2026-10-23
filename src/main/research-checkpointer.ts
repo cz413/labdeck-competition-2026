@@ -28,6 +28,7 @@ export class DiskCheckpointSaver extends MemorySaver {
     const job=this.writesQueue.then(async()=>{await mkdir(dirname(this.file),{recursive:true});const temporary=`${this.file}.${randomUUID()}.tmp`;await writeFile(temporary,serialized,'utf8');await rename(temporary,this.file)})
     this.writesQueue=job.catch(()=>{});await job
   }
+  override async deleteThread(threadId:string):Promise<void>{await super.deleteThread(threadId);await this.flush()}
   override async put(...args:Parameters<MemorySaver['put']>):ReturnType<MemorySaver['put']>{const result=await super.put(...args);this.prune();await this.flush();return result}
   override async putWrites(...args:Parameters<MemorySaver['putWrites']>):Promise<void>{await super.putWrites(...args);this.prune();await this.flush()}
 }

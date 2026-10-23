@@ -118,12 +118,27 @@ export class CondaService {
     managerPath?: string
   ): Promise<string> {
     const configuredPath = managerPath?.trim()
+    const marker = '__LABDECK_MANAGER_PATH__'
     if (configuredPath) {
       if (configuredPath.includes('\0') || configuredPath.length > 4096) throw new Error('Conda 可执行文件路径无效')
-      return configuredPath
+      const target = shellQuote(configuredPath)
+      const candidates = ['bin/' + manager, 'condabin/' + manager, manager].map(relative => shellQuote(posix.join(configuredPath, relative)))
+      const probe = [
+        `if [ -d ${target} ]; then`,
+        `  for candidate in ${candidates.join(' ')}; do`,
+        `    if [ -f "$candidate" ] && [ -x "$candidate" ]; then printf '${marker}%s\\n' "$candidate"; exit 0; fi`,
+        '  done',
+        `elif [ -f ${target} ] && [ -x ${target} ]; then`,
+        `  printf '${marker}%s\\n' ${target}; exit 0`,
+        'fi',
+        'true'
+      ].join('\n')
+      const output = await this.run(profile, secrets, probe, 30_000)
+      const resolved = output.split(/\r?\n/).map(line => line.trim()).filter(line => line.startsWith(marker)).at(-1)?.slice(marker.length)
+      if (!resolved || !resolved.startsWith('/') || resolved.includes('\0') || resolved.length > 4096) throw new Error(`所选路径下未找到可执行的 ${manager}，请选择安装目录或 ${manager} 可执行文件路径`)
+      return posix.normalize(resolved)
     }
 
-    const marker = '__LABDECK_MANAGER_PATH__'
     const candidates = [
       `"$HOME/miniconda3/bin/${manager}"`,
       `"$HOME/anaconda3/bin/${manager}"`,

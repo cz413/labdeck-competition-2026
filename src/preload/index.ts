@@ -21,13 +21,15 @@ const api: AppApi = {
   research: {
     preview: (command, axes, maxRuns) => ipcRenderer.invoke('research:preview', command, axes, maxRuns),
     list: () => ipcRenderer.invoke('research:list'),
+    remove: id => ipcRenderer.invoke('research:remove',id),
+    removeBatch: id => ipcRenderer.invoke('research:removeBatch',id),
     engine: () => ipcRenderer.invoke('research:engine'),
-    suggest: (id, objective, max) => ipcRenderer.invoke('research:suggest', id, objective, max),
+    suggest: (id, objective, max, runId) => ipcRenderer.invoke('research:suggest', id, objective, max, runId),
     create: input => ipcRenderer.invoke('research:create', input),
     approve: (id, confirmed) => ipcRenderer.invoke('research:approve', id, confirmed),
     refresh: id => ipcRenderer.invoke('research:refresh', id),
     analyze: id => ipcRenderer.invoke('research:analyze', id),
-    recollect: (id) => ipcRenderer.invoke('research:recollect', id),
+    recollect: (id, config) => ipcRenderer.invoke('research:recollect', id, config),
     setPaused: (id, paused) => ipcRenderer.invoke('research:paused', id, paused),
     export: id => ipcRenderer.invoke('research:export', id),
     onChanged: listener => { const handler = (): void => listener(); ipcRenderer.on('research:changed', handler); return () => ipcRenderer.removeListener('research:changed', handler) }
@@ -38,6 +40,8 @@ const api: AppApi = {
       get: id => ipcRenderer.invoke('intelligence:preparation-get',id),
       list: () => ipcRenderer.invoke('intelligence:preparation-list'),
       act: (id,action) => ipcRenderer.invoke('intelligence:preparation-action',id,action),
+      refine: (id,instruction,revision) => ipcRenderer.invoke('intelligence:preparation-refine',id,instruction,revision),
+      remove: id => ipcRenderer.invoke('intelligence:preparation-remove',id),
       cancel: id => ipcRenderer.invoke('intelligence:preparation-cancel',id),
       onChanged: listener => {const handler=(_event:Electron.IpcRendererEvent,id:string):void=>listener(id);ipcRenderer.on('intelligence:preparation-changed',handler);return()=>ipcRenderer.removeListener('intelligence:preparation-changed',handler)}
     },

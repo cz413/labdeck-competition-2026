@@ -10,4 +10,3 @@ export function reportForRun(reports: DiagnosisReport[], taskId: string, runId: 
   return matching.filter(r => r.runId === runId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0]
     ?? matching.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0]
 }
-

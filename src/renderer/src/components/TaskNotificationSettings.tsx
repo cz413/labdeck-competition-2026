@@ -30,7 +30,7 @@ export function TaskNotificationSettings({ settings, onChange }: {
   }
   return <section className="panel task-notification-settings">
     <div className="panel-title"><div><h3>任务结束通知</h3><p>平台实验自动提醒；已有进程可在 GPU 详情中点击“结束时提醒”</p></div><Bell size={19} /></div>
-    <label className="settings-field"><div><strong>Windows 系统通知</strong><span>成功、失败或取消时提醒；无退出码的进程显示“结果未知”。更改后点击下方“保存设置”。</span></div><button type="button" className={`toggle ${settings.notifyOnTaskEnd ? 'active' : ''}`} role="switch" aria-checked={settings.notifyOnTaskEnd} aria-label="任务结束 Windows 通知" onClick={() => onChange({ ...settings, notifyOnTaskEnd: !settings.notifyOnTaskEnd })}><i /></button></label>
+    <label className="settings-field"><div><strong>Windows 系统通知</strong><span>成功、失败或取消时提醒；无法确认运行结果时显示“结果未知”。更改后点击下方“保存设置”。</span></div><button type="button" className={`toggle ${settings.notifyOnTaskEnd ? 'active' : ''}`} role="switch" aria-checked={settings.notifyOnTaskEnd} aria-label="任务结束 Windows 通知" onClick={() => onChange({ ...settings, notifyOnTaskEnd: !settings.notifyOnTaskEnd })}><i /></button></label>
     <div className="task-notification-actions"><span>每 20 秒检查订阅进程。留在托盘时继续监控，退出或休眠期间停止。</span><button type="button" className="secondary-button" disabled={busy} onClick={() => void perform(() => window.labApi.notifications.test(), '已请求测试通知；若未显示，请检查 Windows 通知设置或勿扰模式。')}><Bell size={14} />发送测试通知</button></div>
     {message && <p className={`wb-notice ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{message}</p>}
     {watches.length > 0 && <div className="process-watch-list">

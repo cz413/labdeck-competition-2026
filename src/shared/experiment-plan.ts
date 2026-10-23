@@ -66,6 +66,7 @@ export interface PlanConflict {
   current: string
   suggested: string
   suggestedDraft: Partial<ExperimentTaskDraft>
+  suggestedFields?: PlanFields
   suggestedMode?: ExperimentMode
   suggestedField: { field: PlanField; state: PlanFieldState }
 }
@@ -401,7 +402,7 @@ export function createExperimentPlan({ guide, goal, environments = [], now = new
   const base = projectDraftPatch(guide, { ...emptyDraft(), objective: goal })
   const artifact = inferArtifactPath(launchCommand, root, codePath, signals, now)
   const environment = guide.environmentName
-  const environmentVerified = !!environment && environments.some(item => item.name === environment)
+  const environmentVerified = !!environment && environments.some(item => item.name === environment || item.prefix === environment)
   const directoryCheck = guide.checks.find(check => check.expected === 'directory' && (check.path === (workingDirectory || '.') || check.path === workingDirectory))
   const commandEntryToken = planCommandEntry(launchCommand)
   const entryCheck = guide.checks.find(check => check.expected === 'file' && check.status === 'confirmed'
@@ -427,7 +428,7 @@ export function createExperimentPlan({ guide, goal, environments = [], now = new
     scriptPath: '',
     dataPath: planDataPath || '',
     artifactPath: artifact.value,
-    condaEnvironment: environment ? { manager: 'conda', environmentName: environment } : undefined,
+    condaEnvironment: environment ? { manager: 'conda', ...(environment.startsWith('/') ? {environmentPrefix: environment} : {environmentName: environment}) } : undefined,
     status: 'planned'
   }
   // The evidence key must describe the plan that will actually be saved, not the raw guide.
@@ -587,7 +588,7 @@ export function resolvePlanGap(plan: ExperimentPlan, gap: PlanGap, option: PlanG
     }
   } else if (gap.kind === 'environment') {
     if (option.value) {
-      draft.condaEnvironment = { manager: 'conda', environmentName: option.value, environmentPrefix: undefined, lastCheckStatus: 'found', lastCheckedAt: new Date().toISOString() }
+      draft.condaEnvironment = { manager: plan.draft.condaEnvironment?.manager ?? 'conda', managerPath: plan.draft.condaEnvironment?.managerPath, ...(option.environment?.prefix ? {environmentPrefix: option.environment.prefix, environmentName: undefined} : {environmentName: option.value, environmentPrefix: undefined}), lastCheckStatus: 'found', lastCheckedAt: new Date().toISOString() }
       fields.environment = { source: option.source, note: option.description ?? '已选择服务器环境' }
       change = { field: 'environment', label: 'Conda 环境', summary: `环境设为 ${option.value}` }
     } else {
@@ -622,10 +623,6 @@ export function markUserFields(fields: PlanFields, changes: DraftFieldChange[], 
   return next
 }
 
-function displayValue(value: unknown): string {
-  if (value === undefined || value === null || value === '') return '未填写'
-  return String(value)
-}
 let conflictSeed = 0
 const nextConflictId = (field: string): string => `${field}-${Date.now()}-${++conflictSeed}`
 function pickEntry(plan: ExperimentPlan, mode: ExperimentMode): PlanEntryOption | undefined {
@@ -695,167 +692,4 @@ export function switchPlanMode(plan: ExperimentPlan, mode: ExperimentMode): { dr
     draft: merged, mode, fields,
     change: { field: 'mode', label: '实验方式', summary: `改为${planModeLabels[mode]}（${suggested.launchCommand ?? option.command}）${dataNote}` }
   }
-}
-
-function replaceCommandFlag(command: string, pattern: RegExp, value: string): string {
-  return command.replace(pattern, (match, prefix: string) => `${prefix}${value}`)
-}
-
-/** Deterministic, reviewable revisions. Anything ambiguous stays a note instead of a guess. */
-export function refineExperimentPlan(plan: ExperimentPlan, instruction: string, context: PlanContext = {}): RefineResult {
-  const text = instruction.trim()
-  const draft: ExperimentTaskDraft = { ...plan.draft, condaEnvironment: plan.draft.condaEnvironment ? { ...plan.draft.condaEnvironment } : undefined }
-  let mode = plan.mode
-  const fields: PlanFields = { ...plan.fields }
-  const changes: PlanChange[] = []
-  const conflicts: PlanConflict[] = []
-  const notes: string[] = []
-  const setField = (field: PlanField, label: string, resolve: () => { patch: Partial<ExperimentTaskDraft>; state: PlanFieldState }): boolean => {
-    const next = resolve()
-    if (fields[field]?.source === 'user') {
-      conflicts.push({
-        id: nextConflictId(field),
-        label,
-        current: field === 'environment' ? planEnvironmentName(plan.draft) : fieldAccessors.find(item => item.field === field)?.get(plan.draft) ?? '未填写',
-        suggested: displayValue(field === 'environment' ? next.patch.condaEnvironment?.environmentName : field === 'launchCommand' ? next.patch.launchCommand : field === 'dataPath' ? next.patch.dataPath : field === 'artifactPath' ? next.patch.artifactPath : next.patch.title),
-        suggestedDraft: next.patch,
-        suggestedField: { field, state: next.state }
-      })
-      return false
-    }
-    Object.assign(draft, next.patch)
-    fields[field] = next.state
-    return true
-  }
-  if (!text) return { draft, mode, fields, changes, conflicts, notes: ['请先写下要修改的内容'], matched: false }
-
-  // 1. Experiment mode follows the last mentioned intent.
-  const evaluateIndex = lastIndex(text, /评估|评测|推理|evaluate|evaluation|inference|\beval\b/gi)
-  const trainIndex = lastIndex(text, /训练|微调|基线|train|finetune|baseline/gi)
-  if (evaluateIndex >= 0 && evaluateIndex > trainIndex && mode !== 'evaluate') {
-    const switched = switchPlanMode(plan, 'evaluate')
-    if (switched.conflict) conflicts.push(switched.conflict)
-    else if (switched.note) notes.push(switched.note)
-    else if (switched.change) {
-      Object.assign(draft, switched.draft)
-      Object.assign(fields, switched.fields)
-      mode = switched.mode
-      changes.push(switched.change)
-    }
-  } else if (trainIndex >= 0 && trainIndex > evaluateIndex && mode !== 'train') {
-    const switched = switchPlanMode(plan, 'train')
-    if (switched.conflict) conflicts.push(switched.conflict)
-    else if (switched.note) notes.push(switched.note)
-    else if (switched.change) {
-      Object.assign(draft, switched.draft)
-      Object.assign(fields, switched.fields)
-      mode = switched.mode
-      changes.push(switched.change)
-    }
-  }
-
-  // 2. Environment by known server name first, then an explicit "use X environment".
-  const environments = context.environments ?? []
-  const knownEnvironment = environments.find(environment => text.includes(environment.name))
-  const environmentMatch = /(?:使用|用|换成|改为|切到|切换到)\s*[「“"']?([A-Za-z0-9_.-]{2,40})[」”"']?\s*(?:环境|env)/i.exec(text)
-    ?? /(?:环境|env)\s*(?:换成|改为|使用|设为|用)\s*[「“"']?([A-Za-z0-9_.-]{2,40})/i.exec(text)
-  const environmentName = knownEnvironment?.name ?? environmentMatch?.[1]
-  if (environmentName) {
-    const verified = environments.some(environment => environment.name === environmentName)
-    const suggestedText = verified ? `使用 ${environmentName} 环境（已在服务器确认）` : `使用 ${environmentName} 环境（需在服务器核对）`
-    const before = planEnvironmentName(plan.draft)
-    if (before !== environmentName) {
-      const applied = setField('environment', 'Conda 环境', () => ({
-        patch: { condaEnvironment: { manager: 'conda', environmentName, environmentPrefix: undefined, lastCheckStatus: verified ? 'found' : 'unknown', lastCheckedAt: new Date().toISOString() } },
-        state: { source: verified ? 'server' : 'suggested', note: suggestedText }
-      }))
-      if (applied) changes.push({ field: 'environment', label: 'Conda 环境', summary: suggestedText })
-    } else if (verified && plan.fields.environment?.source !== 'server') {
-      draft.condaEnvironment = { manager: 'conda', environmentName, environmentPrefix: undefined, lastCheckStatus: 'found', lastCheckedAt: new Date().toISOString() }
-      fields.environment = { source: 'server', note: suggestedText }
-      changes.push({ field: 'environment', label: 'Conda 环境', summary: `已在服务器确认 ${environmentName} 环境` })
-    }
-  }
-
-  // 3. Explicit data, output, title and free-VRAM values.
-  const dataMatch = /(?:数据(?:目录|集|路径)?|dataset)\s*(?:改用|改成|换成|换到|改到|使用|用|设为|放到|放在|位置(?:是|为)?|[:：])\s*[「“"']?(\/[^\s，。；、"']+)/i.exec(text)
-  if (dataMatch) {
-    const path = dataMatch[1].replace(/[，。；、]+$/, '')
-    if (path !== plan.draft.dataPath) {
-      const applied = setField('dataPath', '数据目录', () => {
-        const patch: Partial<ExperimentTaskDraft> = { dataPath: path }
-        if (commandDataPath(draft.launchCommand)) patch.launchCommand = syncCommandDataPath(draft.launchCommand, path)
-        return { patch, state: { source: 'user', note: '来自你的修改' } }
-      })
-      if (applied) changes.push({ field: 'dataPath', label: '数据目录', summary: `数据目录改为 ${path}` })
-    }
-  }
-  const outputMatch = /(?:输出|产物|模型|检查点|保存)(?:目录|位置|路径)?\s*(?:改用|改到|放到|保存到|输出到|设为|[:：])\s*[「“"']?(\/[^\s，。；、"']+)/i.exec(text)
-  if (outputMatch) {
-    const path = outputMatch[1].replace(/[，。；、]+$/, '')
-    if (path !== plan.draft.artifactPath) {
-      const applied = setField('artifactPath', '输出位置', () => ({ patch: { artifactPath: path }, state: { source: 'user', note: '来自你的修改' } }))
-      if (applied) changes.push({ field: 'artifactPath', label: '输出位置', summary: `输出位置改为 ${path}` })
-    }
-  }
-  const titleMatch = /(?:任务名称|名称|叫做|命名为)\s*(?:改为|设为|叫)?\s*[：: ]?[「“"']?([^」”"'，。；\n]{2,80})/i.exec(text)
-  if (titleMatch) {
-    const title = titleMatch[1].trim()
-    if (title && title !== plan.draft.title) {
-      const applied = setField('title', '任务名称', () => ({ patch: { title: title.slice(0, 160) }, state: { source: 'user', note: '来自你的修改' } }))
-      if (applied) changes.push({ field: 'title', label: '任务名称', summary: `任务名称改为「${title}」` })
-    }
-  }
-  const vramMatch = /(?:显存|VRAM)[^\d]{0,10}(\d+(?:\.\d+)?)\s*(?:G|GiB)/i.exec(text)
-  if (vramMatch) {
-    const value = Math.max(0.1, Number(vramMatch[1]))
-    if (value !== plan.draft.minimumFreeVramGiB) {
-      draft.minimumFreeVramGiB = value
-      changes.push({ field: 'resources', label: '资源条件', summary: `最低空闲显存改为 ${value} GiB（排队时生效）` })
-    }
-  }
-  const parameterMatch = /(学习率|learning[ _-]?rate|\blr\b|batch[ _-]?size|批次大小|\bepochs?\b|轮数)\s*(?:改为|改成|设为|调到|调成|用)\s*([0-9]+(?:\.[0-9]+)?(?:e[-+]?\d+)?)/i.exec(text)
-  if (parameterMatch) {
-    const label = parameterMatch[1]
-    const value = parameterMatch[2]
-    const kind = /学习率|learning|\blr\b/i.test(label) ? 'lr' : /batch|批次/i.test(label) ? 'batch' : 'epochs'
-    const flag = kind === 'lr' ? /(--(?:lr|learning[-_]?rate)(?:=|\s+))([^\s]+)/i
-      : kind === 'batch' ? /(--(?:batch[-_]?size|batch)(?:=|\s+))([^\s]+)/i
-        : /(--(?:epochs|num[-_]?epochs|n[-_]?epochs)(?:=|\s+))([^\s]+)/i
-    if (flag.test(draft.launchCommand)) {
-      const nextCommand = draft.launchCommand.replace(flag, (_match, prefix: string) => `${prefix}${value}`)
-      if (nextCommand !== draft.launchCommand) {
-        const labelText = kind === 'lr' ? '学习率' : kind === 'batch' ? '批大小' : '训练轮数'
-        const applied = setField('launchCommand', '启动命令', () => ({ patch: { launchCommand: nextCommand }, state: { source: 'user', note: `来自你的修改：${labelText} ${value}` } }))
-        if (applied) changes.push({ field: 'launchCommand', label: '启动命令', summary: `${labelText}改为 ${value}` })
-      }
-    } else {
-      notes.push(`启动命令中没有找到与“${label}”对应的参数，未做修改；请在完整配置中确认实际参数名。`)
-    }
-  }
-
-  // 4. "Only a small run" shrinks a documented, reversible parameter or picks a smoke config.
-  if (/少量|小样本|小规模|跑通|验证流程|冒烟|smoke|debug|quick|快速验证/i.test(text)) {
-    const epochs = draft.launchCommand.match(/(--(?:num[-_]?epochs|epochs|n[-_]?epochs|max[-_]?epochs)\s+)(\d+)/i)
-    const maxSteps = draft.launchCommand.match(/(--(?:max[-_]?steps|max[-_]?iterations)\s+)(\d+)/i)
-    const limitBatches = draft.launchCommand.match(/(--(?:limit[-_]?(?:train|val|valid|test)?[-_]?batches)\s+)(\d+)/i)
-    const smokeConfig = [...plan.signals.configs, ...plan.guide.snapshot.files.map(file => file.path)]
-      .find(path => /(?:^|[/_.-])(debug|smoke|tiny|fast|small)(?:[/_.-]|$)/i.test(path) && /\.(ya?ml|json|toml)$/i.test(path))
-    let suggestedCommand = ''
-    if (epochs && Number(epochs[2]) > 1) suggestedCommand = replaceCommandFlag(draft.launchCommand, /(--(?:num[-_]?epochs|epochs|n[-_]?epochs|max[-_]?epochs)\s+)\d+/i, '1')
-    else if (maxSteps && Number(maxSteps[2]) > 20) suggestedCommand = replaceCommandFlag(draft.launchCommand, /(--(?:max[-_]?steps|max[-_]?iterations)\s+)\d+/i, '20')
-    else if (limitBatches && Number(limitBatches[2]) > 2) suggestedCommand = replaceCommandFlag(draft.launchCommand, /(--(?:limit[-_]?(?:train|val|valid|test)?[-_]?batches)\s+)\d+/i, '2')
-    else if (smokeConfig && /--(?:config|cfg)\s+[^\s]+/.test(draft.launchCommand)) suggestedCommand = replaceCommandFlag(draft.launchCommand, /(--(?:config|cfg)\s+)[^\s]+/i, smokeConfig)
-    if (suggestedCommand && suggestedCommand !== draft.launchCommand) {
-      const applied = setField('launchCommand', '启动命令', () => ({ patch: { launchCommand: suggestedCommand }, state: { source: 'suggested', note: '为验证流程缩减后的命令' } }))
-      if (applied) changes.push({ field: 'launchCommand', label: '启动命令', summary: `缩减为验证流程：${suggestedCommand}` })
-    } else {
-      notes.push('没有找到可以安全缩减的轮数或配置参数；请在完整配置中确认要减少的参数，避免猜测不存在的选项。')
-    }
-  }
-  const matched = changes.length > 0
-  if (!matched && !conflicts.length && !notes.length) {
-    notes.push('没有识别出这条修改对应的字段。可以换一种说法（例如“改成评估已有权重”“使用 vision 环境”“先跑少量数据验证流程”），或展开完整配置直接修改。')
-  }
-  return { draft, mode, fields, changes, conflicts, notes, matched }
 }

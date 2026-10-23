@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { ModelSettingsPanel } from './components/ModelSettingsPanel'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -166,7 +167,7 @@ export function App(): React.JSX.Element {
   const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null)
   const [terminalDockOpen, setTerminalDockOpen] = useState(false)
   const [fileTarget, setFileTarget] = useState<{ serverId: string; routeId: string; path?: string } | null>(null)
-  const [taskRequest, setTaskRequest] = useState<{ id: number; taskId?: string; runId?: string; start?: boolean; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null>(null)
+  const [taskRequest, setTaskRequest] = useState<{ id: number; poolOnly?: boolean; taskId?: string; runId?: string; start?: boolean; serverId?: string; accessRouteId?: string; gpu?: GpuMetric } | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
   const [gpuSelection, setGpuSelection] = useState<GpuSelection>(null)
@@ -220,7 +221,7 @@ export function App(): React.JSX.Element {
 
   const notify = (message: string, kind: 'success' | 'error' = 'success'): void => {
     const id = Date.now() + Math.random()
-    setToasts((current) => [...current, { id, message, kind }])
+    setToasts((current) => [...current, { id, message: kind === 'error' ? userFacingError(message) : message, kind }])
     window.setTimeout(() => setToasts((current) => current.filter((toast) => toast.id !== id)), 3600)
   }
 
@@ -907,7 +908,7 @@ export function App(): React.JSX.Element {
               onRefresh={() => void refreshSnapshots([selectedServer], { force: true })} onTerminal={() => openServerTerminal(selectedServer)}
               onFiles={(path) => openSftp(selectedServer, accessRouteIdFor(selectedServer), path)} onVsCode={() => void openVsCode(selectedServer)} onEdit={() => setDialogServer(selectedServer)}
               onTest={() => void testServer(selectedServer)} onRemove={() => void removeServer(selectedServer)} onMerge={() => void mergeServerPath(selectedServer)}
-              onTask={(task) => openTask(task)} onNewTask={(gpu) => openTask(undefined, gpu)} onGpuDetail={(gpuIndex) => openGpu(selectedServer, gpuIndex)}
+              onTask={(task) => openTask(task)} onNewTask={(gpu) => { if (gpu) openTask(undefined, gpu); else { setTaskRequest({id: Date.now(), poolOnly: true}); setPage('tasks') } }} onGpuDetail={(gpuIndex) => openGpu(selectedServer, gpuIndex)}
               onToggleWatch={(gpuUuid) => void toggleGpuWatch({ serverId: selectedServer.id, gpuUuid })}
               onTunnel={() => openTunnel(selectedServer, accessRouteIdFor(selectedServer))}
             /> : <div className="workbench-welcome"><ServerIcon size={28} /><h1>还没有服务器</h1><p>导入 SSH Config 或添加服务器，查看 GPU 并调度实验。</p><button className="secondary-button" onClick={() => setDialogServer(null)}><Plus size={15} />添加服务器</button><button className="wb-text-button" onClick={() => void importSshConfig()}>导入 SSH Config</button></div>) : page === 'gpuDetail' && gpuSelection ? <GpuDetailPanel key={gpuSelection.server.id} server={servers.find(server => server.id === gpuSelection.server.id) ?? gpuSelection.server} snapshot={snapshots[gpuSelection.server.id]} initialGpuIndex={gpuSelection.gpuIndex} watches={settings.gpuWatches} accessRouteId={accessRouteIdFor(gpuSelection.server)} onToggleWatch={(gpuUuid) => void toggleGpuWatch({ serverId: gpuSelection.server.id, gpuUuid })} onClose={() => setPage(gpuReturnPage.current)} refreshing={refreshing} onRefresh={() => void refreshSnapshots([gpuSelection.server], { force: true })} onTerminal={() => openServerTerminal(gpuSelection.server)} onRun={(gpu) => openTask(undefined, gpu)} onSelectGpu={(gpuIndex) => setGpuSelection({ server: gpuSelection.server, gpuIndex })} /> : page === 'tunnels' ? <TunnelPage tunnels={tunnels} servers={servers} request={tunnelRequest} onRequestHandled={() => setTunnelRequest(null)} onChanged={reloadTunnels} onTrusted={async () => { await loadServers() }} notify={notify} confirm={requestConfirmation} /> : page === 'tasks' ? null : page === 'files' ? (fileServer && fileRouteId ? <div className="workbench-files"><div className="workbench-file-route"><AccessRouteSelect server={fileServer} value={fileRouteId} onChange={(id) => openSftp(fileServer, id)} /></div><SftpPanel key={`${fileServer.id}:${fileRouteId}`} server={fileServer} accessRouteId={fileRouteId} initialPath={filePath} onClose={() => goToPage('serverDetail')} onMessage={notify} /></div> : <div className="workbench-welcome"><FolderOpen size={28} /><h1>选择一台服务器</h1><p>从左侧服务器列表打开远程文件。</p></div>) : page === 'terminals' ? null : page === 'servers' ? <><header className="workbench-page-heading"><h1>全部服务器</h1><button className="secondary-button" onClick={() => void refreshSnapshots(servers, { force: true })}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />刷新全部</button></header><ServerTable servers={filteredServers} snapshots={snapshots} testingId={testingId} vscodeConnectingId={vscodeConnectingId} accessRouteId={accessRouteIdFor} onAccessRouteChange={selectAccessRoute} onOverview={openServerDetail} onTest={testServer} onTerminal={openServerTerminal} onSftp={openSftp} onVsCode={(server) => void openVsCode(server)} onGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} onEdit={(server) => setDialogServer(server)} onRemove={removeServer} onMerge={mergeServerPath} /></> : page === 'gpus' ? <GpuResourcePool servers={filteredServers} snapshots={snapshots} watches={settings.gpuWatches} refreshing={refreshing} onRefresh={() => void refreshSnapshots(servers, { force: true })} onToggleWatch={(target) => void toggleGpuWatch(target)} onSelect={openGpu} filters={gpuPoolFilters} onFiltersChange={setGpuPoolFilters} /> : page === 'alerts' ? <><header className="workbench-page-heading"><h1>告警</h1><span>{alerts.length} 条活动告警</span></header><AlertsPage alerts={alerts} /></> : <><header className="workbench-page-heading"><h1>设置</h1></header><SettingsPage settings={settings} onChange={setSettings} onThemeChange={(theme) => void changeTheme(theme)} onSave={saveSettings} /></>}

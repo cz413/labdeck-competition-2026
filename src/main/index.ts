@@ -463,7 +463,7 @@ function showTaskNotification(event: TaskFinishedEvent): void {
   const label = { completed: '运行成功', failed: '运行失败', cancelled: '已取消', unknown: '已结束，结果未知' }[event.outcome]
   const notification = new Notification({
     title: `${event.serverName} · ${label}`,
-    body: `${event.title}\n${event.message || '点击查看任务详情'}`.slice(0, 500),
+    body: `${event.title}\n${event.outcome === 'failed' ? '点击查看运行记录并分析原因' : event.message || '点击查看任务详情'}`.slice(0, 500),
     icon: appIconPath
   })
   taskNotifications.add(notification)

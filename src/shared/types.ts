@@ -355,6 +355,7 @@ export interface ExperimentRun {
   serverId?: string
   serverNameSnapshot?: string
   accessRouteId?: string
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid?: string
   gpuIndex?: number
   gpuNameSnapshot?: string
@@ -378,6 +379,7 @@ export interface ExperimentRun {
 export interface ExperimentRunStartInput {
   serverId: string | null
   accessRouteId: string | null
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid: string | null
   gpuIndex: number | null
   gpuNameSnapshot: string | null
@@ -406,6 +408,7 @@ export interface ExperimentTask {
   serverId?: string
   serverNameSnapshot?: string
   accessRouteId?: string
+  computeDevice?: 'gpu' | 'cpu'
   gpuUuid?: string
   gpuIndex?: number
   gpuNameSnapshot?: string

@@ -1,6 +1,11 @@
 import type { ExperimentLaunchMode } from './types'
 
+export function cpuLaunchCommand(command: string): string {
+  return command.replace(/(^|\s)(--device(?:=|\s+))(?:"(?:cuda(?::\d+)?|gpu)"|'(?:cuda(?::\d+)?|gpu)'|cuda(?::\d+)?|gpu)(?=\s|$)/g, '$1$2cpu')
+}
+
 interface LaunchConfig {
+  computeDevice?: 'gpu' | 'cpu'
   launchMode?: ExperimentLaunchMode
   scriptPath?: string
   codePath?: string
@@ -31,7 +36,8 @@ export function resolveExperimentLaunch(config: LaunchConfig): { codePath: strin
     const quoted = `'${scriptPath.replace(/'/g, `'\\''`)}'`
     return { codePath, launchCommand: `bash -- ${quoted}` }
   }
-  const launchCommand = config.launchCommand?.trim() ?? ''
+  const original = config.launchCommand?.trim() ?? ''
+  const launchCommand = config.computeDevice === 'cpu' ? cpuLaunchCommand(original) : original
   if (!launchCommand) throw new Error('自动运行需要填写启动命令')
   return { codePath, launchCommand }
 }

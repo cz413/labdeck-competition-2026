@@ -99,7 +99,7 @@ export function ServerDetailPage(props: ServerDetailPageProps): React.JSX.Elemen
 
               <aside className="server-detail-side">
                 <section className="server-detail-section">
-                  <div className="server-detail-section-title"><div><h3>运行信息</h3><p>最近一次只读采集</p></div></div>
+                  <div className="server-detail-section-title"><div><h3>运行信息</h3><p>最近一次采集</p></div></div>
                   <dl className="server-facts">
                     <div><dt><Wifi size={14} />连接延迟</dt><dd>{snapshot?.latencyMs ? `${snapshot.latencyMs} ms` : '—'}</dd></div>
                     <div><dt><Activity size={14} />运行时间</dt><dd>{uptime(snapshot?.uptimeSeconds)}</dd></div>

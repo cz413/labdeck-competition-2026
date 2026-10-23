@@ -15,25 +15,27 @@ import type { AgentTraceEvent, AgentTraceObserver } from '../shared/agent-trace'
 import type { PreparationAction, PreparationEdit, PreparationFlow, PreparationInput, PreparationSummary, PreparationView } from '../shared/preparation'
 import type { RepositoryAnalysisInput, RepositoryGuide, RepositoryInput, RepositorySnapshot } from '../shared/repository-guide'
 import type { CondaEnvironmentInfo, ExperimentTask, ExperimentTaskDraft } from '../shared/types'
-import type { PlanDataCandidate } from '../shared/experiment-plan'
+import type { ExperimentPlan, PlanContext, RefineResult, PlanDataCandidate } from '../shared/experiment-plan'
 
 const inputSchema=z.object({serverId:z.string().uuid(),accessRouteId:z.string().min(1).max(80),path:z.string().trim().min(1).max(4096).refine(p=>p.startsWith('/')&&!/[\0\r\n]/.test(p),'项目目录必须是绝对路径'),goal:z.string().trim().min(1).max(2000),filePaths:z.array(z.string().min(1).max(512)).min(1).max(2000).optional()})
 const fieldSchema=z.object({source:z.enum(['file','server','suggested','user','recent']),note:z.string().max(4000).optional()})
 const fieldsSchema=z.record(z.string().max(40),fieldSchema)
 const draftSchema=experimentTaskDraftSchema.extend({title:z.string().max(160)})
 const modeSchema=z.enum(['train','evaluate'])
-const editSchema=z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema,deferredGaps:z.array(z.string().max(100)).max(20),conflicts:z.array(z.object({id:z.string().max(200),label:z.string().max(1000),current:z.string().max(20000),suggested:z.string().max(20000),suggestedDraft:experimentTaskDraftSchema.partial(),suggestedMode:modeSchema.optional(),suggestedField:z.object({field:z.enum(['title','objective','mode','codePath','launchCommand','dataPath','environment','artifactPath']),state:fieldSchema})})).max(30),history:z.array(z.object({id:z.number(),label:z.string().max(2000),at:z.string().max(80),before:z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema})})).max(20)})
+const editSchema=z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema,deferredGaps:z.array(z.string().max(100)).max(20),conflicts:z.array(z.object({id:z.string().max(200),label:z.string().max(1000),current:z.string().max(20000),suggested:z.string().max(20000),suggestedDraft:experimentTaskDraftSchema.partial(),suggestedFields:fieldsSchema.optional(),suggestedMode:modeSchema.optional(),suggestedField:z.object({field:z.enum(['title','objective','mode','codePath','launchCommand','dataPath','environment','artifactPath']),state:fieldSchema})})).max(30),history:z.array(z.object({id:z.number(),label:z.string().max(2000),at:z.string().max(80),before:z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema})})).max(20)})
 const actionSchema=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('edit'),expectedRevision:z.number().int().nonnegative(),edit:editSchema,label:z.string().max(1000).optional()}),
   z.object({kind:z.literal('save'),expectedRevision:z.number().int().nonnegative()}),
+  z.object({kind:z.literal('save-as-new'),expectedRevision:z.number().int().nonnegative()}),
   z.object({kind:z.literal('recheck'),expectedRevision:z.number().int().nonnegative()}),
   z.object({kind:z.literal('resume')})
 ])
 const usageSchema=z.object({requests:z.number().int().nonnegative(),elapsedMs:z.number().nonnegative(),promptTokens:z.number().nonnegative().optional(),completionTokens:z.number().nonnegative().optional(),totalTokens:z.number().nonnegative().optional()})
 const traceSchema=z.object({id:z.string().uuid(),kind:z.enum(['step','tool','model','user']),name:z.string().max(300),status:z.enum(['running','completed','warning','failed','cancelled']),startedAt:z.string().datetime(),finishedAt:z.string().datetime().optional(),elapsedMs:z.number().nonnegative().optional(),summary:z.string().max(4000),references:z.array(z.object({path:z.string().max(4096),startLine:z.number().int().positive().optional(),endLine:z.number().int().positive().optional()})).max(20).optional(),usage:usageSchema.optional()})
-const bookSchema=z.record(z.string().uuid(),z.object({input:inputSchema,createdAt:z.string().datetime(),trace:z.array(traceSchema).max(240),error:z.string().max(2000).optional(),paused:z.boolean().optional(),modelUsage:z.record(z.string().uuid(),usageSchema).optional()}))
+const bookSchema=z.record(z.string().uuid(),z.object({input:inputSchema,createdAt:z.string().datetime(),trace:z.array(traceSchema).max(240),error:z.string().max(2000).optional(),paused:z.boolean().optional(),deleted:z.boolean().optional(),modelUsage:z.record(z.string().uuid(),usageSchema).optional()}))
 const state=Annotation.Root({flow:Annotation<PreparationFlow>(),action:Annotation<PreparationAction|null>()})
 interface Operations {
+  refine?(plan:ExperimentPlan,instruction:string,context:PlanContext,signal:AbortSignal,trace:AgentTraceObserver):Promise<RefineResult>
   scan(input:RepositoryInput):Promise<RepositorySnapshot>
   environments(input:PreparationInput):Promise<CondaEnvironmentInfo[]>
   analyze(input:RepositoryAnalysisInput,signal:AbortSignal,trace:AgentTraceObserver):Promise<RepositoryGuide>
@@ -42,7 +44,7 @@ interface Operations {
   save(draft:ExperimentTaskDraft,id:string):Promise<ExperimentTask>
   tasks():ExperimentTask[]
 }
-interface Entry {modelUsage?:Record<string,ModelUsage>;trace:AgentTraceEvent[];error?:string;paused?:boolean;input:PreparationInput;createdAt:string}
+interface Entry {deleted?:boolean;modelUsage?:Record<string,ModelUsage>;trace:AgentTraceEvent[];error?:string;paused?:boolean;input:PreparationInput;createdAt:string}
 const now=():string=>new Date().toISOString()
 
 /** Owns durable preparation. Model work and task writes are confined to explicit graph nodes. */
@@ -126,10 +128,12 @@ export class PreparationService {
         this.record(flow.id,{id:randomUUID(),kind:'tool',name:'当前配置核对结果',status:checks.lines.every(line=>line.ok)?'completed':'warning',startedAt:now(),summary:checks.lines.map(line=>line.text).join('；')})
         next=this.touch(flow,{checks:{...checks,configurationKey:projectConfigurationKey(flow.plan.draft)},revision:flow.revision+1,savedRevision:flow.savedRevision===flow.revision?flow.revision+1:flow.savedRevision})
       }else{
-        if(flow.taskId&&!this.ops.tasks().some(task=>task.id===flow.taskId))throw new Error('关联任务已删除；请新建准备流程，避免意外重建任务')
+        const saveAsNew=action.kind==='save-as-new'
+        if(saveAsNew&&(!flow.taskId||this.ops.tasks().some(task=>task.id===flow.taskId)))throw new Error('原任务仍存在，请直接保存草稿')
+        if(!saveAsNew&&flow.taskId&&!this.ops.tasks().some(task=>task.id===flow.taskId))throw new Error('关联任务已删除，可选择“另存为新任务”保留当前方案')
         const existing=this.ops.tasks().find(task=>task.preparationId===flow.id)
         if(existing&&['queued','preparing','running'].includes(existing.status))throw new Error('任务已经进入运行流程，请从任务详情新建配置')
-        const task=await this.step(flow.id,'保存实验草稿','使用准备流程标识保存，重复提交会更新同一任务',()=>this.ops.save({...flow.plan!.draft,id:flow.taskId??existing?.id},flow.id),'user')
+        const task=await this.step(flow.id,saveAsNew?'另存为新任务':'保存实验草稿','使用准备流程标识保存，重复提交会更新同一任务',()=>this.ops.save({...flow.plan!.draft,id:saveAsNew?existing?.id:flow.taskId??existing?.id},flow.id),'user')
         next=this.touch(flow,{taskId:task.id,savedRevision:flow.revision,plan:{...flow.plan,draft:{...flow.plan.draft,id:task.id}}})
       }
       return {flow:next,action:null}
@@ -139,6 +143,8 @@ export class PreparationService {
   private ready():Promise<void>{return this.readyPromise??=(async()=>{
     await mkdir(this.directory,{recursive:true});await this.saver.load()
     try{this.book=bookSchema.parse(JSON.parse(await readFile(join(this.directory,'sessions.json'),'utf8')))}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('准备记录无法读取，请保留数据文件检查')}
+    // Finish deletions before recovering records from surviving checkpoints.
+    for(const [id,entry] of Object.entries(this.book))if(entry.deleted){await this.saver.deleteThread(id);delete this.book[id]}
     // Recover an interrupted index write from the graph checkpoint.
     for(const id of Object.keys(this.saver.storage)){
       if(this.book[id]||!z.string().uuid().safeParse(id).success)continue
@@ -154,7 +160,7 @@ export class PreparationService {
   }
   async get(rawId:string):Promise<PreparationView>{
     await this.ready();const id=z.string().uuid().parse(rawId),entry=this.book[id]
-    if(!entry)throw new Error('准备流程不存在')
+    if(!entry||entry.deleted)throw new Error('准备流程不存在')
     const current=await this.graph.getState(this.config(id))
     const flow:PreparationFlow=current.values.flow??{id,input:entry.input,createdAt:entry.createdAt,updatedAt:entry.createdAt,revision:0,files:[],environments:[],dataCandidates:[]}
     const busy=this.running.has(id),plan=flow.plan,task=this.ops.tasks().find(task=>task.id===flow.taskId||task.preparationId===id)
@@ -162,8 +168,28 @@ export class PreparationService {
     const phase:PreparationView['phase']=busy&&!plan?'analyzing':entry.paused?'paused':entry.error?'failed':!plan?'paused':task&&flow.savedRevision===flow.revision?'saved':gaps.length?'needs_input':'review'
     return {...structuredClone(flow),taskId:flow.taskId??task?.id,task:task?structuredClone(task):undefined,phase,busy,pending:[...current.next],error:entry.error,trace:structuredClone(entry.trace),usage:entry.modelUsage?sumModelUsage(Object.values(entry.modelUsage)):undefined}
   }
-  async list():Promise<PreparationSummary[]>{await this.ready();const results:PreparationSummary[]=[];for(const id of Object.keys(this.book)){const view=await this.get(id);results.push({id,input:view.input,updatedAt:view.updatedAt,phase:view.phase,title:view.plan?.draft.title||view.input.goal,taskId:view.taskId})}return results.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))}
+  async list():Promise<PreparationSummary[]>{
+    await this.ready();const results:PreparationSummary[]=[]
+    for(const id of Object.keys(this.book)){
+      if(!this.book[id]||this.book[id].deleted)continue
+      try{const view=await this.get(id);results.push({id,input:view.input,updatedAt:view.updatedAt,phase:view.phase,title:view.plan?.draft.title||view.input.goal,taskId:view.taskId,busy:view.busy})}
+      catch(error){if(this.book[id]&&!this.book[id].deleted)throw error}
+    }
+    return results.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))
+  }
+  async remove(rawId:string):Promise<void>{
+    await this.ready();const id=z.string().uuid().parse(rawId)
+    if(this.running.has(id))throw new Error('准备流程正在处理，请先停止后再删除')
+    if(!this.book[id])throw new Error('准备流程不存在')
+    this.running.set(id,new AbortController())
+    try{
+      this.book[id].deleted=true;await this.persist()
+      await this.saver.deleteThread(id)
+      delete this.book[id];await this.persist()
+    }finally{this.running.delete(id);this.changed(id)}
+  }
   private async execute(id:string,operation:()=>Promise<unknown>):Promise<PreparationView>{
+    if(!this.book[id]||this.book[id].deleted)throw new Error('准备流程不存在')
     if(this.running.has(id))throw new Error('准备流程正在处理，请稍候')
     const controller=new AbortController();this.running.set(id,controller);delete this.book[id].error;delete this.book[id].paused;this.changed(id)
     try{await operation()}catch(error){this.book[id].error=redactSecrets(error instanceof Error?error.message:String(error)).slice(0,2000);this.book[id].paused=controller.signal.aborted}
@@ -194,6 +220,23 @@ export class PreparationService {
       if(current.next.includes('wait'))await this.graph.invoke(new Command({resume:action}),this.config(id))
       else{await this.graph.updateState(this.config(id),{action});await this.graph.invoke(null,this.config(id))}
     })
+  }
+  async refine(rawId:string,rawInstruction:string,rawRevision:number):Promise<RefineResult>{
+    await this.ready()
+    const id=z.string().uuid().parse(rawId),instruction=z.string().trim().min(1).max(4000).parse(rawInstruction),expectedRevision=z.number().int().nonnegative().parse(rawRevision)
+    if(this.running.has(id))throw new Error('准备流程正在处理，请稍候')
+    const view=await this.get(id)
+    if(this.running.has(id))throw new Error('准备流程正在处理，请稍候')
+    if(!view.plan||view.revision!==expectedRevision)throw new Error('方案已更新，请刷新后重试')
+    if(!this.ops.refine)throw new Error('模型修改功能不可用')
+    const controller=new AbortController();this.running.set(id,controller);this.changed(id)
+    try{
+      const result=await this.step(id,'模型修改实验方案',instruction,()=>this.ops.refine!(view.plan!,instruction,{environments:view.environments,dataCandidates:view.dataCandidates},controller.signal,event=>this.record(id,event)),'model')
+      controller.signal.throwIfAborted()
+      const current=await this.graph.getState(this.config(id))
+      if(current.values.flow?.revision!==expectedRevision)throw new Error('分析期间方案已变化，本次建议未应用')
+      return result
+    }finally{this.running.delete(id);await this.persist();this.changed(id)}
   }
   async cancel(rawId:string):Promise<void>{await this.ready();const id=z.string().uuid().parse(rawId);this.running.get(id)?.abort(new Error('准备已暂停，已完成的步骤与方案已保存'))}
   stop():void{for(const controller of this.running.values())controller.abort(new Error('应用已关闭，准备流程可在下次继续'))}

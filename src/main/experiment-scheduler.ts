@@ -186,6 +186,7 @@ export class ExperimentScheduler {
   private async prepareAndLaunch(task: ExperimentTask, run: ExperimentRun): Promise<boolean> {
     const current = this.findRun(task.id, run.id)
     if (!current || current.status !== 'queued') return false
+    const cpu = (run.computeDevice ?? task.computeDevice) === 'cpu'
     const minimumFreeVramGiB = run.minimumFreeVramGiB !== undefined
       ? run.minimumFreeVramGiB ?? undefined
       : task.minimumFreeVramGiB
@@ -217,23 +218,25 @@ export class ExperimentScheduler {
       return this.waitInQueue(task.id, run.id, message)
     }
 
-    let firstSnapshot
-    try {
-      firstSnapshot = await this.monitor.snapshot(profile, secrets)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '无法读取服务器 GPU 状态'
-      return this.waitInQueue(task.id, run.id, `等待服务器可连接：${message}`)
+    if (!cpu) {
+      let firstSnapshot
+      try {
+        firstSnapshot = await this.monitor.snapshot(profile, secrets)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '无法读取服务器 GPU 状态'
+        return this.waitInQueue(task.id, run.id, `等待服务器可连接：${message}`)
+      }
+      if (this.stopped) return false
+      if (firstSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `等待服务器连接：${firstSnapshot.error ?? '当前离线'}`)
+      if (!this.selectGpu(firstSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)) {
+        const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
+        const message = run.gpuUuid || run.gpuIndex !== undefined
+          ? `等待指定 GPU ${run.gpuIndex ?? ''} 出现在最新采样中`
+          : `当前没有符合条件的 GPU${requirement}，任务仍在队列中`
+        return this.waitInQueue(task.id, run.id, message)
+      }
     }
-    if (this.stopped) return false
-    if (firstSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `等待服务器连接：${firstSnapshot.error ?? '当前离线'}`)
-    if (!this.selectGpu(firstSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)) {
-      const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
-      const message = run.gpuUuid || run.gpuIndex !== undefined
-        ? `等待指定 GPU ${run.gpuIndex ?? ''} 出现在最新采样中`
-        : `当前没有符合条件的 GPU${requirement}，任务仍在队列中`
-      return this.waitInQueue(task.id, run.id, message)
-    }
-    const targetDescription = run.gpuUuid || run.gpuIndex !== undefined ? `GPU ${run.gpuIndex}` : '符合条件的 GPU'
+    const targetDescription = cpu ? 'CPU' : run.gpuUuid || run.gpuIndex !== undefined ? `GPU ${run.gpuIndex}` : '符合条件的 GPU'
     await this.updateRun(task.id, run.id, { status: 'preparing', message: `已选择 ${targetDescription}，正在检查目录和 Conda 环境` }, 'queued')
     if (this.findRun(task.id, run.id)?.status !== 'preparing') return false
 
@@ -278,17 +281,21 @@ export class ExperimentScheduler {
     }
 
     if (this.stopped || this.findRun(task.id, run.id)?.status !== 'preparing') return false
-    const latestSnapshot = await this.monitor.snapshot(profile, secrets)
-    if (this.stopped) return false
-    if (this.findRun(task.id, run.id)?.status !== 'preparing') return false
-    if (latestSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `启动前服务器失联：${latestSnapshot.error ?? '当前离线'}`)
-    const selectedGpu = this.selectGpu(latestSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)
-    if (!selectedGpu) {
-      const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
-      const message = run.gpuUuid || run.gpuIndex !== undefined
-        ? `启动前未找到指定 GPU ${run.gpuIndex ?? ''}，继续等待该 GPU`
-        : `启动前没有符合条件的 GPU${requirement}，继续等待`
-      return this.waitInQueue(task.id, run.id, message)
+    let selectedGpu: Awaited<ReturnType<MonitorService['snapshot']>>['gpus'][number] | undefined
+    if (!cpu) {
+      const latestSnapshot = await this.monitor.snapshot(profile, secrets)
+      if (this.stopped) return false
+      if (this.findRun(task.id, run.id)?.status !== 'preparing') return false
+      if (latestSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `启动前服务器失联：${latestSnapshot.error ?? '当前离线'}`)
+      selectedGpu = this.selectGpu(latestSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)
+      if (!selectedGpu) {
+        const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
+        const message = run.gpuUuid || run.gpuIndex !== undefined
+          ? `启动前未找到指定 GPU ${run.gpuIndex ?? ''}，继续等待该 GPU`
+          : `启动前没有符合条件的 GPU${requirement}，继续等待`
+        return this.waitInQueue(task.id, run.id, message)
+      }
+
     }
 
     try {
@@ -300,7 +307,7 @@ export class ExperimentScheduler {
         dataPath,
         launchCommand,
         condaEnvironment: condaConfig
-      }, profile, secrets, selectedGpu.index)
+      }, profile, secrets, selectedGpu?.index ?? null)
       if (this.stopped) return false
       if (this.findRun(task.id, run.id)?.status !== 'preparing') {
         try {
@@ -311,14 +318,14 @@ export class ExperimentScheduler {
         return false
       }
       const startedAt = new Date().toISOString()
-      const freeVramGiB = (selectedGpu.memoryTotalMiB - selectedGpu.memoryUsedMiB) / 1024
+      const freeVramGiB = selectedGpu ? (selectedGpu.memoryTotalMiB - selectedGpu.memoryUsedMiB) / 1024 : 0
       await this.updateRun(task.id, run.id, {
         status: 'running',
         startedAt,
-        message: `已在 GPU ${selectedGpu.index} 启动（利用率 ${selectedGpu.utilizationPercent}% · 空闲显存 ${freeVramGiB.toFixed(freeVramGiB >= 10 ? 0 : 1)} GiB）；日志：${launched.logPath}`,
-        gpuUuid: selectedGpu.uuid,
-        gpuIndex: selectedGpu.index,
-        gpuNameSnapshot: selectedGpu.name,
+        message: cpu ? `已在 CPU 启动；日志：${launched.logPath}` : `已在 GPU ${selectedGpu!.index} 启动（利用率 ${selectedGpu!.utilizationPercent}% · 空闲显存 ${freeVramGiB.toFixed(freeVramGiB >= 10 ? 0 : 1)} GiB）；日志：${launched.logPath}`,
+        gpuUuid: selectedGpu?.uuid,
+        gpuIndex: selectedGpu?.index,
+        gpuNameSnapshot: selectedGpu?.name,
         remotePid: launched.pid,
         remoteRunDir: launched.runDir,
         logPath: launched.logPath,
@@ -391,7 +398,7 @@ export class ExperimentScheduler {
     run: ExperimentRun & Required<Pick<ExperimentRunStartInput, 'serverId' | 'accessRouteId' | 'codePath' | 'dataPath' | 'launchCommand'>>,
     profile: ReturnType<typeof applyAccessRoute>,
     secrets: ReturnType<AppStore['getSecrets']>,
-    gpuIndex: number
+    gpuIndex: number | null
   ): Promise<{ runDir: string; pid: number; logPath: string }> {
     const runDirExpr = `"${RUN_ROOT}/${run.id}"`
     const logPathExpr = `"$run_dir/stdout.log"`
@@ -404,7 +411,7 @@ export class ExperimentScheduler {
       `run_dir=${runDirExpr}`,
       'run_exit=0',
       `if ! cd -- ${shellQuote(run.codePath)}; then run_exit=120; else`,
-      `  export CUDA_VISIBLE_DEVICES=${shellQuote(String(gpuIndex))}`,
+      `  export CUDA_VISIBLE_DEVICES=${shellQuote(gpuIndex === null ? '' : String(gpuIndex))}`,
       `  export LABDECK_RUN_ID=${shellQuote(run.id)}`,
       `  export LABDECK_RUN_DIR=${runDirExpr}`,
       `  export LABDECK_LOG_FILE=${logPathExpr}`,

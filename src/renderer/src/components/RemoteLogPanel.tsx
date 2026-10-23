@@ -1,5 +1,6 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal } from 'lucide-react'
+import { ChevronDown, LoaderCircle, Pause, Play, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import type { ExperimentRunLog } from '@shared/types'
 
 type LogSnapshot = ExperimentRunLog & { processRunning?: boolean; processIdentityChanged?: boolean }
@@ -8,7 +9,8 @@ function readableLog(text: string): string {
   return text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
-export function RemoteLogPanel({ label, logPath, running, readLog, enabled = true }: {
+export function RemoteLogPanel({ label, logPath, running, readLog, enabled = true, onClose }: {
+  onClose?():void
   enabled?: boolean
   label: string
   logPath?: string
@@ -55,7 +57,7 @@ export function RemoteLogPanel({ label, logPath, running, readLog, enabled = tru
           setError('')
         }
       } catch (reason) {
-        if (!disposed) setError(reason instanceof Error ? reason.message : '暂时无法读取远程日志')
+        if (!disposed) setError(userFacingError(reason,'暂时无法读取远程日志，请检查连接后重试。'))
       } finally {
         if (!disposed) {
           setBusy(false)
@@ -81,7 +83,9 @@ export function RemoteLogPanel({ label, logPath, running, readLog, enabled = tru
         {active && <button type="button" onClick={() => setPaused((value) => !value)}>{paused ? <Play size={12} /> : <Pause size={12} />}{paused ? '继续刷新' : '暂停刷新'}</button>}
         <label><input type="checkbox" checked={following} onChange={(event) => setFollowing(event.target.checked)} />跟随输出</label>
         <button type="button" disabled={busy || !logPath} onClick={() => { manualRefresh.current = true; setRefresh((value) => value + 1) }}><RotateCcw size={12} />刷新</button>
+        {onClose&&<button type="button" aria-label="关闭运行日志" onClick={onClose}><X size={14}/></button>}
       </div>}
+      {!expanded&&onClose&&<button type="button" aria-label="关闭运行日志" onClick={onClose}><X size={14}/></button>}
     </header>
     {expanded && <>
       {log?.processIdentityChanged && <div className="process-log-help" role="status">服务器已重启或 PID 已被其他进程复用，已停止刷新并保留原日志。</div>}
