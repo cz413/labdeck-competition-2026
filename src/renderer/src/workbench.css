@@ -536,9 +536,24 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .experiment-pool-table > tbody > .experiment-pool-detail-row > td { height:auto; max-width:none; padding:0 0 12px; white-space:normal; }
 .experiment-pool-detail-row > td > .experiment-task-card { border-top:0; border-radius:0 0 6px 6px; }
 
-.experiment-research-group { background:var(--panel-soft); }
+.experiment-research-group { background:color-mix(in srgb,var(--accent-text) 4%,transparent); }
 .experiment-research-group-toggle { display:inline-flex; align-items:center; gap:8px; font-weight:600; }
 .experiment-research-group-toggle>svg { transform:rotate(-90deg); flex-shrink:0; }
 .experiment-research-group-toggle>svg.expanded { transform:rotate(0deg); }
 .experiment-pool-table .experiment-research-child>td:first-child { padding-left:38px; }
 .experiment-research-child>td:first-child>.wb-text-button { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Keep comparison batches aligned with ordinary task rows. */
+.experiment-pool-table th:last-child { width:124px; }
+.experiment-pool-table td:last-child { white-space:nowrap; }
+.experiment-pool-table .experiment-research-group > td { padding-top:10px; padding-bottom:10px; }
+.experiment-pool-table .experiment-research-group > td:first-child { box-shadow:inset 2px 0 var(--border); }
+.experiment-research-group-toggle { width:100%; text-align:left; min-width:0; line-height:1.6; }
+.experiment-research-group-toggle > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.experiment-pool-table .experiment-research-group > td:first-child > small { margin-left:22px; margin-top:3px; font-size:11px; line-height:1.5; }
+.experiment-group-actions { gap:12px; min-height:28px; }
+.experiment-group-actions > .wb-text-button { padding:4px 0; font-size:13px; white-space:nowrap; }
+.workbench-shell .experiment-group-more > summary { display:flex; align-items:center; justify-content:center; width:28px; height:28px; min-height:28px; padding:0; border:1px solid transparent; border-radius:4px; background:transparent; color:var(--muted); }
+.workbench-shell .experiment-group-more > summary:hover, .workbench-shell .experiment-group-more[open] > summary { background:var(--control-hover); border-color:var(--border); color:var(--text); }
+.experiment-group-more .experiment-task-more-menu { width:176px; border-radius:5px; padding:5px; }
+.experiment-group-more .experiment-task-more-menu > button { gap:8px; min-height:34px; font-size:12px; }
