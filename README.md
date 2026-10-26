@@ -189,6 +189,4 @@ docs/                      使用指南、设计说明与截图
 
 ## 来源与第三方声明
 
-本项目基于既有 LabDeck / LabDock 代码构建，保留来源及 AI 辅助开发记录，参见 [基础项目说明](BASE_PROJECT_README.md) 和 [PROVENANCE.json](PROVENANCE.json)。
-
 项目 `package.json` 声明为 MIT，第三方组件遵循各自许可。仓颉运行组件的声明见 [CANGJIE-LICENSE](resources/cangjie/CANGJIE-LICENSE) 与 [Open Source Software Notice](resources/cangjie/Open_Source_Software_Notice.docx)。
