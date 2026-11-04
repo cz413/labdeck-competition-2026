@@ -287,3 +287,10 @@ fieldset.smart-start-main { min-width:0; margin:0; padding:0; border:0; }
 .smart-project-context code { min-width:0; overflow-wrap:anywhere; font-size:12px; }
 .smart-project-context p { margin:0; line-height:1.6; overflow-wrap:anywhere; }
 .smart-project-context p > span { margin-right:10px; font-size:12px; }
+
+.smart-history>summary { display:flex; align-items:center; gap:7px; }
+.smart-history li { align-items:start; padding:8px 0; border-bottom:1px solid var(--border-soft); }
+.smart-history li:last-child { border-bottom:0; }
+.smart-history li>span { flex:1; min-width:0; }
+.smart-history li>button { display:inline-flex; align-items:center; justify-content:center; gap:5px; flex-shrink:0; min-width:64px; margin-left:8px; }
+.smart-history li>button:disabled { color:var(--muted); cursor:default; opacity:.65; }

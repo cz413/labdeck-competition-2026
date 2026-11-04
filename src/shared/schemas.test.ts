@@ -14,6 +14,7 @@ describe('theme settings compatibility', () => {
 
   it('keeps the light theme and supplies a default for older settings', () => {
     expect(appSettingsSchema.parse({ ...settings, theme: 'instrument' }).theme).toBe('instrument')
-    expect(appSettingsSchema.parse(settings).theme).toBe('ocean')
+    expect(appSettingsSchema.parse(settings).theme).toBe('instrument')
+    expect(appSettingsSchema.parse({ ...settings, theme: 'ocean' }).theme).toBe('ocean')
   })
 })

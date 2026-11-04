@@ -6,12 +6,12 @@ export function researchMemberTitle(campaign:ResearchCampaign,member:ParameterVa
   const entries=Object.entries(member.parameters)
   const baseline=entries.length>0&&entries.every(([flag,value])=>{
     const token=tokens.findIndex(item=>item===flag||item.startsWith(flag+'='))
-    const original=token<0?campaign.design?.variable?.flag===flag?campaign.design.variable.baselineValue:undefined:tokens[token].includes('=')?tokens[token].slice(flag.length+1):tokens[token+1]
+    const documented=(campaign.design?.variables??(campaign.design?.variable?[campaign.design.variable]:[])).find(variable=>variable.flag===flag)
+    const original=token<0?documented?.baselineValue:tokens[token].includes('=')?tokens[token].slice(flag.length+1):tokens[token+1]
     return original===value
   })
   if(baseline)return '基线'
-  const [flag,value]=entries.find(([flag])=>!/seed/i.test(flag))??entries[0]??['','']
-  const title=flag?`${flag.replace(/^--/,'')}=${value}`:'对照'
+  const title=entries.length?entries.map(([flag,value])=>`${flag.replace(/^--/,'')}=${value}`).join(' · '):'对照'
   return title.length>28?title.slice(0,27)+'…':title
 }
 export function researchGroupTitle(campaign:ResearchCampaign):string {

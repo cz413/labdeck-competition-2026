@@ -29,6 +29,17 @@ describe('grouped research tasks',()=>{
     expect(researchMemberTitle(group,{...group.members[1],parameters:{'--long_parameter':'x'.repeat(80)}}).length).toBeLessThanOrEqual(28)
     expect(researchGroupTitle(group)).toBe('SASRec · 批次大小对照')
   })
+  it('recognizes documented default baselines and distinguishes multi-parameter children',()=>{
+    const group=campaign('batch',[])
+    group.baseline.launchCommand='python main.py'
+    group.design={axes:[],hypothesis:'',assumptions:[],variables:[
+      {flag:'--lr',baselineValue:'0.001',source:{path:'main.py',startLine:1,quote:''}},
+      {flag:'--batch',baselineValue:'32',source:{path:'main.py',startLine:2,quote:''}}
+    ]}
+    const member={key:'',command:'',changes:[],parameters:{'--lr':'0.001','--batch':'32'}}
+    expect(researchMemberTitle(group,member)).toBe('基线')
+    expect(researchMemberTitle(group,{...member,parameters:{'--lr':'0.001','--batch':'16'}})).toBe('lr=0.001 · batch=16')
+  })
   it('shows active/failed states before completed and handles canceled groups',()=>{
     expect(researchGroupStatus([task('a'),task('b','running')])).toBe('running')
     expect(researchGroupStatus([task('a'),task('b','failed')])).toBe('failed')

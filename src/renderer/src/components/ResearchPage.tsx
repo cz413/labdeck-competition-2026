@@ -2,7 +2,7 @@ import { userFacingError } from '@shared/user-facing-error'
 import { parameterExperimentReason } from '@shared/parameter-engine'
 import { resultConfigSchema, resultConfigForRun, resultFileSelectionPath, resolveResultPath } from '@shared/research-results'
 import { useEffect, useState } from 'react'
-import { ChevronDown, FileDown, FileText, FlaskConical, History, LoaderCircle, FolderOpen, Play, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { ChevronDown, FileDown, FileText, FlaskConical, History, LoaderCircle, FolderOpen, Play, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 import type { ExperimentTask, ServerProfile } from '@shared/types'
 import type { ResultCollectionConfig } from '@shared/research-results'
 import { baselineDraft } from '@shared/research'
@@ -22,7 +22,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
   const eligible=candidates.filter(t=>t.runs.length?t.runs.some(run=>!baselineReason(t,run.id)):!baselineReason(t))
   const [taskId,setTaskId]=useState(props.initialTaskId||eligible[0]?.id||'')
   const [sourceRunId,setSourceRunId]=useState('')
-  const [objective,setObjective]=useState('比较学习率对训练稳定性的影响，保留其他配置。')
+  const [objective,setObjective]=useState('')
   const [rows,setRows]=useState([{flag:'',values:''}])
   const [design,setDesign]=useState<ResearchSuggestion|null>(null)
   const [maxRunsInput,setMaxRunsInput]=useState('9')
@@ -68,6 +68,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
   })
   const sharedResultPaths=[...new Set(resolvedGroups.flatMap(source=>source.paths.filter(path=>path.startsWith('/'))))].filter(path=>resolvedGroups.filter(source=>source.paths.includes(path)).length>1)
   const resultConfigDirty=!!selected&&collectionKey(resultConfig)!==collectionKey(selected.resultConfig)
+  const designVariables=design?.variables??(design?.variable?[design.variable]:[])
   const count=axes.reduce((n,a)=>n*new Set(a.values).size,axes.length?1:0)
   useEffect(()=>{if(props.initialTaskId&&candidates.some(t=>t.id===props.initialTaskId)){setTaskId(props.initialTaskId);setSourceRunId('');setDesign(null)}},[props.initialTaskId])
   useEffect(()=>{
@@ -142,16 +143,25 @@ export function ResearchPage(props:Props):React.JSX.Element {
       {task&&<label>基准运行记录<select aria-label="基准运行记录" disabled={!!busy||!task.runs.length} value={sourceRunId} onChange={event=>{setSourceRunId(event.target.value);setDesign(null);setError('')}}><option value="" disabled hidden>{task.runs.length?'请选择一次运行':'当前任务配置（尚无运行记录）'}</option>{[...task.runs].reverse().map(run=><option key={run.id} value={run.id} disabled={!!baselineReason(task,run.id)}>第 {run.number} 次运行 · {runNames[run.status]}{run.startedAt||run.queuedAt?` · ${new Date(run.startedAt??run.queuedAt!).toLocaleString('zh-CN')}`:''}{baselineReason(task,run.id)?'（配置不支持）':''}</option>)}</select></label>}
       {unsupported&&<p className="research-note" role="status">{unsupported}</p>}
       {baseline&&<details className="research-baseline"><summary>{sourceRunId?`基于第 ${task?.runs.find(run=>run.id===sourceRunId)?.number} 次运行`:'查看当前基准配置'}<ChevronDown size={13}/></summary><code>{baseline.launchCommand}</code><p>{props.servers.find(s=>s.id===baseline.serverId)?.name} · {baseline.computeDevice==='cpu'?'CPU':'GPU'} · {baseline.codePath}</p>{baseline.condaEnvironment&&<p>Conda · {baseline.condaEnvironment.environmentName??baseline.condaEnvironment.environmentPrefix}</p>}</details>}
-      <label>对比目标<textarea aria-label="研究问题" placeholder="例如：比较不同学习率对训练结果的影响" rows={3} disabled={!!busy} value={objective} onChange={e=>{setObjective(e.target.value);setDesign(null)}}/></label>
+      <section className="research-goal-card" aria-labelledby="research-goal-title">
+        <header><span className="research-goal-icon"><Sparkles size={17}/></span><div><h3 id="research-goal-title">想比较什么</h3><p>用一句话描述你的对比目标</p></div></header>
+        <textarea aria-label="研究问题" placeholder="例如：比较学习率对训练效果的影响，保留其他配置" rows={4} disabled={!!busy} value={objective} onChange={e=>{setObjective(e.target.value);setDesign(null)}}/>
+        <div className="research-goal-examples">{[
+          ['比较学习率','比较学习率对训练效果的影响，保留其他配置。'],
+          ['比较批次大小','比较批次大小对训练稳定性的影响，保留其他配置。'],
+          ['比较 Dropout','比较 Dropout 对模型泛化表现的影响，保留其他配置。']
+        ].map(([label,value])=><button type="button" key={label} disabled={!!busy} onClick={()=>{setObjective(value);setDesign(null)}}>{label}</button>)}</div>
+      </section>
       <div className="research-axis-heading"><div className="research-section-heading"><span>2</span><div><h3>对比参数</h3></div></div><button className="secondary-button" disabled={!!busy||!props.modelEnabled||!taskId||!!unsupported||!objective.trim()||!maxRunsValid||maxRuns<2} onClick={()=>void action('suggest',async()=>{const suggestion=await window.labApi.research.suggest(taskId,objective,maxRuns,sourceRunId||undefined);setDesign(suggestion);if(suggestion.axes.length)setRows(suggestion.axes.map(a=>({flag:a.flag,values:a.values.join(', ')})))})}>{busy==='suggest'?<LoaderCircle size={13} className="spin"/>:<FlaskConical size={13}/>}{busy==='suggest'?'正在读取项目并设计…':'智能设计对照方案'}</button></div>
-      <p className="research-note">手动填写参数，或读取项目文件生成单变量方案。所读文件会发送给已配置的模型。</p>
+      <p className="research-note">手动填写参数，或读取项目文件生成对照方案。所读文件会发送给已配置的模型。</p>
       {design&&<section className={`research-design ${design.status==='needs_info'?'needs-info':''}`} role="status">
-        <header><strong>{design.status==='ready'?'单变量对照方案':'需要补充信息'}</strong>{design.axes.length>0&&<span>{design.axes[0].values.length} 组 · 含基线</span>}</header>
+        <header><strong>{design.status==='ready'?(design.axes.length>1?'多参数对照方案':'单变量对照方案'):'需要补充信息'}</strong>{design.axes.length>0&&<span>{design.axes.reduce((total,axis)=>total*axis.values.length,1)} 组 · 含基线</span>}</header>
         {design.hypothesis&&<p>{design.hypothesis}</p>}
-        {design.variable&&<dl><div><dt>比较变量</dt><dd><code>{design.variable.flag}</code></dd></div><div><dt>基线值</dt><dd><code>{design.variable.baselineValue}</code></dd></div><div><dt>候选值</dt><dd>{design.axes[0]?.values.join(' / ')}</dd></div></dl>}
+        {designVariables.map(variable=><dl key={variable.flag}><div><dt>比较变量</dt><dd><code>{variable.flag}</code></dd></div><div><dt>基线值</dt><dd><code>{variable.baselineValue}</code></dd></div><div><dt>候选值</dt><dd>{design.axes.find(axis=>axis.flag===variable.flag)?.values.join(' / ')}</dd></div></dl>)}
+        {design.axes.length>1&&<p className="research-note">各参数候选值将组合运行；单个参数的影响需结合其他参数保持一致的组进行比较。</p>}
         {design.rationale&&<p>{design.rationale}</p>}
         {design.assumptions.length>0&&<ul>{design.assumptions.map((item,i)=><li key={i}>{item}</li>)}</ul>}
-        <details><summary>基线与项目依据</summary><code>{design.baselineCommand}</code>{design.variable&&<blockquote><span>{design.variable.source.path}:{design.variable.source.startLine}</span><pre>{design.variable.source.quote}</pre></blockquote>}{!!design.readFiles?.length&&<p>已读取：{design.readFiles.join('、')}</p>}</details>
+        <details><summary>基线与项目依据</summary><code>{design.baselineCommand}</code>{designVariables.map(variable=><blockquote key={variable.flag}><span>{variable.flag} · {variable.source.path}:{variable.source.startLine}</span><pre>{variable.source.quote}</pre></blockquote>)}{!!design.readFiles?.length&&<p>已读取：{design.readFiles.join('、')}</p>}</details>
       </section>}
       <p className="research-note">多个候选值用逗号分隔。</p>
       <div className="research-axis-labels"><span>参数名</span><span>候选值</span><span/></div>
@@ -163,7 +173,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
     </section></aside>
     <div className="research-output">{!selected?<div className="research-empty"><div className="research-empty-icon"><FlaskConical size={28}/></div><h2>对照方案会在这里展开</h2><ol><li><span>1</span>设置对比参数</li><li><span>2</span>预览生成的配置</li><li><span>3</span>确认并运行</li></ol></div>:<>
       <header className="research-campaign-heading"><div><h2>{selected.objective}</h2><p>{selected.baseline.title}{selected.sourceRunNumber!==undefined?` · 基于第 ${selected.sourceRunNumber} 次运行`:''} · {stageNames[selected.stage]}{selected.paused?' · 跟踪已暂停':''}</p></div><button className="secondary-button" disabled={!!busy} onClick={()=>void action('export',async()=>{if(await window.labApi.research.export(selected.id))props.notify('实验研究记录已导出')})}><FileDown size={14}/>导出</button></header>
-      {selected.design&&<details className="research-design"><summary>实验假设与设计依据</summary><p>{selected.design.hypothesis}</p><p>{selected.design.rationale}</p>{selected.design.variable&&<p><code>{selected.design.variable.flag}</code> · 基线 {selected.design.variable.baselineValue} · {selected.design.variable.source.path}:{selected.design.variable.source.startLine}</p>}</details>}
+      {selected.design&&<details className="research-design"><summary>实验假设与设计依据</summary><p>{selected.design.hypothesis}</p><p>{selected.design.rationale}</p>{(selected.design.variables??(selected.design.variable?[selected.design.variable]:[])).map(variable=><p key={variable.flag}><code>{variable.flag}</code> · 基线 {variable.baselineValue} · {variable.source.path}:{variable.source.startLine}</p>)}</details>}
       {selected.outputIsolation&&<section className="research-output-isolation">
         {selected.outputIsolation.status==='verified'?<><strong>各组使用独立输出目录</strong><p>已根据项目源码调整 {selected.outputIsolation.flag}，具体位置见下方配置。</p>{selected.outputIsolation.source&&<details><summary>查看输出参数依据</summary><span>{selected.outputIsolation.source.path}:{selected.outputIsolation.source.startLine}</span><pre>{selected.outputIsolation.source.quote}</pre></details>}</>:<p className="intel-error" role="alert">{selected.outputIsolation.reason} 当前方案暂不能提交。</p>}
       </section>}

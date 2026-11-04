@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { expandParameters } from '../shared/parameter-engine'
 import { researchImports, researchParameters, researchReadPaths, validateResearchDesign } from './research-design'
 import type { RepositoryExcerpt } from '../shared/repository-guide'
 const command='python main.py --lr 0.001'
@@ -36,9 +37,23 @@ describe('project grounded research design',()=>{
     expect(()=>validateResearchDesign(answer('--batch_size',['128']),command,parameters,4)).toThrow('choices')
     expect(()=>validateResearchDesign(answer('--batch_size',['1.5']),command,parameters,4)).toThrow('整数')
   })
-  it('rejects multiple changing variables and semantically identical candidates',()=>{
+  it('includes all requested variables, their baselines and source evidence in a Cartesian design',()=>{
+    const result=validateResearchDesign({...answer(),axes:[...answer().axes,{flag:'--batch_size',values:['16']}]},command,researchParameters(command,files),4)
+    expect(result.axes).toEqual([{flag:'--lr',values:['0.001','0.01']},{flag:'--batch_size',values:['32','16']}])
+    expect(result.variables?.map(variable=>[variable.flag,variable.baselineValue,variable.source.path])).toEqual([['--lr','0.001','main.py'],['--batch_size','32','main.py']])
+    expect(result.variable).toBeUndefined()
+    expect(expandParameters(command,result.axes,4).variants.map(variant=>variant.parameters)).toEqual([
+      {'--lr':'0.001','--batch_size':'32'},{'--lr':'0.001','--batch_size':'16'},
+      {'--lr':'0.01','--batch_size':'32'},{'--lr':'0.01','--batch_size':'16'}
+    ])
+    expect(()=>validateResearchDesign({...answer(),axes:[...answer().axes,{flag:'--batch_size',values:['16']}]},command,researchParameters(command,files),3)).toThrow('预算')
+  })
+  it('validates every axis and rejects repeated flags, aliases and semantically identical candidates',()=>{
     const parameters=researchParameters(command,files)
-    expect(()=>validateResearchDesign({...answer(),axes:[...answer().axes,{flag:'--batch_size',values:['16']}]},command,parameters,8)).toThrow()
+    expect(()=>validateResearchDesign({...answer(),axes:[...answer().axes,{flag:'--batch_size',values:['128']}]},command,parameters,8)).toThrow('choices')
+    expect(()=>validateResearchDesign({...answer(),axes:[...answer().axes,...answer().axes]},command,parameters,8)).toThrow('重复')
+    const aliases=researchParameters(command,[file("p.add_argument('--lr', '--learning_rate', type=float, default=0.001)")])
+    expect(()=>validateResearchDesign({...answer(),axes:[...answer().axes,{flag:'--learning_rate',values:['0.02']}]},command,aliases,8)).toThrow('重复')
     expect(()=>validateResearchDesign(answer('--lr',['1e-3']),command,parameters,4)).toThrow('只有基线')
   })
   it('returns missing information rather than inventing a design',()=>{

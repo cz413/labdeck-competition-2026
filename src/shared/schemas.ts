@@ -86,7 +86,7 @@ export const processWatchSchema = processWatchInputSchema.extend({
 
 export const appSettingsSchema = z.object({
   // Keep older settings readable without discarding the rest of the user's data.
-  theme: z.enum(['ocean', 'instrument', 'machineRoom']).default('ocean')
+  theme: z.enum(['ocean', 'instrument', 'machineRoom']).default('instrument')
     .transform((theme) => theme === 'machineRoom' ? 'ocean' : theme),
   monitoringEnabled: z.boolean(),
   pollingIntervalSeconds: z.number().int().min(10).max(3600),

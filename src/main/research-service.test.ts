@@ -38,6 +38,18 @@ beforeEach(async()=>{
 })
 afterEach(async()=>{services.forEach(s=>s.stop());services.length=0;const target=resolve(directory),parent=resolve(tmpdir());if(!target.startsWith(parent+'\\')&&!target.startsWith(parent+'/'))throw new Error('Unsafe temp path');await rm(target,{recursive:true,force:true})})
 describe('persistent experiment research graph',()=>{
+  it('persists and queues every combination with multi-parameter design evidence',async()=>{
+    const s=service()
+    const axes=[{flag:'--lr',values:['0.01','0.001']},{flag:'--batch-size',values:['16','32']}]
+    const variables=axes.map(axis=>({flag:axis.flag,baselineValue:axis.values[0],source:{path:'train.py',startLine:1,quote:'argument definition'}}))
+    const initial=await s.create({taskId:source.id,objective:'比较学习率和批次大小',axes,maxRuns:4,design:{status:'ready',axes,baselineCommand:source.launchCommand,hypothesis:'比较组合结果',assumptions:[],variables}})
+    expect(initial.design?.variables).toEqual(variables)
+    expect(initial.members).toHaveLength(4)
+    expect((await service().list())[0].design?.variables).toEqual(variables)
+    await s.approve(initial.id,true)
+    expect(start).toHaveBeenCalledTimes(4)
+    expect(tasks.slice(1).map(task=>task.title)).toEqual(['基线','lr=0.01 · batch-size=32','lr=0.001 · batch-size=16','lr=0.001 · batch-size=32'])
+  })
   it('recovers a checkpoint whose index write was interrupted',async()=>{
     const original=await create(service())
     await rm(join(directory,'campaigns.json'))

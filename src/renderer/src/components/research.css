@@ -237,3 +237,16 @@
 .research-resolved-file code { display:block; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font:11px/1.8 'Cascadia Code',Consolas,monospace; }
 .research-file-empty { margin:0; color:var(--muted); font-size:11px; line-height:1.7; }
 @media(max-width:480px) { .research-page .research-result-file-row { grid-template-columns:minmax(0,1fr) auto 24px; gap:5px; } .research-page .research-result-file-row > .research-select-file { padding:0 8px; } .research-file-mode-switch > button { padding:5px 7px; } }
+
+.research-goal-card { position:relative; margin-top:20px; padding:18px 16px; border:1px solid var(--border); border-radius:6px; background:var(--panel); }
+.research-goal-card::before { content:''; position:absolute; inset:0 auto 0 0; width:3px; background:var(--accent-text); border-radius:6px 0 0 6px; opacity:.65; }
+.research-goal-card>header { display:flex; align-items:flex-start; gap:10px; margin-bottom:16px; }
+.research-goal-icon { display:grid; place-items:center; flex-shrink:0; width:30px; height:30px; color:var(--accent-text); background:var(--accent-surface); border:1px solid var(--border); border-radius:50%; }
+.research-goal-card h3 { margin:0; font-size:16px; line-height:1.5; color:var(--text); }
+.research-goal-card header p { margin:3px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
+.research-page .research-goal-card textarea { display:block; min-height:120px; background:var(--control-bg); }
+.research-goal-examples { display:flex; flex-wrap:wrap; gap:7px; margin-top:14px; }
+.research-goal-examples button { padding:5px 10px; border:1px solid var(--border); border-radius:999px; background:var(--panel-soft); color:var(--muted); font:inherit; font-size:11px; line-height:1.5; cursor:pointer; }
+.research-goal-examples button:hover:not(:disabled) { color:var(--accent-text); border-color:var(--accent-text); background:var(--accent-surface); }
+.research-goal-examples button:focus-visible { outline:2px solid var(--accent-text); outline-offset:2px; }
+.research-goal-examples button:disabled { opacity:.6; cursor:default; }

@@ -16,10 +16,12 @@ export interface ResearchCampaign {
   outputIsolation?:ResearchOutputIsolation; design?: ResearchSuggestion; resultConfig?: ResultCollectionConfig; analysis?: ResearchAnalysis; events: ResearchEvent[]; approvedAt?: string;
 }
 export interface ResearchView extends ResearchCampaign { busy?:boolean; paused: boolean; error?: string; pending: string[] }
+export interface ResearchDesignVariable {flag:string;baselineValue:string;source:{path:string;startLine:number;quote:string}}
 export interface ResearchSuggestion {
   axes: ParameterAxis[]; assumptions: string[]; hypothesis: string
   status?: 'ready' | 'needs_info'; baselineCommand?: string; rationale?: string
-  variable?: {flag:string;baselineValue:string;source:{path:string;startLine:number;quote:string}}
+  variable?: ResearchDesignVariable
+  variables?: ResearchDesignVariable[]
   readFiles?: string[]
 }
 export interface ResearchApi {

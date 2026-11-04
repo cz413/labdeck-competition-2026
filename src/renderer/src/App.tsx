@@ -79,7 +79,7 @@ interface Toast {
 }
 
 const defaultSettings: AppSettings = {
-  theme: 'ocean',
+  theme: 'instrument',
   monitoringEnabled: true,
   pollingIntervalSeconds: 30,
   maxConcurrentPolls: 5,
