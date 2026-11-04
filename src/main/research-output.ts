@@ -1,72 +1,70 @@
 import { posix } from 'node:path'
 import type { ExperimentTaskDraft } from '../shared/types'
-import type { RepositoryExcerpt } from '../shared/repository-guide'
 import type { ParameterVariant, ResearchOutputIsolation, ResearchMember } from '../shared/research'
-import { expandParameters } from '../shared/parameter-engine'
-import { commandParameter, pythonMask, researchParameters } from './research-design'
+import { tokenizeTrainingCommand } from '../shared/parameter-engine'
 
-function callArguments(text:string,pattern:RegExp):string[][] {
-  const masked=pythonMask(text),result:string[][]=[]
-  for(const match of masked.matchAll(pattern)){
-    const start=match.index!+match[0].length;let depth=1,end=start
-    for(;end<masked.length&&depth;end++){if(masked[end]==='(')depth++;if(masked[end]===')')depth--}
-    if(depth)continue
-    const body=text.slice(start,end-1),mask=masked.slice(start,end-1),parts:string[]=[];let nested=0,last=0
-    for(let i=0;i<mask.length;i++){if('([{'.includes(mask[i]))nested++;if(')]}'.includes(mask[i]))nested--;if(mask[i]===','&&!nested){parts.push(body.slice(last,i).trim());last=i+1}}
-    parts.push(body.slice(last).trim());result.push(parts)
-  }
-  return result
-}
-/** Conservative symbolic recognition: no project code is imported or executed. */
-export function inspectResearchOutput(baseline:ExperimentTaskDraft,files:RepositoryExcerpt[]):ResearchOutputIsolation {
-  const parameters=researchParameters(baseline.launchCommand,files,true)
-  const candidates=parameters.filter(p=>/^--(?:train_dir|(?:output|save|model|log|result|results)[_-]dir)$/.test(p.flag)&&p.type==='str')
-  const verified:ResearchOutputIsolation[]=[]
-  for(const parameter of candidates){
-    const destination=parameter.destination??parameter.flag.slice(2).replace(/-/g,'_')
-    for(const file of files.filter(file=>file.path.endsWith('.py'))){
-      const source=file.text
-      const assignments=new Map<string,string[]>()
-      for(const match of source.matchAll(/^\s*([A-Za-z_]\w*)\s*=\s*([^\n#]+)/gm))assignments.set(match[1],[...(assignments.get(match[1])??[]),match[2].trim()])
-      const evaluate=(raw:string,depth=0):string|undefined=>{
-        if(depth>5)return undefined
-        const expr=raw.trim()
-        if(/^(['"])[\w./ -]*\1$/.test(expr))return expr.slice(1,-1)
-        const argument=/^args\.([A-Za-z_]\w*)$/.exec(expr)
-        if(argument){
-          if(argument[1]===destination)return '{value}'
-          const known=parameters.find(p=>(p.destination??p.flag.slice(2).replace(/-/g,'_'))===argument[1])
-          return known?.baselineValue??commandParameter(baseline.launchCommand,'--'+argument[1])
-        }
-        const join=/^(?:os\.path|posixpath)\.join\((.*)\)$/.exec(expr)
-        if(join){const args=callArguments(expr,/(?:os\.path|posixpath)\.join\s*\(/g)[0];if(!args)return undefined;const parts=args.map(part=>evaluate(part,depth+1));return parts.every((part):part is string=>part!==undefined)?parts.reduce((root,part)=>posix.isAbsolute(part)?part:posix.join(root,part),''):undefined}
-        const mask=pythonMask(expr);let nesting=0,last=0;const parts:string[]=[]
-        for(let i=0;i<mask.length;i++){if(mask[i]==='(')nesting++;if(mask[i]===')')nesting--;if(mask[i]==='+'&&!nesting){parts.push(expr.slice(last,i));last=i+1}}
-        if(parts.length){parts.push(expr.slice(last));const values=parts.map(part=>evaluate(part,depth+1));return values.every(v=>v!==undefined)?values.join(''):undefined}
-        if(/^[A-Za-z_]\w*$/.test(expr)&&assignments.get(expr)?.length===1)return evaluate(assignments.get(expr)![0],depth+1)
-        return undefined
-      }
-      const directories=callArguments(source,/\bos\.(?:makedirs|mkdir)\s*\(/g).map(args=>evaluate(args[0]??'')).filter((value):value is string=>!!value&&value.includes('{value}'))
-      const writes=[...callArguments(source,/\bopen\s*\(/g).filter(args=>/^['"][wax][+bt]*['"]$/.test(args[1]??'')).map(args=>evaluate(args[0])),...callArguments(source,/\btorch\.save\s*\(/g).map(args=>evaluate(args[1]??''))].filter((value):value is string=>!!value)
-      for(const template of new Set(directories)){
-        if(!writes.some(path=>path.startsWith(template.replace(/\/$/,'')+'/')))continue
-        if((template.match(/\{value\}/g)??[]).length!==1)continue
-        verified.push({status:'verified',flag:parameter.flag,template,originalValue:parameter.baselineValue,source:{path:file.path,startLine:parameter.source.path===file.path?parameter.source.startLine:1,quote:source.split('\n').filter(line=>line.includes(destination)||line.includes('makedirs')||line.includes('torch.save')||line.includes('open(')).slice(0,8).join('\n').slice(0,1600)}})
-      }
-    }
-  }
-  const unique=[...new Map(verified.map(plan=>[plan.flag+':'+plan.template,plan])).values()]
-  if(unique.length===1)return unique[0]
-  return {status:'unverified',reason:unique.length?'项目存在多个输出位置，暂时无法保证统一隔离。':'未确认控制结果保存位置的参数及源码用法，请先让脚本支持可配置的输出目录。'}
-}
-export function isolateResearchVariants(id:string,baseline:ExperimentTaskDraft,variants:ParameterVariant[],plan:ResearchOutputIsolation):ResearchMember[] {
+/** Apply the source analysis result; this module does not infer output locations. */
+export function isolateResearchVariants(id:string,baseline:ExperimentTaskDraft,variants:ParameterVariant[],plan:ResearchOutputIsolation,batchName?:string):ResearchMember[] {
   if(plan.status!=='verified'||!plan.flag||!plan.template)return variants
+  const targets=plan.targets??[{flag:plan.flag,template:plan.template,originalValue:plan.originalValue,kind:'directory' as const,source:plan.source}]
   return variants.map((variant,index)=>{
-    const leaf=`labdeck_${id.replace(/-/g,'')}_g${String(index+1).padStart(2,'0')}`
-    const value=plan.template==='{value}'&&plan.originalValue?posix.join(posix.dirname(plan.originalValue),leaf):leaf
-    const command=expandParameters(variant.command,[{flag:plan.flag!,values:[value]}],1).variants[0].command
-    const directory=plan.template!.replace('{value}',value)
-    const outputDirectory=posix.resolve(baseline.codePath,directory)
-    return {...variant,command,outputDirectory,changes:[...variant.changes,`${plan.flag}: ${plan.originalValue??'项目默认值'} → ${value}`]}
+    const leaf=batchName?`${batchName}_g${String(index+1).padStart(2,'0')}`:`exp_${id.replace(/-/g,'').slice(0,12)}_${String(index+1).padStart(2,'0')}`
+    const primary=targets[0]
+    const primaryValue=primary.template==='{value}'&&primary.originalValue?posix.join(posix.dirname(primary.originalValue),leaf):leaf
+    const outputDirectory=posix.resolve(baseline.codePath,primary.template.replace('{value}',primaryValue))
+    const tokens=tokenizeTrainingCommand(variant.command)
+    const usedFileNames=new Set<string>()
+    const changes=[...variant.changes],directories=new Set<string>([outputDirectory])
+    for(const target of targets){
+      let fileName=target.kind==='file'?posix.basename(target.originalValue!):''
+      if(fileName&&usedFileNames.has(fileName))fileName=target.flag.replace(/^--/,'')+'_'+fileName
+      if(fileName)usedFileNames.add(fileName)
+      const value=target.kind==='file'?posix.join(outputDirectory,fileName):target===primary?primaryValue:target.template==='{value}'?outputDirectory:leaf
+      setOutputValue(tokens,target.flag,value)
+      const actual=posix.resolve(baseline.codePath,target.template.replace('{value}',value))
+      directories.add(target.kind==='file'?posix.dirname(actual):actual)
+      changes.push(`${target.flag}: ${target.originalValue??'项目默认值'} → ${value}`)
+    }
+    return {...variant,command:tokens.join(' '),outputDirectory,outputDirectories:[...directories],changes}
   })
+}
+
+function setOutputValue(tokens:string[],flag:string,value:string):void {
+  if(!/^--[A-Za-z0-9][A-Za-z0-9_-]*$/.test(flag)||!value||value.length>4096||/[\0\r\n]/.test(value))throw new Error('独立保存位置无效，请重新核对输出参数')
+  const encoded=/^[a-zA-Z0-9_.,:/+=-]+$/.test(value)?value:"'"+value.replace(/'/g,"'\\''")+"'"
+  const positions=tokens.flatMap((token,i)=>token===flag||token.startsWith(flag+'=')?[i]:[])
+  if(positions.length>1)throw new Error(`启动命令中 ${flag} 重复，请先编辑配置`)
+  const position=positions[0]
+  if(position===undefined)tokens.push(flag,encoded)
+  else if(tokens[position].includes('='))tokens[position]=flag+'='+encoded
+  else{
+    if(!tokens[position+1]||tokens[position+1].startsWith('--'))throw new Error(`${flag} 缺少参数值，请先编辑配置`)
+    tokens[position+1]=encoded
+  }
+}
+/** Keep the member's existing destinations while applying other task configuration fixes. */
+export function reuseResearchOutput(command:string,previousCommand:string,plan:ResearchOutputIsolation):string {
+  const tokens=tokenizeTrainingCommand(command),previous=tokenizeTrainingCommand(previousCommand)
+  for(const {flag} of plan.targets??(plan.flag?[{flag:plan.flag}]:[])){
+    const index=previous.findIndex(token=>token===flag||token.startsWith(flag+'='))
+    const value=index<0?undefined:previous[index].includes('=')?previous[index].slice(flag.length+1):previous[index+1]
+    if(!value||value.startsWith('--'))throw new Error('未能确认原运行的保存参数，请检查配置后重试')
+    setOutputValue(tokens,flag,value)
+  }
+  return tokens.join(' ')
+}
+
+/** Resolve a model-provided mapping against an already submitted command, without rewriting it. */
+export function researchOutputLocations(command:string,codePath:string,plan:ResearchOutputIsolation):{outputDirectory:string;outputDirectories:string[]}{
+  const tokens=tokenizeTrainingCommand(command)
+  const targets=plan.targets??(plan.flag&&plan.template?[{flag:plan.flag,template:plan.template,kind:'directory' as const}]:[])
+  const directories=targets.map(target=>{
+    const index=tokens.findIndex(token=>token===target.flag||token.startsWith(target.flag+'='))
+    const value=index<0?undefined:tokens[index].includes('=')?tokens[index].slice(target.flag.length+1):tokens[index+1]
+    if(!value||value.startsWith('--'))throw new Error(`运行命令缺少 ${target.flag} 的实际值，无法核对保存目录`)
+    const actual=posix.resolve(codePath,target.template.replace('{value}',value))
+    return target.kind==='file'?posix.dirname(actual):actual
+  })
+  if(!directories.length)throw new Error('缺少保存目录映射')
+  return {outputDirectory:directories[0],outputDirectories:[...new Set(directories)]}
 }

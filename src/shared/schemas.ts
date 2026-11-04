@@ -134,6 +134,8 @@ export const condaEnvironmentConfigSchema = z.object({
 })
 
 const experimentRunSchema = z.object({
+  outputDirectories: z.array(z.string().max(4096).refine(path=>path.startsWith('/')&&path!=='/'&&!/[\0\r\n]/.test(path),'输出目录必须是服务器上的绝对目录')).max(8).optional(),
+  runTitle: z.string().trim().max(160).optional(),
   id: z.string().uuid(),
   number: z.number().int().min(1),
   status: z.enum(['queued', 'preparing', 'running', 'paused', 'completed', 'failed', 'cancelled']),
@@ -153,6 +155,7 @@ const experimentRunSchema = z.object({
   launchMode: z.enum(['command', 'script']).default('command'),
   scriptPath: z.string().max(4096).default(''),
   condaEnvironment: condaEnvironmentConfigSchema.optional(),
+  stdoutLogPath: z.string().max(4096).optional(),
   artifactPath: z.string().max(4096).optional(),
   minimumFreeVramGiB: z.number().positive().max(1024).nullable().optional(),
   maximumGpuUtilizationPercent: z.number().min(0).max(100).nullable().optional(),
@@ -165,6 +168,8 @@ const experimentRunSchema = z.object({
 })
 
 export const experimentTaskSchema = z.object({
+  outputDirectories: z.array(z.string().max(4096).refine(path=>path.startsWith('/')&&path!=='/'&&!/[\0\r\n]/.test(path),'输出目录必须是服务器上的绝对目录')).max(8).optional(),
+  runTitle: z.string().trim().max(160).optional(),
   preparationId: z.string().uuid().optional(),
   projectPreparation: taskProjectContextSchema.optional(),
   id: z.string().uuid(),
@@ -189,6 +194,7 @@ export const experimentTaskSchema = z.object({
   condaEnvironment: condaEnvironmentConfigSchema.optional(),
   minimumFreeVramGiB: z.number().positive().max(1024).optional(),
   maximumGpuUtilizationPercent: z.number().min(0).max(100).optional(),
+  stdoutLogPath: z.string().max(4096).optional(),
   artifactPath: z.string().max(4096).default(''),
   resultSummary: z.string().max(4000).default(''),
   notes: z.string().max(8000).default(''),
@@ -223,10 +229,13 @@ export const experimentRunFinishInputSchema = z.object({
   status: z.enum(['paused', 'completed', 'failed', 'cancelled']),
   resultSummary: z.string().max(4000),
   notes: z.string().max(8000),
+  stdoutLogPath: z.string().max(4096).optional(),
   artifactPath: z.string().max(4096)
 })
 
 export const experimentRunStartInputSchema = z.object({
+  outputDirectories: z.array(z.string().max(4096).refine(path=>path.startsWith('/')&&path!=='/'&&!/[\0\r\n]/.test(path),'输出目录必须是服务器上的绝对目录')).max(8).optional(),
+  runTitle: z.string().trim().max(160).optional(),
   serverId: z.string().uuid().nullable(),
   accessRouteId: z.string().max(80).nullable(),
   gpuUuid: z.string().max(160).nullable(),
@@ -239,6 +248,7 @@ export const experimentRunStartInputSchema = z.object({
   launchMode: z.enum(['command', 'script']).default('command'),
   scriptPath: z.string().max(4096).default(''),
   condaEnvironment: condaEnvironmentConfigSchema.nullable(),
+  stdoutLogPath: z.string().max(4096).optional(),
   artifactPath: z.string().max(4096),
   minimumFreeVramGiB: z.number().positive().max(1024).nullable(),
   maximumGpuUtilizationPercent: z.number().min(0).max(100).nullable(),

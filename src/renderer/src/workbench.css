@@ -557,3 +557,43 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .workbench-shell .experiment-group-more > summary:hover, .workbench-shell .experiment-group-more[open] > summary { background:var(--control-hover); border-color:var(--border); color:var(--text); }
 .experiment-group-more .experiment-task-more-menu { width:176px; border-radius:5px; padding:5px; }
 .experiment-group-more .experiment-task-more-menu > button { gap:8px; min-height:34px; font-size:12px; }
+
+/* Task views and summary share one compact, consistent visual hierarchy. */
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs { width:fit-content; max-width:100%; display:flex; gap:4px; padding:4px; margin:0 0 4px; border:1px solid var(--border); border-radius:9px; background:var(--panel-soft); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button { min-height:38px; padding:0 13px; gap:8px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--muted); font-size:13px; font-weight:500; line-height:1.4; white-space:nowrap; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button.active { background:var(--panel); border-color:var(--border); color:var(--accent-text); box-shadow:0 1px 2px rgb(0 0 0 / 4%); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button:hover:not(.active) { background:var(--control-hover); color:var(--text); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button:focus-visible { outline:2px solid var(--accent-text); outline-offset:2px; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button>span { display:inline-flex; align-items:center; justify-content:center; min-width:23px; height:21px; padding:0 5px; border-radius:5px; color:var(--muted); background:var(--control-hover); font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-tabs button.active>span { color:var(--accent-text); background:var(--accent-surface); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-overview { display:grid; grid-template-columns:1fr 1.5fr 1fr; gap:12px; width:100%; max-width:760px; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-overview>.experiment-pool-stat { min-width:0; min-height:0; height:42px; box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 16px; background:var(--panel); border:1px solid var(--border); border-radius:8px; }
+.experiment-pool-stat>span { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:400; line-height:1.5; white-space:nowrap; }
+.experiment-pool-stat>span>i { display:block; width:6px; height:6px; border-radius:50%; background:var(--muted); flex-shrink:0; }
+.experiment-pool-stat.active>span>i { background:var(--amber); }
+.experiment-pool-stat.completed>span>i { background:var(--teal); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-stat>strong { font-family:"Segoe UI",sans-serif; font-size:22px; line-height:1.2; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.4px; }
+@media(max-width:600px) {
+  :root .workbench-shell .experiment-pool-page .experiment-pool-tabs { width:100%; }
+  :root .workbench-shell .experiment-pool-page .experiment-pool-tabs button { flex:1; justify-content:center; padding:0 8px; font-size:12px; }
+  :root .workbench-shell .experiment-pool-page .experiment-pool-overview { grid-template-columns:minmax(0,1fr); gap:8px; }
+  :root .workbench-shell .experiment-pool-page .experiment-pool-overview>.experiment-pool-stat { min-height:0; height:42px; padding:0 14px; }
+}
+
+.experiment-pool-topbar { display:flex; align-items:center; flex-wrap:wrap; gap:12px 18px; min-width:0; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-topbar>.experiment-pool-tabs { margin:0; flex:0 0 auto; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-topbar>.experiment-pool-overview { flex:1 1 540px; width:auto; max-width:800px; display:grid; grid-template-columns:minmax(86px,1fr) minmax(164px,1.6fr) minmax(86px,1fr) minmax(76px,.85fr) minmax(86px,1fr); gap:8px; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-topbar .experiment-pool-stat { height:42px; padding:0 12px; gap:10px; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-topbar .experiment-pool-stat>strong { font-size:20px; }
+@media(max-width:600px) {
+  :root .workbench-shell .experiment-pool-page .experiment-pool-topbar>.experiment-pool-tabs { width:100%; }
+  :root .workbench-shell .experiment-pool-page .experiment-pool-topbar>.experiment-pool-overview { flex-basis:100%; max-width:none; grid-template-columns:minmax(0,1fr); }
+}
+
+.experiment-pool-stat.failed>span>i { background:var(--red); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-overview>button.experiment-pool-stat { cursor:pointer; font:inherit; text-align:left; color:var(--text); transition:background .12s,border-color .12s; }
+:root .workbench-shell .experiment-pool-page .experiment-pool-overview>button.experiment-pool-stat:hover { background:var(--panel-soft); border-color:var(--accent-text); }
+:root .workbench-shell .experiment-pool-page .experiment-pool-overview>button.experiment-pool-stat[aria-pressed="true"] { border-color:var(--accent-text); background:var(--accent-surface); }
+.experiment-pool-overview>button:focus-visible { outline:2px solid var(--accent-text); outline-offset:2px; }
+
+.experiment-pool-stat.cancelled>span>i { background:var(--muted); }

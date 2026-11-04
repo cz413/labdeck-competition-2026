@@ -1,4 +1,5 @@
-import { applyModelRefinement, refinementPayload, refinementPrompt } from './plan-refinement'
+import { diagnosisChangeSchema } from '../shared/diagnosis-diff'
+import { refineWithModel } from './plan-refinement'
 import { PreparationService } from './preparation-service'
 import type { AgentTraceObserver, AgentTraceEvent } from '../shared/agent-trace'
 import { planCommandEntry } from '../shared/experiment-plan'
@@ -37,7 +38,7 @@ import type { CondaService } from './conda-service'
 
 const diagnosisInputSchema = z.object({ force:z.boolean().default(false), external:externalExperimentSchema.optional(), taskId: z.string().uuid().optional(), runId: z.string().uuid().optional(), logText: z.string().max(200_000).optional(), sample: z.enum(['oom', 'dependency', 'path']).optional(), useModel: z.boolean(), depth:z.enum(['quick','inspect']).optional(), requestId: z.string().uuid().optional() }).refine(v => Number(Boolean(v.taskId)) + Number(v.logText !== undefined) + Number(Boolean(v.sample)) + Number(Boolean(v.external)) === 1, '请选择一个日志来源')
 const evidenceSchema = z.object({ id: z.string(), source: z.enum(['log', 'resource', 'environment', 'runtime']), label: z.string(), text: z.string(), line: z.number().optional() })
-const findingSchema = z.object({ origin:z.enum(['rules','model']).optional(), category: z.string().max(80), title: z.string().max(160), confidence: z.enum(['high', 'medium', 'low']), explanation: z.string().max(2500), evidenceIds: z.array(z.string()).max(10), steps: z.array(z.string().max(500)).max(8) })
+const findingSchema = z.object({ changes:z.array(diagnosisChangeSchema).max(3).optional(), origin:z.enum(['rules','model']).optional(), category: z.string().max(80), title: z.string().max(160), confidence: z.enum(['high', 'medium', 'low']), explanation: z.string().max(2500), evidenceIds: z.array(z.string()).max(10), steps: z.array(z.string().max(500)).max(8) })
 const closureSchema=z.object({enabled:z.boolean(),useModelOnFailure:z.boolean().optional(),status:z.enum(['waiting','running','verifying','passed','failed','attention','paused']),message:z.string(),updatedAt:z.string(),attempts:z.number().int().min(0),checkedAt:z.string().optional(),nextCheckAt:z.string().optional(),exitCode:z.number().int().nonnegative().optional(),nextDiagnosisId:z.string().uuid().optional()})
 const usageSchema=z.object({requests:z.number().int().nonnegative(),elapsedMs:z.number().nonnegative(),promptTokens:z.number().nonnegative().optional(),completionTokens:z.number().nonnegative().optional(),totalTokens:z.number().nonnegative().optional()})
 const reportSchema = z.object({ usage:usageSchema.optional(),cacheKey:z.string().optional(), id: z.string().uuid(), createdAt: z.string(), title: z.string(), source: z.enum(['remote', 'external', 'pasted', 'sample']), engine: z.enum(['rules', 'model+rules', 'agent+rules']), externalContext:externalExperimentSchema.optional(),externalLog:z.object({segments:z.array(z.object({offset:z.number(),length:z.number()})).optional(),selection:z.enum(['errors_and_tail','tail']).optional(),collectedAt:z.string(),modifiedAt:z.string().optional(),sizeBytes:z.number(),bytesRead:z.number(),resolvedPath:z.string(),truncated:z.boolean(),changed:z.boolean()}).optional(),importedTaskId:z.string().uuid().optional(),taskId: z.string().optional(), runId: z.string().optional(), logExcerpt: z.string(), evidence: z.array(evidenceSchema), findings: z.array(findingSchema), warnings: z.array(z.string()), summary: z.string().optional(), investigation: z.object({status:z.enum(['completed','partial','cancelled','failed']),rounds:z.number().int().min(0).max(4),inspections:z.number().int().min(0).max(4),trace:z.array(z.object({round:z.number().int(),kind:z.enum(['model','tool']),label:z.string(),status:z.enum(['completed','failed','unavailable']),reason:z.string().optional(),tool:z.enum(['search_log','inspect_path','read_project_file','inspect_package','inspect_environment','inspect_gpu']).optional(),arguments:z.record(z.string(),z.string()).optional(),evidenceIds:z.array(z.string()),elapsedMs:z.number().min(0)})).max(16)}).optional(), repair: z.object({kind:z.literal('reduce-batch'),before:z.string(),after:z.string(),previousBatch:z.number(),nextBatch:z.number()}).optional(), retryRunId: z.string().optional(),useModel:z.boolean().optional(),closure:closureSchema.optional() })
@@ -63,9 +64,10 @@ export class IntelligenceService {
     refine:async(plan,instruction,context,signal,observer)=>{
       await this.ready()
       if(!this.config.enabled||!this.config.model.trim())throw new Error('请先启用并配置模型，再修改方案')
-      const startedAt=new Date().toISOString(),id=randomUUID()
-      const answer=await requestModel({...this.config},this.key(),refinementPrompt,refinementPayload(plan,instruction,context),signal,usage=>observer({id,kind:'model',name:'修改方案模型调用',status:'completed',startedAt,finishedAt:new Date().toISOString(),summary:'结合当前方案与项目文件生成修改建议',usage}))
-      return applyModelRefinement(plan,answer,context)
+      return refineWithModel(plan,instruction,context,async(system,payload)=>{
+        const startedAt=new Date().toISOString(),id=randomUUID()
+        return requestModel({...this.config},this.key(),system,payload,signal,usage=>observer({id,kind:'model',name:'修改方案模型调用',status:'completed',startedAt,finishedAt:new Date().toISOString(),summary:'结合用户意图与已读项目文件生成启动配置',usage}),{purpose:'repository'})
+      })
     },
     scan:input=>readRepository(this.store,this.ssh,input),
     environments:async input=>{const server=this.store.getServer(input.serverId);if(server.mode!=='real')throw new Error('请选择真实服务器');const profile=applyAccessRoute(server,input.accessRouteId);return (await this.conda.listEnvironments(profile,this.store.getSecrets(server.id),'conda')).environments},
@@ -167,9 +169,14 @@ export class IntelligenceService {
       throw new Error('模型密钥解密失败。数据目录切换或 Windows 凭据变化后，请在“设置 → 智能实验模型”中重新填写 API Key。')
     }
   }
-  async requestResearchModel(system: string, payload: unknown): Promise<unknown> {
+  /** Read-only access to the source snapshot already collected by experiment preparation. */
+  async preparationRepository(id:string):Promise<RepositorySnapshot|undefined>{
+    const view=await this.preparations().get(id)
+    return view.plan?.guide.snapshot
+  }
+  async requestResearchModel(system: string, payload: unknown, options: {purpose?:'repository'} = {}): Promise<unknown> {
     await this.ready()
-    return requestModel({ ...this.config }, this.key(), system, payload)
+    return requestModel({ ...this.config }, this.key(), system, payload, undefined, undefined, options)
   }
   async testModel(): Promise<string> {
     await this.ready()
@@ -201,10 +208,10 @@ export class IntelligenceService {
   /** Task diagnosis owns engine selection; the UI only identifies the failed run. */
   async diagnoseTask(raw:unknown,progress?:(event:DiagnosisProgress)=>void):Promise<DiagnosisReport>{
     await this.ready()
-    const input=z.object({taskId:z.string().uuid(),runId:z.string().uuid(),requestId:z.string().uuid(),refresh:z.boolean().default(false),inspect:z.boolean().default(false)}).parse(raw)
+    const input=z.object({taskId:z.string().uuid(),runId:z.string().uuid(),requestId:z.string().uuid(),refresh:z.boolean().default(false),inspect:z.boolean().default(true)}).parse(raw)
     const {run}=this.findRun(input.taskId,input.runId)
     if(run.status!=='failed')throw new Error('请选择已失败的运行；正在运行的任务请先查看实时日志。')
-    // One model request by default; bounded read-only investigation is an explicit follow-up.
+    // One user action includes any necessary bounded read-only inspection and the final advice/diff.
     return this.diagnose({taskId:input.taskId,runId:input.runId,requestId:input.requestId,force:input.refresh,
       useModel:this.config.enabled&&!!this.config.model.trim(),depth:input.inspect?'inspect':'quick'},progress)
   }
@@ -313,6 +320,14 @@ export class IntelligenceService {
     signal?.throwIfAborted()
     let guide=parseRepositoryGuide(answer,snapshot)
     guide=fillLaunchFromReadme(guide,snapshot,goal)
+    // A valid but empty answer may be under-specified despite the source being available.
+    // Ask for a grounded decision once, within the same four-request budget; never retry transport errors.
+    if(!guide.launchCommand&&modelCalls.length<4&&snapshot.excerpts.some(file=>/\.(py|sh)$/i.test(file.path))){
+      progress?.({stage:'write',message:'正在结合已读源码进一步判断启动入口'})
+      const decision=await this.traceRepositoryCall(observer,'model','核对并确定启动入口','结合已读入口、参数和配置自主选择最小启动方式',onUsage=>requestModel(this.config,this.key(),repositoryGuidePrompt,{goal,repository:snapshot.input,files,scopeWarnings:snapshot.warnings,previous:answer,instruction:'上次未提供启动命令。请重新对照已读源码的主流程、调用关系、参数默认值和 README，自主选择最符合目标的入口并给出最小可审查命令；不能仅因存在多个脚本而要求用户选择。确实缺少无法从项目获取的必要信息时，才留空并明确具体缺口。不猜测不存在的脚本或参数。'},signal,usage=>{modelCalls.push(usage);onUsage?.(usage)},{purpose:'repository'}))
+      signal?.throwIfAborted()
+      guide=fillLaunchFromReadme(parseRepositoryGuide(decision,snapshot),snapshot,goal)
+    }
     if(!guide.environmentName){
       const environmentFile=snapshot.excerpts.find(file=>/(^|\/)environment\.ya?ml$/i.test(file.path))
       const name=environmentFile?.text.match(/^\s*name\s*:\s*["']?([^"'\r\n#]+)["']?\s*$/m)?.[1]?.trim()
@@ -460,7 +475,7 @@ export class IntelligenceService {
       if (run.status!=='failed') throw new Error('原运行状态已变化，请重新诊断')
       const repair = proposeBatchRepair(run.launchCommand??'',diagnoseEvidence(report.evidence).some(f=>f.category==='oom'),run.launchMode)
       if (!repair || repair.before!==report.repair.before || repair.after!==report.repair.after) throw new Error('运行命令已变化，请重新诊断')
-      const input: ExperimentRunStartInput = experimentRunStartInputSchema.parse({serverId:run.serverId??task.serverId??null,accessRouteId:run.accessRouteId??task.accessRouteId??null,computeDevice:run.computeDevice??task.computeDevice,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:run.codePath??task.codePath,dataPath:run.dataPath??task.dataPath,launchCommand:repair.after,launchMode:'command',scriptPath:'',condaEnvironment:run.condaEnvironment??null,artifactPath:run.artifactPath??'',minimumFreeVramGiB:run.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??null,notes:`[诊断:${id}] 从第 ${run.number} 次运行创建；batch size ${repair.previousBatch} → ${repair.nextBatch}。原运行保留。`})
+      const input: ExperimentRunStartInput = experimentRunStartInputSchema.parse({serverId:run.serverId??task.serverId??null,accessRouteId:run.accessRouteId??task.accessRouteId??null,computeDevice:run.computeDevice??task.computeDevice,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:run.codePath??task.codePath,dataPath:run.dataPath??task.dataPath,runTitle:run.runTitle??'修复运行',outputDirectories:run.outputDirectories,launchCommand:repair.after,launchMode:'command',scriptPath:'',condaEnvironment:run.condaEnvironment??null,stdoutLogPath:run.stdoutLogPath??'',artifactPath:run.artifactPath??'',minimumFreeVramGiB:run.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??null,notes:`[诊断:${id}] 从第 ${run.number} 次运行创建；batch size ${repair.previousBatch} → ${repair.nextBatch}。原运行保留。`})
       if(this.reports.filter(r=>r.closure?.enabled).length>=20)throw new Error('自动跟踪已达到 20 项，请先完成或暂停已有跟踪')
       const updated=await this.store.startExperimentRun(task.id,input)
       await this.record({...report,retryRunId:updated.runs.at(-1)!.id,closure:initialClosure(true,useModelOnFailure??!!report.useModel)})

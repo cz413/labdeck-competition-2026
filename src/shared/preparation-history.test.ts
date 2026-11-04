@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPreparationHistory, preparationHistoryVersions, type PreparationPlanState } from './preparation-history'
+import { appendPreparationHistory, freezePreparationHistory, preparationHistoryVersions, type PreparationPlanState } from './preparation-history'
 import type { PreparationEdit } from './preparation'
 const state=(command:string):PreparationPlanState=>({draft:{launchCommand:command},mode:'train',fields:{}} as PreparationPlanState)
 describe('preparation version restoration',()=>{
@@ -8,17 +8,25 @@ describe('preparation version restoration',()=>{
     const history=[{id:1,label:'one',at:'14:01',before:a},{id:2,label:'ten',at:'14:02',before:b}]
     expect(preparationHistoryVersions(history,c).map(entry=>entry.state)).toEqual([b,c])
   })
-  it('can restore any earlier version and return to the later version after persistence',()=>{
+  it('switches versions repeatedly without adding records or losing the latest result after reload',()=>{
     const a=state('a'),b=state('b'),c=state('c')
     const history=[{id:1,label:'b',at:'1',before:a},{id:2,label:'c',at:'2',before:b}]
-    const restore=preparationHistoryVersions(history,c)[0].state
-    const saved=JSON.parse(JSON.stringify(appendPreparationHistory(history,{id:3,label:'restore b',at:'3'},c))) as PreparationEdit['history']
-    const versions=preparationHistoryVersions(saved,restore)
-    expect(versions.map(entry=>entry.state)).toEqual([b,c,b])
-    const next=appendPreparationHistory(saved,{id:4,label:'restore c',at:'4'},restore)
-    expect(preparationHistoryVersions(next,versions[1].state).map(entry=>entry.state)).toEqual([b,c,b,c])
-    versions[1].state.draft.launchCommand='changed'
-    expect(saved[2].before.draft.launchCommand).toBe('c')
+    const saved=JSON.parse(JSON.stringify(freezePreparationHistory(history,c))) as PreparationEdit['history']
+    expect(saved).toHaveLength(2)
+    expect(preparationHistoryVersions(saved,b).map(entry=>entry.state)).toEqual([b,c])
+    const again=freezePreparationHistory(saved,b)
+    expect(again).toHaveLength(2)
+    expect(preparationHistoryVersions(again,c).map(entry=>entry.state)).toEqual([b,c])
+    const branch=appendPreparationHistory(again,{id:3,label:'d',at:'3'},b)
+    expect(preparationHistoryVersions(branch,state('d')).map(entry=>entry.state)).toEqual([b,c,state('d')])
+  })
+  it('collapses historical restore duplicates and ignores field provenance when identifying a version',()=>{
+    const a=state('a'),b=state('b'),c=state('c')
+    const history=[{id:1,label:'b',at:'1',before:a},{id:2,label:'c',at:'2',before:b},{id:3,label:'恢复版本：b',at:'3',before:c}]
+    expect(preparationHistoryVersions(history,b).map(entry=>entry.label)).toEqual(['b','c'])
+    const provenance={...b,fields:{launchCommand:{source:'user' as const}}}
+    const extra=appendPreparationHistory(history,{id:4,label:'same',at:'4'},b)
+    expect(preparationHistoryVersions(extra,provenance)).toHaveLength(2)
   })
   it('bounds history while preserving the results of retained versions',()=>{
     let history:PreparationEdit['history']=[]

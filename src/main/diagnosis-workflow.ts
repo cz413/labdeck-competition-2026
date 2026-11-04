@@ -29,7 +29,7 @@ export function diagnosisCacheKey(input:DiagnosisInput,collected:CollectedDiagno
       return {...item,text:JSON.stringify(value)}
     }catch{return item}
   })
-  return createHash('sha256').update(JSON.stringify({version:'diagnosis-v8-actionable-advice',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?model:null})).digest('hex')
+  return createHash('sha256').update(JSON.stringify({version:'diagnosis-v10-integrated-advice',source:collected.source,taskId:collected.taskId,runId:collected.runId,external:collected.externalContext,evidence,useModel:input.useModel,depth:input.depth??'inspect',model:input.useModel?model:null})).digest('hex')
 }
 
 export function reusableDiagnosis(input:DiagnosisInput,collected:CollectedDiagnosis,key:string,history:readonly DiagnosisReport[],now=Date.now()):DiagnosisReport|undefined {

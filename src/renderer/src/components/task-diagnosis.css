@@ -18,3 +18,15 @@
 .task-diagnosis-details summary {cursor:pointer;color:var(--muted);}
 
 .task-diagnosis-result .task-diagnosis-uncertainty { margin-top:12px; color:var(--muted); font-size:13px; }
+
+.diagnosis-change { border:1px solid var(--border); border-radius:6px; overflow:hidden; margin:12px 0; }
+.diagnosis-change>header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px; background:var(--panel-soft); }
+.diagnosis-change>header strong { overflow-wrap:anywhere; font-size:12px; }
+.diagnosis-change>header>div { display:flex; gap:12px; flex-wrap:wrap; }
+.diagnosis-change pre { margin:0; padding:12px; overflow:auto; white-space:pre; font:12px/1.8 Consolas,monospace; }
+.diagnosis-change pre>span { display:block; min-width:max-content; }
+.diagnosis-change .diff-meta { color:var(--muted); }
+.diagnosis-change .diff-remove { color:#ffb3ba; background:#632d334d; }
+.diagnosis-change .diff-add { color:#9ce6bc; background:#1c563c66; }
+:root[data-theme="instrument"] .diagnosis-change .diff-remove { color:#9c2432; background:#fdebed; }
+:root[data-theme="instrument"] .diagnosis-change .diff-add { color:#17603a; background:#e6f5eb; }

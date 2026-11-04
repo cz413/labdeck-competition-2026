@@ -1,3 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { z } from 'zod'
 import { posix } from 'node:path'
 import type {
   CondaEnvironmentCheck,
@@ -27,15 +31,51 @@ const parseJsonObject = (output: string): Record<string, unknown> => {
   return parsed as Record<string, unknown>
 }
 
+const cachedListSchema=z.array(z.object({key:z.string().max(64),value:z.object({managerPath:z.string().max(4096),environments:z.array(z.object({prefix:z.string().max(4096),name:z.string().max(4096)})).max(2000)})})).max(200)
 export class CondaService {
-  constructor(private readonly ssh: SshService) {}
+  private cache=new Map<string,CondaEnvironmentList>()
+  private pending=new Map<string,Promise<CondaEnvironmentList>>()
+  constructor(private readonly ssh:SshService,private readonly cacheFile?:string) {
+    if(cacheFile)try{for(const entry of cachedListSchema.parse(JSON.parse(readFileSync(cacheFile,'utf8'))))this.cache.set(entry.key,entry.value)}catch{/* Missing or invalid cache is rebuilt on the next successful read. */}
+  }
+  private cacheKey(profile:ServerProfile,manager:CondaManager,managerPath?:string):string {
+    const jump=profile.jumpHost
+    return createHash('sha256').update(JSON.stringify([profile.id,profile.host,profile.port,profile.username,profile.hostFingerprint,jump?[jump.host,jump.port,jump.username,jump.hostFingerprint]:null,manager,managerPath?.trim()??''])).digest('hex')
+  }
+  private remember(profile:ServerProfile,manager:CondaManager,managerPath:string|undefined,value:CondaEnvironmentList):void {
+    for(const path of [managerPath,value.managerPath,undefined]){
+      const key=this.cacheKey(profile,manager,path);this.cache.delete(key);this.cache.set(key,structuredClone(value))
+    }
+    while(this.cache.size>200)this.cache.delete(this.cache.keys().next().value!)
+    if(!this.cacheFile)return
+    try{
+      mkdirSync(dirname(this.cacheFile),{recursive:true})
+      const temporary=`${this.cacheFile}.${randomUUID()}.tmp`
+      writeFileSync(temporary,JSON.stringify([...this.cache].map(([key,value])=>({key,value}))),'utf8')
+      renameSync(temporary,this.cacheFile)
+    }catch{/* Cache persistence must not invalidate a successful remote read. */}
+  }
 
   async listEnvironments(
     profile: ServerProfile,
     secrets: ServerSecrets,
     manager: CondaManager,
-    managerPath?: string
+    managerPath?: string,
+    forceRefresh=false
   ): Promise<CondaEnvironmentList> {
+    if(profile.mode!=='real')throw new Error('演示节点不支持 Conda 远程操作')
+    const key=this.cacheKey(profile,manager,managerPath)
+    if(!forceRefresh){
+      const cached=this.cache.get(key);if(cached)return structuredClone(cached)
+    }
+    const pending=this.pending.get(key)
+    if(pending)return structuredClone(await pending)
+    const work=this.readEnvironments(profile,secrets,manager,managerPath)
+    this.pending.set(key,work)
+    try{const value=await work;this.remember(profile,manager,managerPath,value);return structuredClone(value)}
+    finally{if(this.pending.get(key)===work)this.pending.delete(key)}
+  }
+  private async readEnvironments(profile:ServerProfile,secrets:ServerSecrets,manager:CondaManager,managerPath?:string):Promise<CondaEnvironmentList> {
     const resolvedManagerPath = await this.resolveManagerPath(profile, secrets, manager, managerPath)
     const command = `${shellQuote(resolvedManagerPath)} env list --json`
     const output = await this.run(profile, secrets, command, 30_000)
@@ -55,7 +95,7 @@ export class CondaService {
     config: CondaEnvironmentConfig
   ): Promise<CondaEnvironmentCheck> {
     const target = this.environmentTarget(config)
-    const listing = await this.listEnvironments(profile, secrets, config.manager, config.managerPath)
+    const listing = await this.listEnvironments(profile, secrets, config.manager, config.managerPath, true)
     const match = listing.environments.find((environment) =>
       target.kind === 'name'
         ? environment.name === target.value
@@ -149,6 +189,22 @@ export class CondaService {
       `"/opt/miniconda3/bin/${manager}"`,
       `"/usr/local/conda/bin/${manager}"`
     ]
+    // Probe only the authenticated user's DataLACP directory, without a recursive data scan.
+    const dataUserProbe = [
+      'labdeck_conda_user="$(id -un 2>/dev/null)"',
+      'case "$labdeck_conda_user" in',
+      "  ''|.|..|*[!a-zA-Z0-9_.-]*) ;;",
+      '  *)',
+      '    labdeck_conda_root="/data/DataLACP/$labdeck_conda_user"',
+      '    for labdeck_conda_dir in "$labdeck_conda_root" "$labdeck_conda_root"/*conda* "$labdeck_conda_root"/*mamba* "$labdeck_conda_root"/*forge*; do',
+      '      [ -d "$labdeck_conda_dir" ] || continue',
+      `      for candidate in "$labdeck_conda_dir/bin/${manager}" "$labdeck_conda_dir/condabin/${manager}" "$labdeck_conda_dir/${manager}"; do`,
+      `        if [ -f "$candidate" ] && [ -x "$candidate" ]; then printf '${marker}%s\\n' "$candidate"; exit 0; fi`,
+      '      done',
+      '    done',
+      '    ;;',
+      'esac'
+    ].join('\n')
     const interactiveProbe = [
       `if command -v ${manager} >/dev/null 2>&1; then`,
       `  candidate="$(whence -p ${manager} 2>/dev/null)"`,
@@ -164,6 +220,7 @@ export class CondaService {
       `  case "$candidate" in /*) if [ -x "$candidate" ]; then printf '${marker}%s\\n' "$candidate"; exit 0; fi ;; esac`,
       'fi',
       `for candidate in ${candidates.join(' ')}; do if [ -x "$candidate" ]; then printf '${marker}%s\\n' "$candidate"; exit 0; fi; done`,
+      dataUserProbe,
       `if command -v zsh >/dev/null 2>&1; then zsh -ic ${shellQuote(interactiveProbe)} 2>/dev/null; fi`,
       'true'
     ].join('\n')
@@ -174,7 +231,7 @@ export class CondaService {
       .map((line) => line.slice(marker.length))
       .at(-1)
     if (!resolved || !resolved.startsWith('/') || resolved.includes('\0') || resolved.length > 4096) {
-      throw new Error(`未能从 PATH、常见安装位置或 zsh 配置中定位 ${manager}。请检查服务器的 shell 初始化；也可在“管理器路径”中填写绝对路径。`)
+      throw new Error(`未能从 PATH、常见安装位置、/data/DataLACP 下的当前用户目录或 zsh 配置中定位 ${manager}。请检查服务器的 shell 初始化；也可在“管理器路径”中填写绝对路径。`)
     }
     return posix.normalize(resolved)
   }

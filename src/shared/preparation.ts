@@ -8,7 +8,7 @@ export interface PreparationInput { serverId:string; accessRouteId:string; path:
 export interface PreparationEdit {
   draft:ExperimentTaskDraft; mode:ExperimentMode; fields:PlanFields
   deferredGaps:string[]; conflicts:PlanConflict[]
-  history:{id:number;label:string;at:string;before:{draft:ExperimentTaskDraft;mode:ExperimentMode;fields:PlanFields}}[]
+  history:{id:number;label:string;at:string;before:{draft:ExperimentTaskDraft;mode:ExperimentMode;fields:PlanFields};after?:{draft:ExperimentTaskDraft;mode:ExperimentMode;fields:PlanFields}}[]
 }
 export interface PreparationFlow {
   id:string; input:PreparationInput; createdAt:string; updatedAt:string; revision:number

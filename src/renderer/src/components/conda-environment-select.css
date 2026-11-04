@@ -1,0 +1,16 @@
+.conda-environment-select { width:100%; min-width:0; }
+.conda-environment-select .conda-environment-trigger { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-width:0; min-height:38px; padding:9px 12px; border:1px solid var(--border); border-radius:5px; color:var(--muted); background:var(--control-bg); font:inherit; font-size:13px; line-height:1.5; text-align:left; cursor:pointer; box-sizing:border-box; }
+.conda-environment-select .conda-environment-trigger.has-value { color:var(--text); }
+.conda-environment-trigger>svg { flex-shrink:0; color:var(--muted); transition:transform .15s; }
+.conda-environment-trigger.open>svg { transform:rotate(180deg); }
+.conda-environment-select .conda-environment-trigger:hover:not(:disabled) { border-color:var(--accent-text); }
+.conda-environment-select .conda-environment-trigger:focus-visible,.conda-environment-select .conda-environment-trigger.open { border-color:var(--accent-text); outline:2px solid var(--accent-surface); outline-offset:1px; }
+.conda-environment-select .conda-environment-trigger:disabled { opacity:.6; cursor:default; }
+.conda-environment-value,.conda-environment-option>span { display:grid; gap:3px; flex:1; min-width:0; }
+.conda-environment-value strong,.conda-environment-option strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.conda-environment-value small,.conda-environment-option small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font:11px/1.5 Consolas,monospace; }
+.conda-environment-menu { z-index:10000; padding:4px; overflow:auto; box-sizing:border-box; border:1px solid var(--border); border-radius:7px; background:var(--panel); color:var(--text); box-shadow:0 8px 24px #0002; }
+.conda-environment-menu .conda-environment-option { display:flex; align-items:center; gap:12px; width:100%; min-height:62px; padding:10px 12px; border:0; border-radius:4px; background:transparent; color:var(--text); font:inherit; font-size:13px; line-height:1.5; text-align:left; cursor:pointer; box-sizing:border-box; }
+.conda-environment-menu .conda-environment-option.active { background:var(--panel-soft); }
+.conda-environment-menu .conda-environment-option.selected { background:var(--accent-surface); }
+.conda-environment-option>svg { flex-shrink:0; color:var(--accent-text); }

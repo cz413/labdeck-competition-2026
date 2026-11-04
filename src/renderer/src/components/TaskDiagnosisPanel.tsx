@@ -1,3 +1,4 @@
+import { DiagnosisChanges } from './DiagnosisChanges'
 import { userFacingError } from '@shared/user-facing-error'
 import { cleanDiagnosisText, diagnosisPresentation } from '@shared/diagnosis-presentation'
 import { useEffect, useRef, useState } from 'react'
@@ -27,12 +28,12 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
   const run=props.task.runs.find(item=>item.id===(report?.runId??props.runId))
   function show(value:DiagnosisReport):void{currentReport.current=value;setReport(value)}
 
-  async function analyze(refresh=false,inspect=false):Promise<void>{
+  async function analyze(refresh=false):Promise<void>{
     if(request.current)return
     const requestId=crypto.randomUUID();request.current=requestId
     setBusy('analysis');setError('');setMessage('正在分析本次运行，请稍候…')
     try{
-      const result=await window.labApi.intelligence.diagnoseTask({taskId:props.task.id,runId:currentReport.current?.runId??props.runId,requestId,refresh,inspect})
+      const result=await window.labApi.intelligence.diagnoseTask({taskId:props.task.id,runId:currentReport.current?.runId??props.runId,requestId,refresh})
       if(mounted.current&&request.current===requestId)show(result)
     }catch(cause){if(mounted.current)setError(userFacingError(cause,'诊断未完成，请稍后重试。'))}
     finally{if(request.current===requestId){request.current=null;if(mounted.current)setBusy('')}}
@@ -90,13 +91,13 @@ export function TaskDiagnosisPanel(props:Props):React.JSX.Element {
     {report&&<>
       <div className="task-diagnosis-result"><span className="task-diagnosis-label">{cancelled?'分析已停止':strongest?.confidence==='high'?'已识别的问题':'当前判断'}</span><h4>{strongest?.title??'现有证据不足，暂时无法确定原因'}</h4><p>{strongest?.explanation||'请查看运行日志，补充错误上下文后重新分析。'}</p>{presentation?.uncertainty&&<p className="task-diagnosis-uncertainty">{presentation.uncertainty}</p>}</div>
       {cited.length>0&&<section className="task-diagnosis-evidence"><h4>判断依据</h4>{cited.slice(0,3).map(item=><blockquote key={item.id}><span>{item.label}</span><pre>{item.text}</pre></blockquote>)}</section>}
-      {steps.length>0&&<section><h4>建议下一步</h4><ol>{steps.slice(0,5).map(step=><li key={step}>{step}</li>)}</ol></section>}
+      {(steps.length>0||!!strongest?.changes?.length)&&<section className="task-diagnosis-recommendations"><h4>修改建议</h4>{steps.length>0&&<ol>{steps.slice(0,5).map(step=><li key={step}>{step}</li>)}</ol>}<DiagnosisChanges changes={strongest?.changes??[]}/></section>}
       {report.repair&&!report.retryRunId&&<section className="task-diagnosis-repair"><h4>可确认的修改方案</h4><div><span>原命令</span><pre>{report.repair.before}</pre><span>修改后</span><pre>{report.repair.after}</pre></div><button type="button" className="primary-button" disabled={!!busy} onClick={()=>void repair()}>确认修改并重新运行</button></section>}
       {report.retryRunId&&<RepairClosurePanel report={report} busy={!!busy} onOpenRun={()=>props.onOpenRun(report.retryRunId!)} onCheck={()=>void operate('verify',async()=>{await window.labApi.intelligence.verify(report.id);await refreshReport()})} onToggle={enabled=>void operate('tracking',async()=>{await window.labApi.intelligence.setTracking(report.id,enabled);await refreshReport()})} onOpenDiagnosis={id=>void operate('history',async()=>{const found=(await window.labApi.intelligence.history()).find(item=>item.id===id&&item.taskId===props.task.id);if(found)show(found);else throw new Error('未找到后续诊断记录')})}/>}
       <details className="task-diagnosis-details"><summary>错误日志片段</summary>
         <pre>{cleanDiagnosisText(report.logExcerpt)||'未读取到日志'}</pre>
       </details>
     </>}
-    {!busy&&<footer className="task-diagnosis-actions"><button type="button" className="secondary-button" onClick={props.onEdit}>编辑配置</button><button type="button" className="secondary-button" onClick={()=>void analyze(true)}>{report?'重新分析':'重试分析'}</button>{report&&!strongest?.confidence.startsWith('high')&&report.investigation?.inspections===0&&report.engine!=='rules'&&<button type="button" className="secondary-button" onClick={()=>void analyze(true,true)}>进一步检查</button>}</footer>}
+    {!busy&&<footer className="task-diagnosis-actions"><button type="button" className="secondary-button" onClick={props.onEdit}>编辑配置</button><button type="button" className="secondary-button" onClick={()=>void analyze(true)}>{report?'重新分析':'重试分析'}</button></footer>}
   </section>
 }

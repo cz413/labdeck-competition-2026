@@ -72,6 +72,29 @@ describe('script task persistence and queue', () => {
     const second = await store.startExperimentRun(taskId,{...input(),launchMode:'command',codePath:'/project',launchCommand:'python main.py --device=cpu',computeDevice:'gpu'})
     expect(second.runs[1]).toMatchObject({computeDevice:'gpu',launchCommand:'python main.py --device=cuda'})
   })
+  it('snapshots each run stage independently from the stable task name',async()=>{
+    const {store}=fixture()
+    await store.saveExperimentTask({...draft(),id:taskId,title:'TIGER',runTitle:'生成 SID'})
+    const first=await store.startExperimentRun(taskId,input())
+    await store.updateExperimentRunState(taskId,first.runs[0].id,{status:'completed'})
+    await store.saveExperimentTask({...draft(),id:taskId,title:'TIGER',runTitle:'训练 T5'})
+    const second=await store.startExperimentRun(taskId,input())
+    expect(second.title).toBe('TIGER')
+    expect(second.runs.map(run=>run.runTitle)).toEqual(['生成 SID','训练 T5'])
+    const edited=await store.saveExperimentTask({...draft(),id:taskId,title:'TIGER',runTitle:'训练 T5 · 调整学习率'})
+    expect(edited.runs[0].runTitle).toBe('生成 SID')
+    expect(edited.runs[1].runTitle).toBe('训练 T5 · 调整学习率')
+  })
+  it('preserves a saved log destination through queueing and leaves historical runs unchanged',async()=>{
+    const {store}=fixture()
+    await store.saveExperimentTask({...draft(),id:taskId,stdoutLogPath:'/data/logs/{runId}.log'})
+    const queued=await store.startExperimentRun(taskId,input())
+    expect(queued.runs[0].stdoutLogPath).toBe('/data/logs/{runId}.log')
+    await store.updateExperimentRunState(taskId,queued.runs[0].id,{status:'completed'})
+    await store.saveExperimentTask({...draft(),id:taskId,stdoutLogPath:'/data/new/{runId}.log'})
+    expect(store.listExperimentTasks()[0].runs[0].stdoutLogPath).toBe('/data/logs/{runId}.log')
+    await expect(store.saveExperimentTask({...draft(),id:taskId,stdoutLogPath:'relative.log'})).rejects.toThrow('绝对文件路径')
+  })
   it('retains script mode after saving and reopening the settings file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'labdock-script-'))
     const filePath = join(directory, 'settings.json')
@@ -112,6 +135,27 @@ describe('remote script scheduling', () => {
     expect(wrapper).toContain("CUDA_VISIBLE_DEVICES=''")
     expect(store.listExperimentTasks()[0].runs[0]).toMatchObject({ computeDevice: 'cpu', status: 'running', gpuIndex: undefined, message: expect.stringContaining('CPU') })
   })
+  it('launches with the configured stdout path and preserves it for log readers',async()=>{
+    const {task,store,exec,prepare}=await schedulerFixture('cpu')
+    task.runs[0].stdoutLogPath="/data/custom logs/{runId}/stdout.log"
+    expect(await prepare(task,task.runs[0])).toBe(true)
+    const path=`/data/custom logs/${task.runs[0].id}/stdout.log`
+    const command=exec.mock.calls[1][1]
+    expect(command).toContain(`log_file='${path}'`)
+    expect(command).toContain('> "$log_file" 2>&1')
+    expect(command).toContain('mkdir -p -- "$(dirname -- "$log_file")"')
+    const encoded=command.match(/printf '%s' '([^']+)' \| base64 -d/)![1]
+    expect(Buffer.from(encoded,'base64').toString('utf8')).toContain(`export LABDECK_LOG_FILE='${path}'`)
+    expect(store.listExperimentTasks()[0].runs[0].logPath).toBe(path)
+  })
+  it('creates isolated result directories before launching a comparison member',async()=>{
+    const {task,exec,prepare}=await schedulerFixture('cpu')
+    task.runs[0].outputDirectories=['/data/results/group01']
+    expect(await prepare(task,task.runs[0])).toBe(true)
+    const command=exec.mock.calls[1][1]
+    expect(command).toContain("mkdir -p -- '/data/results/group01'")
+    expect(command.indexOf("mkdir -p -- '/data/results/group01'")).toBeLessThan(command.indexOf('base64 -d'))
+  })
   it('keeps CPU jobs queued when the remote directory is unavailable', async () => {
     const { task, store, exec, monitor, prepare } = await schedulerFixture('cpu')
     exec.mockRejectedValueOnce(new Error('代码目录不存在'))
@@ -147,6 +191,14 @@ describe('remote script scheduling', () => {
     await store.updateExperimentRunState(taskId, task.runs[0].id, { condaEnvironment: task.runs[0].condaEnvironment })
     expect(await prepare(task, task.runs[0])).toBe(true)
     expect(conda.buildEnvironmentRunCommand).toHaveBeenCalledWith(task.runs[0].condaEnvironment, "bash -- '/home/user/my project/train.sh'")
+  })
+  it('waits under the original default idle-only policy even if a GPU has remaining memory', async () => {
+    const {task,store,monitor,exec,prepare}=await schedulerFixture()
+    const sample=await monitor.snapshot()
+    monitor.snapshot.mockResolvedValue({...sample,gpus:sample.gpus.map(gpu=>({...gpu,memoryTotalMiB:24564,memoryUsedMiB:8431,utilizationPercent:8}))})
+    expect(await prepare(task,task.runs[0])).toBe(false)
+    expect(exec).not.toHaveBeenCalled()
+    expect(store.listExperimentTasks()[0].runs[0].message).toContain('默认等待空闲卡')
   })
   it('does not automatically dispatch a task using conflicting GPU memory data', async () => {
     const { task, store, monitor, exec, prepare } = await schedulerFixture()

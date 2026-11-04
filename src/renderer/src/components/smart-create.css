@@ -1,6 +1,6 @@
 /* Smart experiment preparation: a dedicated, explainable workspace inside 实验任务. */
 .experiment-task-empty-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:4px; }
-.smart-create { display:grid; gap:18px; padding-bottom:28px; max-width:1320px; min-width:0; }
+.smart-create { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:18px; padding-bottom:28px; width:100%; max-width:none; min-width:0; box-sizing:border-box; }
 .smart-create :is(input,select,textarea) { color:var(--text); background:var(--control-bg); border:1px solid var(--border); border-radius:4px; font:inherit; min-width:0; }
 .smart-create input,.smart-create select { height:32px; padding:0 9px; }
 .smart-create textarea { padding:9px 10px; line-height:1.7; resize:vertical; }
@@ -16,7 +16,8 @@
 .smart-return-button:hover { background:var(--control-hover); border-color:var(--accent-text); }
 .smart-return-button:active { background:var(--accent-surface); }
 .smart-return-button:focus-visible { outline:2px solid var(--accent-text); outline-offset:3px; }
-.smart-create-toolbar .preparation-sessions-trigger { min-height:36px; }
+.smart-create-title-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; min-width:0; }
+.smart-create-title-row>.preparation-sessions-trigger { min-height:36px; flex-shrink:0; }
 
 /* Start: only project location and intent. */
 .smart-start { display:grid; gap:16px; }
@@ -57,7 +58,7 @@
 .smart-analyze svg { vertical-align:-2px; margin-right:5px; }
 
 /* Progress: what the system already understood. */
-.smart-workbench { display:grid; gap:18px; }
+.smart-workbench { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:18px; min-width:0; }
 .smart-progress { padding:18px 20px; background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent-text); border-radius:5px; }
 .smart-progress header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:16px; }
 .smart-progress h2 { margin:0; font-size:16px; font-weight:600; }
@@ -82,11 +83,11 @@
 .smart-scope-list input[type=checkbox] { width:14px; height:14px; flex-shrink:0; margin-top:2px; }
 
 /* Plan cards. */
-.smart-plan { display:grid; gap:16px; }
+.smart-plan { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; gap:16px; }
 .smart-plan-head { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:18px; padding:18px 20px; background:var(--panel); border:1px solid var(--border); border-radius:5px; }
 .smart-plan-state { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; color:var(--wb-success); background:var(--success-soft); border:1px solid var(--border); border-radius:3px; font-size:12px; }
 .smart-plan-head h2 { margin:10px 0 6px; font-size:20px; font-weight:650; overflow-wrap:anywhere; }
-.smart-plan-head p { margin:0; max-width:760px; color:var(--muted); font-size:13px; line-height:1.8; }
+.smart-plan-head p { margin:0; max-width:760px; overflow-wrap:anywhere; color:var(--muted); font-size:13px; line-height:1.8; }
 .smart-plan-meta { display:flex; flex-wrap:wrap; align-items:center; gap:14px; color:var(--muted); font-size:12px; }
 .smart-plan-meta>span { display:inline-flex; align-items:center; gap:5px; }
 .smart-plan-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; }
@@ -105,7 +106,7 @@
 .smart-objective { display:grid; gap:6px; }
 .smart-objective>span { color:var(--muted); font-size:12px; }
 .smart-objective p { margin:0; padding:9px 11px; background:var(--surface-subtle); border:1px solid var(--border-soft); border-radius:4px; font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
-.smart-mode-switch { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.smart-mode-switch { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .smart-mode-switch>button { display:grid; gap:6px; padding:10px 11px; text-align:left; color:var(--text); background:var(--surface-subtle); border:1px solid var(--border); border-radius:4px; cursor:pointer; }
 .smart-mode-switch>button:hover:not(:disabled) { border-color:var(--interactive-border); background:var(--control-hover); }
 .smart-mode-switch>button.active { background:var(--accent-surface); border-color:var(--interactive-border); }
@@ -294,3 +295,31 @@ fieldset.smart-start-main { min-width:0; margin:0; padding:0; border:0; }
 .smart-history li>span { flex:1; min-width:0; }
 .smart-history li>button { display:inline-flex; align-items:center; justify-content:center; gap:5px; flex-shrink:0; min-width:64px; margin-left:8px; }
 .smart-history li>button:disabled { color:var(--muted); cursor:default; opacity:.65; }
+
+.smart-card .smart-inline-command,.smart-card .smart-inline-log { display:block; width:100%; min-width:0; box-sizing:border-box; padding:9px 10px; color:var(--text); background:var(--control-bg); border:1px solid var(--border); border-radius:4px; font:12px/1.7 'Cascadia Code',Consolas,monospace; }
+.smart-card .smart-inline-command { resize:vertical; min-height:62px; }
+.smart-card .smart-inline-command:focus-visible,.smart-card .smart-inline-log:focus-visible { outline:2px solid var(--accent-text); outline-offset:1px; }
+
+.smart-history ol { max-height:260px; overflow-y:auto; gap:0; margin:8px 0 0; scrollbar-gutter:stable; }
+.smart-history li { align-items:center; min-height:38px; padding:5px 0; gap:12px; }
+.smart-history li>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.smart-history li>time { min-width:40px; }
+.smart-history-current { flex-shrink:0; min-width:64px; margin-left:8px; color:var(--accent-text); font-size:11px; font-style:normal; text-align:center; }
+
+@media(max-width:600px) {
+  .smart-create-title p { overflow-wrap:anywhere; }
+}
+
+@media(max-width:600px) {
+  .smart-create-title-row { flex-wrap:wrap; gap:12px; }
+}
+
+/* Keep long repository paths and restored content within the page's available width. */
+.smart-create :is(.smart-start,.smart-start-card,.smart-project-context,.smart-progress,.smart-plan-grid,.smart-card-more,.smart-history) { min-width:0; max-width:100%; }
+.smart-plan-head>div:first-child { flex:1 1 360px; min-width:0; max-width:100%; }
+.smart-plan-head .smart-plan-meta { min-width:0; max-width:100%; }
+.smart-mode-switch>button { min-width:0; overflow-wrap:anywhere; }
+.smart-card>header>div { min-width:0; }
+.smart-card-more pre,.smart-refine-feedback p,.smart-create-title p { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+.preparation-trace-line>strong { min-width:0; overflow-wrap:anywhere; }
+.preparation-trace-refs code { max-width:100%; overflow-wrap:anywhere; }

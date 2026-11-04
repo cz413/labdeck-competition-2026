@@ -346,6 +346,8 @@ export interface CondaEnvironmentConfig {
 export type ExperimentLaunchMode = 'command' | 'script'
 
 export interface ExperimentRun {
+  outputDirectories?: string[]
+  runTitle?: string
   id: string
   number: number
   status: ExperimentRunStatus
@@ -365,6 +367,7 @@ export interface ExperimentRun {
   launchMode?: ExperimentLaunchMode
   scriptPath?: string
   condaEnvironment?: CondaEnvironmentConfig
+  stdoutLogPath?: string
   artifactPath?: string
   minimumFreeVramGiB?: number | null
   maximumGpuUtilizationPercent?: number | null
@@ -377,6 +380,8 @@ export interface ExperimentRun {
 }
 
 export interface ExperimentRunStartInput {
+  outputDirectories?: string[]
+  runTitle?: string
   serverId: string | null
   accessRouteId: string | null
   computeDevice?: 'gpu' | 'cpu'
@@ -389,6 +394,7 @@ export interface ExperimentRunStartInput {
   launchMode?: ExperimentLaunchMode
   scriptPath?: string
   condaEnvironment: CondaEnvironmentConfig | null
+  stdoutLogPath?: string
   artifactPath: string
   minimumFreeVramGiB: number | null
   maximumGpuUtilizationPercent: number | null
@@ -396,6 +402,8 @@ export interface ExperimentRunStartInput {
 }
 
 export interface ExperimentTask {
+  outputDirectories?: string[]
+  runTitle?: string
   preparationId?: string
   projectPreparation?: TaskProjectContext
   id: string
@@ -420,6 +428,7 @@ export interface ExperimentTask {
   condaEnvironment?: CondaEnvironmentConfig
   minimumFreeVramGiB?: number
   maximumGpuUtilizationPercent?: number
+  stdoutLogPath?: string
   artifactPath: string
   resultSummary: string
   notes: string
@@ -463,6 +472,7 @@ export interface ExperimentRunFinishInput {
   status: Exclude<ExperimentRunStatus, 'queued' | 'preparing' | 'running'>
   resultSummary: string
   notes: string
+  stdoutLogPath?: string
   artifactPath: string
 }
 
@@ -546,7 +556,7 @@ export interface AppApi {
     finishRun(taskId: string, runId: string, input: ExperimentRunFinishInput): Promise<ExperimentTask>
     onChanged(listener: () => void): () => void
     setArchived(taskId: string, archived: boolean): Promise<ExperimentTask>
-    listCondaEnvironments(serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string): Promise<RemoteCondaResult<CondaEnvironmentList>>
+    listCondaEnvironments(serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string, forceRefresh?: boolean): Promise<RemoteCondaResult<CondaEnvironmentList>>
     checkCondaEnvironment(serverId: string, accessRouteId: string, config: CondaEnvironmentConfig): Promise<RemoteCondaResult<CondaEnvironmentCheck>>
     getCondaEnvironmentCommand(config: CondaEnvironmentConfig, updateExisting: boolean): Promise<{ command: string }>
   }

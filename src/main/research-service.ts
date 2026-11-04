@@ -1,17 +1,21 @@
+import { ResearchOutputNames } from './research-output-names'
+import { deviceLaunchCommand } from '../shared/experiment-launch'
 import { app, dialog, ipcMain } from 'electron'
 import { Annotation, Command, END, START, StateGraph, interrupt } from '@langchain/langgraph'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { AppStore } from './store'
 import type { IntelligenceService } from './intelligence-service'
 import type { SshService } from './ssh-service'
 import type { ExperimentTask, ExperimentTaskDraft } from '../shared/types'
-import type { ResearchAnalysis, ResearchCampaign, ResearchInput, ResearchOutputIsolation, ResearchSuggestion, ResearchView, RunObservation } from '../shared/research'
+import type { ResearchAnalysis, ResearchCampaign, ResearchInput, ResearchRunTarget, ResearchOutputIsolation, ResearchSuggestion, ResearchView, RunObservation } from '../shared/research'
 import { baselineDraft } from '../shared/research'
 import { resultAnalysisPayload, resultAnalysisPrompt, hasInternalAnalysisText } from './research-analysis'
-import { inspectResearchOutput, isolateResearchVariants } from './research-output'
+import { isolateResearchVariants, reuseResearchOutput, researchOutputLocations } from './research-output'
+import { analyzeResearchOutput } from './research-output-model'
+import type { RepositorySnapshot, RepositoryExcerpt } from '../shared/repository-guide'
 import { researchMemberTitle } from '../shared/research-pool'
 import { axesSchema, expandParameters } from '../shared/parameter-engine'
 import { experimentRunStartInputSchema, experimentTaskDraftSchema } from '../shared/schemas'
@@ -22,8 +26,9 @@ import { ParameterBridge } from './parameter-bridge'
 import type { ResultCollectionConfig } from '../shared/research-results'
 import { collectRunResults } from './result-collector'
 import { openRepositoryReadSession } from './repository-reader'
-import { researchDesignPrompt, researchImports, researchParameters, researchReadPaths, validateResearchDesign } from './research-design'
+import { commandParameter, researchDesignPrompt, researchImports, researchParameters, researchReadPaths, validateResearchDesign } from './research-design'
 import { evidenceState, metricColumns, metricContext, metricIdentity, normalizeResultConfig, resultConfigForRun, observationMetrics, processEvidenceState, resultConfigSchema, resultConfigurationWarnings } from '../shared/research-results'
+const runTargetSchema=experimentRunStartInputSchema.pick({computeDevice:true,gpuUuid:true,gpuIndex:true,gpuNameSnapshot:true,minimumFreeVramGiB:true,maximumGpuUtilizationPercent:true}).strict()
 const campaignState=Annotation.Root({campaign:Annotation<ResearchCampaign>()})
 const designVariableSchema=z.object({flag:z.string().max(50),baselineValue:z.string().max(80),source:z.object({path:z.string().max(512),startLine:z.number().int().positive(),quote:z.string().max(1200)})})
 const designSchema=z.object({status:z.literal('ready'),axes:axesSchema,baselineCommand:z.string().max(20000),hypothesis:z.string().max(1500),rationale:z.string().max(1800).optional(),assumptions:z.array(z.string().max(500)).max(12),readFiles:z.array(z.string().max(512)).max(8).optional(),variable:designVariableSchema.optional(),variables:z.array(designVariableSchema).min(1).max(5).optional()})
@@ -38,6 +43,7 @@ function configIdentity(d:ExperimentTaskDraft):string {
 }
 export class ResearchService {
   private readonly directory:string
+  private readonly outputNames:ResearchOutputNames
   private readonly saver:DiskCheckpointSaver
   private readonly bridge:ParameterBridge
   private readonly graph:ReturnType<ResearchService['buildGraph']>
@@ -48,6 +54,7 @@ export class ResearchService {
   private timer?:NodeJS.Timeout
   constructor(private readonly store:AppStore,private readonly intelligence:IntelligenceService,private readonly ssh:SshService,private readonly changed:()=>void=()=>{},private readonly queueChanged:()=>void=()=>{},options?:{directory?:string;engineDirectory?:string}) {
     this.directory=options?.directory??join(app.getPath('userData'),'research')
+    this.outputNames=new ResearchOutputNames(join(this.directory,'output-names.json'))
     this.saver=new DiskCheckpointSaver(join(this.directory,'checkpoints.json'))
     this.bridge=new ParameterBridge(options?.engineDirectory??(app.isPackaged?join(process.resourcesPath,'cangjie'):join(app.getAppPath(),'resources','cangjie')))
     this.graph=this.buildGraph()
@@ -56,8 +63,8 @@ export class ResearchService {
     return new StateGraph(campaignState)
       .addNode('expand',async({campaign})=>{
         const expansion=await this.bridge.expand(campaign.baseline.launchCommand,campaign.axes,campaign.maxRuns)
-        if(campaign.outputIsolation?.flag&&campaign.axes.some(axis=>axis.flag===campaign.outputIsolation?.flag))throw new Error('输出目录由系统独立分配，不能同时作为对比变量')
-        const variants=isolateResearchVariants(campaign.id,campaign.baseline,expansion.variants,campaign.outputIsolation??{status:'unverified'})
+        if(campaign.axes.some(axis=>[campaign.outputIsolation?.flag,...(campaign.outputIsolation?.targets??[]).map(target=>target.flag)].includes(axis.flag)))throw new Error('输出目录由系统独立分配，不能同时作为对比变量')
+        const variants=isolateResearchVariants(campaign.id,campaign.baseline,expansion.variants,campaign.outputIsolation??{status:'unverified'},await this.outputNames.allocate(campaign.id))
         const previous=this.store.listExperimentTasks()
         const repeats=expansion.variants.filter(v=>previous.some(t=>configIdentity({...campaign.baseline,launchCommand:v.command})===configIdentity(t)&&t.runs.length))
         return {campaign:event({...campaign,members:variants,expansionEngine:expansion.engine,warnings:[...expansion.warnings,...resultConfigurationWarnings(normalizeResultConfig(campaign.resultConfig),variants),...(campaign.outputIsolation?.status==='verified'?[]:[campaign.outputIsolation?.reason??'本批尚未确认独立输出目录']),...(repeats.length?[`${repeats.length} 个配置存在历史运行；再次执行有助于复现，请确认是否需要。`]:[])]},'expand',`生成 ${expansion.variants.length} 组配置，等待审查`)}
@@ -116,8 +123,11 @@ export class ResearchService {
     const state=await this.graph.getState(this.config(id))
     if(!state.values.campaign)throw new Error('实验研究尚未写入检查点，请检查历史文件')
     const campaign=structuredClone(state.values.campaign) as ResearchCampaign
-    const observations=[...campaign.observations,...(meta.captured??[]).filter(item=>!campaign.observations.some(old=>old.runId===item.runId))]
-    return {...campaign,busy:this.running.has(id),paused:meta.paused,error:meta.error,observations,pending:[...state.next]}
+    if(state.next.includes('review')&&!campaign.members.some(member=>member.taskId)&&campaign.outputIsolation?.engine!=='model'&&campaign.outputIsolation?.status!=='unverified'){
+      campaign.outputIsolation={status:'unverified',reason:'本方案尚未经过 AI 源码核对，请重新核对输出位置后运行。'}
+    }
+    const observations=[...campaign.observations,...(meta.captured??[]).filter(item=>campaign.members.some(member=>member.runId===item.runId)&&!campaign.retrySubmission?.items.some(retry=>retry.previousRunId===item.runId)&&!campaign.observations.some(old=>old.runId===item.runId))]
+    return {...campaign,busy:this.running.has(id),paused:meta.paused,error:meta.error,observations,pending:campaign.retrySubmission?['retry']:[...state.next]}
   }
   async list():Promise<ResearchView[]>{
     await this.ready();const views:ResearchView[]=[]
@@ -189,19 +199,37 @@ export class ResearchService {
       return {...result,assumptions:[...result.assumptions,...warnings,...session.snapshot.warnings].slice(0,12),readFiles:files.map(f=>f.path)}
     }finally{session.close()}
   }
-  private async inspectOutput(baseline:ExperimentTaskDraft):Promise<ResearchOutputIsolation>{
+  private async inspectOutput(baseline:ExperimentTaskDraft,preparationId?:string):Promise<ResearchOutputIsolation>{
     if(!baseline.serverId)return {status:'unverified',reason:'缺少输出目录核对所需的服务器'}
-    try{
-      const paths=researchReadPaths(baseline.launchCommand,baseline.codePath)
-      const session=await openRepositoryReadSession(this.store,this.ssh,{source:'remote',serverId:baseline.serverId,accessRouteId:baseline.accessRouteId,path:baseline.codePath})
+    let cached:RepositorySnapshot|undefined
+    const warnings:string[]=[]
+    if(preparationId){
       try{
-        let bytes=0
-        const read=async(path:string)=>{const file=session.snapshot.files.find(file=>file.path===path);if(!file||session.snapshot.excerpts.some(file=>file.path===path)||session.snapshot.excerpts.length>=8||file.sizeBytes>128000||bytes+file.sizeBytes>180000)return;await session.read(path);bytes+=file.sizeBytes}
-        await read(paths.entry)
-        for(let i=0;i<session.snapshot.excerpts.length&&i<8;i++)if(session.snapshot.excerpts[i].path.endsWith('.py'))for(const path of researchImports(session.snapshot.excerpts[i]))await read(path)
-        return inspectResearchOutput(baseline,session.snapshot.excerpts)
-      }finally{session.close()}
-    }catch{return {status:'unverified',reason:'未能核对项目输出目录，请检查服务器连接和训练入口后重新生成方案。'}}
+        const snapshot=await this.intelligence.preparationRepository(preparationId)
+        if(snapshot){
+          const root=posix.resolve(snapshot.input.path),directory=posix.resolve(baseline.codePath)
+          if(snapshot.input.source==='remote'&&snapshot.input.serverId===baseline.serverId&&(snapshot.input.accessRouteId??'direct')===(baseline.accessRouteId??'direct')&&(directory===root||directory.startsWith(root+'/')))cached=snapshot
+          else warnings.push('准备记录的服务器、连接路径或项目目录与本次基准不一致，未复用其源码。')
+        }
+      }catch{warnings.push('原准备记录已删除或无法读取，本次重新读取项目源码。')}
+    }
+    const root=cached?.input.path??baseline.codePath
+    const files=new Map<string,RepositoryExcerpt>((cached?.excerpts??[]).map(file=>[file.path,structuredClone(file)]))
+    if(cached)warnings.push(...cached.warnings,`复用智能实验在 ${cached.collectedAt} 读取的源码快照；工作目录为 ${baseline.codePath}，文件路径相对项目根目录 ${root}。快照未重新核验服务器最新内容。`)
+    const complete=!!cached&&cached.files.length>0&&cached.files.every(file=>files.has(file.path)&&!files.get(file.path)!.truncated)
+    if(!complete){
+      try{
+        const session=await openRepositoryReadSession(this.store,this.ssh,{source:'remote',serverId:baseline.serverId,accessRouteId:baseline.accessRouteId,path:root})
+        try{
+          for(const file of session.snapshot.files){
+            if(files.has(file.path)&&!files.get(file.path)!.truncated)continue
+            try{files.set(file.path,await session.read(file.path))}catch{warnings.push(`${file.path} 未能补读，判断输出位置时必须考虑此缺口。`)}
+          }
+          warnings.push(...session.snapshot.warnings)
+        }finally{session.close()}
+      }catch{warnings.push('未能连接服务器补读文件，本次只能根据已缓存源码判断。')}
+    }
+    return analyzeResearchOutput(baseline,[...files.values()],warnings,(system,payload)=>this.intelligence.requestResearchModel(system,payload,{purpose:'repository'}),{root,collectedAt:cached?.collectedAt,reused:!!cached})
   }
   async create(raw:ResearchInput):Promise<ResearchView>{
     await this.ready();const input=inputSchema.parse(raw),source=this.task(input.taskId),task={...source,...baselineDraft(source,input.sourceRunId)}
@@ -212,9 +240,9 @@ export class ResearchService {
     const baseline=experimentTaskDraftSchema.parse({...baselineDraft(task),accessRouteId:task.accessRouteId??getDefaultAccessRouteId(this.store.getServer(task.serverId)),launchMode:'command',scriptPath:''})
     expandParameters(baseline.launchCommand,input.axes,input.maxRuns)
     if(Object.keys(this.book).length>=100)throw new Error('本地实验研究已达到 100 项，请导出并整理历史')
-    const outputIsolation=await this.inspectOutput(baseline)
+    const outputIsolation=await this.inspectOutput(baseline,source.preparationId)
     const id=randomUUID(),timestamp=now()
-    const campaign:ResearchCampaign={id,createdAt:timestamp,updatedAt:timestamp,objective:input.objective,sourceTaskId:task.id,sourceRunId:input.sourceRunId,sourceRunNumber:source.runs.find(run=>run.id===input.sourceRunId)?.number,baseline,outputIsolation,design:input.design,axes:input.axes,maxRuns:input.maxRuns,useModel:false,resultConfig:normalizeResultConfig(input.resultConfig),stage:'review',members:[],expansionEngine:'typescript',warnings:[],observations:[],events:[]}
+    const campaign:ResearchCampaign={id,createdAt:timestamp,updatedAt:timestamp,objective:input.objective,sourceTaskId:task.id,sourceRunId:input.sourceRunId,sourceRunNumber:source.runs.find(run=>run.id===input.sourceRunId)?.number,baseline,sourcePreparationId:source.preparationId,outputIsolation,design:input.design,axes:input.axes,maxRuns:input.maxRuns,useModel:false,resultConfig:normalizeResultConfig(input.resultConfig),stage:'review',members:[],expansionEngine:'typescript',warnings:[],observations:[],events:[]}
     this.book[id]={paused:false}
     await this.execute(id,()=>this.graph.invoke({campaign},this.config(id)))
     return this.view(id)
@@ -228,32 +256,127 @@ export class ResearchService {
     finally{this.running.delete(id);await this.persistBook();this.changed()}
   }
   private errorMessage(error:unknown):string{return redactSecrets(error instanceof Error?error.message:String(error)).slice(0,1000)}
-  async approve(id:string,confirmed:boolean):Promise<ResearchView>{
+  async recheckOutput(rawId:string):Promise<ResearchView>{
+    await this.ready();const id=z.string().uuid().parse(rawId),current=await this.view(id)
+    const submitted=current.members.some(member=>member.taskId)
+    if(submitted&&(current.stage!=='analysis'||current.pending.length||current.retrySubmission))throw new Error('请等待本批运行结束后核对保存目录')
+    const outputIsolation=await this.inspectOutput(current.baseline,current.sourcePreparationId??this.store.listExperimentTasks().find(task=>task.id===current.sourceTaskId)?.preparationId)
+    if(submitted){
+      if(outputIsolation.status!=='verified')throw new Error(outputIsolation.reason??'尚未确认实际保存目录')
+      await this.execute(id,async()=>{
+        const members=current.members.map(member=>{const task=this.task(member.taskId!);const run=task.runs.find(run=>run.id===member.runId);if(!run)throw new Error('关联运行已删除');return {...member,...researchOutputLocations(run.launchCommand??member.command,run.codePath??current.baseline.codePath,outputIsolation)}})
+        const config=normalizeResultConfig(current.resultConfig),runResultFiles={...config.runResultFiles}
+        for(const [index,member] of members.entries()){
+          const old=current.members[index].outputDirectory
+          if(old&&member.runId&&runResultFiles[member.runId])runResultFiles[member.runId]=runResultFiles[member.runId].map(path=>path.startsWith(old+'/')?member.outputDirectory+path.slice(old.length):path)
+        }
+        const updated=event({...current,members,outputIsolation,resultConfig:{...config,runResultFiles},analysis:undefined,observations:[],events:current.events.map(event=>event.node==='result_analysis'?{...event,node:'previous_result_analysis'}:event)},'output_paths_recheck','根据 AI 源码复核修正保存目录；未修改命令、移动文件或启动运行，请重新采集结果')
+        await this.graph.updateState(this.config(id),{campaign:updated},'analyze')
+        this.book[id].captured=[];await this.persistBook()
+      })
+      return this.view(id)
+    }
+    await this.execute(id,async()=>{
+      // Start expansion again, rather than resuming the failed/paused node with stale warnings.
+      const {busy:_busy,paused:_paused,error:_error,pending:_pending,...campaign}=current
+      await this.graph.updateState(this.config(id),{campaign:event({...campaign,outputIsolation,approvedAt:undefined},'output_recheck','重新核对保存参数并更新各组独立输出位置')},START)
+      await this.graph.invoke(null,this.config(id))
+    })
+    return this.view(id)
+  }
+  async approve(id:string,confirmed:boolean,rawTarget?:ResearchRunTarget):Promise<ResearchView>{
     await this.ready();z.string().uuid().parse(id);if(confirmed!==true)throw new Error('需要明确确认后才能加入队列')
     const current=await this.view(id)
     if(current.paused)throw new Error('先恢复流程，再确认运行')
-    if(current.outputIsolation?.status==='unverified')throw new Error('尚未确认独立输出目录，暂不能提交本批。请让脚本通过参数指定保存目录后重新生成方案。')
-    if(current.pending.includes('review'))await this.execute(id,()=>this.graph.invoke(new Command({resume:true}),this.config(id)))
+    if(current.outputIsolation?.status==='unverified')throw new Error(current.outputIsolation.reason??'尚未确认各组独立保存位置，请重新核对输出位置。')
+    let target=rawTarget===undefined?current.runTarget:runTargetSchema.parse(rawTarget)
+    if(target?.computeDevice==='cpu')target={...target,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null}
+    if(current.pending.includes('queue')&&rawTarget!==undefined&&JSON.stringify(target)!==JSON.stringify(current.runTarget))throw new Error('本批已确认，恢复提交时不能更换运行设备')
+    if(current.pending.includes('review'))await this.execute(id,async()=>{
+      if(target){
+        await this.graph.updateState(this.config(id),{campaign:{...current,runTarget:target}},'expand')
+        await this.graph.invoke(null,this.config(id))
+      }
+      await this.graph.invoke(new Command({resume:true}),this.config(id))
+    })
     else if(current.pending.includes('queue'))await this.execute(id,()=>this.graph.invoke(null,this.config(id)))
+    return this.view(id)
+  }
+  async retryFailed(rawId:string,confirmed:boolean,rawTarget?:ResearchRunTarget):Promise<ResearchView>{
+    await this.ready();const id=z.string().uuid().parse(rawId)
+    if(confirmed!==true)throw new Error('请先确认重跑失败组')
+    await this.execute(id,async()=>{
+      const view=await this.view(id)
+      let current:ResearchCampaign=view
+      if(view.paused)throw new Error('请先恢复本批跟踪')
+      if(!current.retrySubmission){
+        const tasks=this.store.listExperimentTasks()
+        const entries=current.members.map((member,index)=>({member,index,task:tasks.find(task=>task.id===member.taskId),run:tasks.find(task=>task.id===member.taskId)?.runs.find(run=>run.id===member.runId)}))
+        if(!entries.length||entries.some(entry=>!entry.task||!entry.run))throw new Error('关联任务或运行已删除，无法重跑本批')
+        if(entries.some(entry=>!['completed','failed','cancelled'].includes(entry.run!.status)))throw new Error('请等待本批运行全部结束后重跑失败组')
+        const failed=entries.filter(entry=>entry.run!.status==='failed')
+        if(!failed.length)throw new Error('本批没有需要重跑的失败组')
+        if(current.outputIsolation?.status!=='verified'||current.outputIsolation.engine!=='model')throw new Error('本批缺少 AI 确认的输出位置，请重新创建对照方案')
+        let target=runTargetSchema.parse(rawTarget??current.runTarget??{computeDevice:current.baseline.computeDevice??'gpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:current.baseline.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:current.baseline.maximumGpuUtilizationPercent??null})
+        if(target.computeDevice==='cpu')target={...target,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null}
+        for(const entry of failed){
+          const task=entry.task!
+          if(Object.entries(entry.member.parameters).some(([flag,value])=>commandParameter(task.launchCommand,flag)!==value))throw new Error('失败组的对比参数已改变，请恢复原对比值或创建新的对照方案')
+          if(task.archived||task.runs.some(run=>['queued','preparing','running'].includes(run.status)))throw new Error('失败组任务已归档或已有运行，请先处理后重试')
+          if(task.serverId!==current.baseline.serverId||task.codePath!==current.baseline.codePath||task.launchMode==='script'||researchReadPaths(task.launchCommand,task.codePath).entry!==researchReadPaths(current.baseline.launchCommand,current.baseline.codePath).entry)throw new Error('失败组的服务器、入口或代码目录已改变，请为新配置创建对照方案')
+        }
+        const count=(current.retryCount??0)+1,attempt=randomUUID()
+        const items=failed.map(({member,index,task,run})=>{
+          const next=member,command=deviceLaunchCommand(reuseResearchOutput(task!.launchCommand,member.command,current.outputIsolation!),target.computeDevice??current.baseline.computeDevice??'gpu')
+          return {index,taskId:task!.id,previousRunId:run!.id,member:{...next,command,taskId:task!.id,runId:undefined},input:experimentRunStartInputSchema.parse({serverId:task!.serverId??null,accessRouteId:task!.accessRouteId??current.baseline.accessRouteId??null,computeDevice:target.computeDevice??current.baseline.computeDevice??'gpu',gpuUuid:target.gpuUuid,gpuIndex:target.gpuIndex,gpuNameSnapshot:target.gpuNameSnapshot,codePath:task!.codePath,dataPath:task!.dataPath,launchCommand:command,launchMode:'command',scriptPath:'',condaEnvironment:task!.condaEnvironment??null,artifactPath:next.outputDirectory??task!.artifactPath,outputDirectories:next.outputDirectories,stdoutLogPath:task!.stdoutLogPath,minimumFreeVramGiB:target.minimumFreeVramGiB,maximumGpuUtilizationPercent:target.maximumGpuUtilizationPercent,notes:`[研究重跑:${id}:${attempt}:${index}]\n${member.key}`})}
+        })
+        const oldIds=new Set(items.map(item=>item.previousRunId))
+        current=event({...current,stage:'waiting',retryCount:count,retrySubmission:{id:attempt,target,items},analysis:undefined,observations:current.observations.filter(observation=>!oldIds.has(observation.runId)),events:current.events.map(event=>event.node==='result_analysis'?{...event,node:'previous_result_analysis'}:event)},'retry',`用户确认重跑 ${items.length} 个失败组，成功组保持原运行`)
+        await this.graph.updateState(this.config(id),{campaign:current},'queue')
+        this.book[id].captured=(this.book[id].captured??[]).filter(item=>!oldIds.has(item.runId));await this.persistBook()
+      }else if(rawTarget!==undefined)throw new Error('重跑提交已确认，恢复时不能更换设备')
+      const submission=current.retrySubmission!
+      for(const item of submission.items){
+        let task=this.task(item.taskId)
+        const marker=item.input.notes.split('\n')[0]
+        let run=task.runs.find(run=>run.notes.split('\n')[0]===marker)
+        if(!run){task=await this.store.startExperimentRun(task.id,item.input);run=task.runs.find(run=>run.notes.split('\n')[0]===marker)}
+        if(!run)throw new Error('未能确认重跑记录，请重新检查提交进度')
+        if(current.members[item.index].runId===run.id)continue
+        const members=[...current.members];members[item.index]={...item.member,runId:run.id}
+        const config=normalizeResultConfig(current.resultConfig),runResultFiles={...config.runResultFiles}
+        const previous=current.members[item.index]
+        const paths=resultConfigForRun(config,item.previousRunId).resultFiles??[]
+        if(paths.length)runResultFiles[run.id]=paths.map(path=>previous.outputDirectory&&path.startsWith(previous.outputDirectory+'/')&&item.member.outputDirectory?item.member.outputDirectory+path.slice(previous.outputDirectory.length):path)
+        delete runResultFiles[item.previousRunId]
+        current={...current,members,resultConfig:{...config,runResultFiles}}
+        await this.graph.updateState(this.config(id),{campaign:current},'queue')
+        this.queueChanged()
+      }
+      current=event({...current,retrySubmission:undefined},'retry_queued','失败组已重新提交，跟踪新的运行记录')
+      await this.graph.updateState(this.config(id),{campaign:current},'queue')
+      await this.graph.invoke(null,this.config(id))
+    })
     return this.view(id)
   }
   private async queue(c:ResearchCampaign):Promise<ResearchCampaign>{
     if(!c.approvedAt)throw new Error('本批实验尚未确认')
     if(c.members.length>c.maxRuns||!c.members.length)throw new Error('运行数量超过预算或为空')
     const members=[]
+    const target=c.runTarget
     for(const [index,variant] of c.members.entries()){
       const marker=`[研究:${c.id}:${index}]`
-      const draft=experimentTaskDraftSchema.parse({...c.baseline,...(variant.outputDirectory?{artifactPath:variant.outputDirectory}:{}),title:researchMemberTitle(c,variant),objective:c.objective,tags:[...new Set([...c.baseline.tags.slice(0,15),'对照实验'])],status:'planned',launchCommand:variant.command,resultSummary:'',notes:`${marker}\n来源任务：${c.sourceTaskId}\n${variant.key}\n${c.baseline.notes.slice(0,3000)}`})
+      const draft=experimentTaskDraftSchema.parse({...c.baseline,...(target?{computeDevice:target.computeDevice??c.baseline.computeDevice,minimumFreeVramGiB:target.minimumFreeVramGiB??undefined,maximumGpuUtilizationPercent:target.maximumGpuUtilizationPercent??undefined}:{}),...(variant.outputDirectory?{artifactPath:variant.outputDirectory,outputDirectories:variant.outputDirectories}:{}),title:researchMemberTitle(c,variant),objective:c.objective,tags:[...new Set([...c.baseline.tags.slice(0,15),'对照实验'])],status:'planned',launchCommand:target?deviceLaunchCommand(variant.command,target.computeDevice??c.baseline.computeDevice??'gpu'):variant.command,resultSummary:'',notes:`${marker}\n来源任务：${c.sourceTaskId}\n${variant.key}\n${c.baseline.notes.slice(0,3000)}`})
       let task=this.store.listExperimentTasks().find(t=>t.notes.split('\n')[0]===marker)
       if(task && configIdentity(task)!==configIdentity(draft))throw new Error(`对照 ${index+1} 配置在确认后发生变化，已停止继续提交；请核对已有任务`)
       task??=await this.store.saveExperimentTask(draft)
       let run=task.runs.find(r=>r.notes.split('\n')[0]===marker)
       if(!run&&task.runs.length)throw new Error('对照任务已经存在其他运行，但无法核对本批去重标记；请审查已有记录后再继续')
       if(!run){
-        task=await this.store.startExperimentRun(task.id,experimentRunStartInputSchema.parse({serverId:draft.serverId??null,accessRouteId:draft.accessRouteId??null,computeDevice:draft.computeDevice,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,codePath:draft.codePath,dataPath:draft.dataPath,launchCommand:draft.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:draft.condaEnvironment??null,artifactPath:draft.artifactPath,minimumFreeVramGiB:draft.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:draft.maximumGpuUtilizationPercent??null,notes:`${marker}\n${variant.key}`}))
+        task=await this.store.startExperimentRun(task.id,experimentRunStartInputSchema.parse({serverId:draft.serverId??null,accessRouteId:draft.accessRouteId??null,computeDevice:draft.computeDevice,gpuUuid:target?.gpuUuid??null,gpuIndex:target?.gpuIndex??null,gpuNameSnapshot:target?.gpuNameSnapshot??null,codePath:draft.codePath,dataPath:draft.dataPath,launchCommand:draft.launchCommand,launchMode:'command',scriptPath:'',condaEnvironment:draft.condaEnvironment??null,outputDirectories:draft.outputDirectories,artifactPath:draft.artifactPath,minimumFreeVramGiB:draft.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:draft.maximumGpuUtilizationPercent??null,notes:`${marker}\n${variant.key}`}))
         run=task.runs.at(-1)!
       }
-      members.push({...variant,taskId:task.id,runId:run.id})
+      members.push({...variant,command:draft.launchCommand,taskId:task.id,runId:run.id})
     }
     this.queueChanged()
     return {...c,members,stage:'waiting'}
@@ -268,7 +391,7 @@ export class ResearchService {
   }
   async refresh(id:string):Promise<ResearchView>{
     await this.ready();z.string().uuid().parse(id);const current=await this.view(id)
-    if(current.paused)return current
+    if(current.paused||current.retrySubmission)return current
     if(current.pending.includes('observe')){
       const tasks=this.store.listExperimentTasks()
       const newlyFinished=current.members.some(member=>{
@@ -370,10 +493,12 @@ export class ResearchService {
     await writeFile(result.filePath,JSON.stringify(view,null,2),'utf8');return result.filePath
   }
   registerIpc():void{
+    ipcMain.handle('research:retryFailed',(_e,id,confirmed,target)=>this.retryFailed(id,confirmed,target))
+    ipcMain.handle('research:recheckOutput',(_e,id)=>this.recheckOutput(id))
     ipcMain.handle('research:preview',(_e,command,axes,maxRuns)=>this.bridge.expand(z.string().max(20000).parse(command),axesSchema.parse(axes),z.number().int().min(1).max(32).parse(maxRuns)))
     ipcMain.handle('research:list',()=>this.list());ipcMain.handle('research:remove',(_e,id)=>this.remove(id));ipcMain.handle('research:removeBatch',(_e,id)=>this.removeBatch(id));ipcMain.handle('research:engine',()=>this.engine())
     ipcMain.handle('research:suggest',(_e,id,objective,max,runId)=>this.suggest(id,objective,max,runId))
-    ipcMain.handle('research:create',(_e,input)=>this.create(input));ipcMain.handle('research:approve',(_e,id,confirmed)=>this.approve(id,confirmed))
+    ipcMain.handle('research:create',(_e,input)=>this.create(input));ipcMain.handle('research:approve',(_e,id,confirmed,target)=>this.approve(id,confirmed,target))
     ipcMain.handle('research:refresh',(_e,id)=>this.refresh(id));ipcMain.handle('research:analyze',(_e,id)=>this.analyze(id));ipcMain.handle('research:recollect',(_e,id,config)=>this.recollect(id,config));ipcMain.handle('research:paused',(_e,id,paused)=>this.setPaused(id,paused));ipcMain.handle('research:export',(_e,id)=>this.export(id))
   }
 }

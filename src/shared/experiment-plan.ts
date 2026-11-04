@@ -15,7 +15,7 @@ export const planSourceLabels: Record<PlanSource, string> = {
   file: '项目文件', server: '服务器核对', suggested: '系统建议', user: '你的修改', recent: '最近使用'
 }
 export const planModeLabels: Record<ExperimentMode, string> = { train: '训练基线', evaluate: '评估已有权重' }
-export type PlanField = 'title' | 'objective' | 'mode' | 'codePath' | 'launchCommand' | 'dataPath' | 'environment' | 'artifactPath'
+export type PlanField = 'title' | 'objective' | 'mode' | 'codePath' | 'launchCommand' | 'dataPath' | 'environment' | 'artifactPath' | 'stdoutLogPath' | 'runTitle'
 export interface PlanFieldState { source: PlanSource; note?: string }
 export type PlanFields = Partial<Record<PlanField, PlanFieldState>>
 
@@ -150,7 +150,7 @@ export function classifyEntryFile(path: string): ProjectEntry['kind'] | undefine
   const stem = name.replace(/\.(py|sh)$/, '')
   if (/^(train|finetune|finetuning|pretrain|run_train|train_[a-z0-9_]+|[a-z0-9_]+_train)$/.test(stem)) return 'train'
   if (/^(eval|evaluate|evaluation|test|infer|inference|predict|run_eval|eval_[a-z0-9_]+)$/.test(stem)) return 'evaluate'
-  if (/^(main|run|launch|start)$/.test(stem)) return 'other'
+  if (/^(main|run|launch|start|cli|app|[a-z0-9_]+_main|main_[a-z0-9_]+|run_[a-z0-9_]+)$/.test(stem)) return 'other'
   return undefined
 }
 
@@ -222,27 +222,12 @@ export function projectSignals(snapshot: RepositorySnapshot): ProjectSignals {
 
 /** Default reading scope: the files that explain how this project is run. */
 export function recommendProjectFiles(files: { path: string; sizeBytes: number }[], goal: string, limit = 40): string[] {
-  const mode = experimentModeFromGoal(goal)
-  const priority = (path: string): number => {
-    if (isReadmePath(path)) return 0
-    if (isDependencyPath(path)) return 1
-    if (isConfigPath(path)) return 2
-    const kind = classifyEntryFile(path)
-    if (kind === mode) return 3
-    if (kind === 'other') return 4
-    if (kind) return 5
-    return /\.(md|rst)$/i.test(path) ? 6 : 7
-  }
-  const ordered = [...files].sort((a, b) => priority(a.path) - priority(b.path) || depth(a.path) - depth(b.path) || a.path.localeCompare(b.path))
-  const picked: string[] = []
-  const add = (path: string | undefined): void => { if (path && !picked.includes(path)) picked.push(path) }
-  for (const modeEntry of ordered.filter(file => classifyEntryFile(file.path) === mode)) add(modeEntry.path)
-  for (const file of ordered) if (priority(file.path) <= 2) add(file.path)
-  for (const file of ordered) if (classifyEntryFile(file.path) === 'other') add(file.path)
-  const directories = sortedUnique(picked.map(path => planDirName(path)))
-  for (const file of ordered) if (directories.includes(planDirName(file.path))) add(file.path)
-  for (const file of ordered) { if (picked.length >= limit) break; add(file.path) }
-  return picked.slice(0, limit)
+  // Common entry names are peers, regardless of the requested training/evaluation mode.
+  const ordered=[...files].sort((a,b)=>a.path.localeCompare(b.path))
+  const picked=ordered.filter(file=>classifyEntryFile(file.path)!==undefined||isReadmePath(file.path)||isDependencyPath(file.path)||isConfigPath(file.path)).map(file=>file.path)
+  for(const file of ordered){if(picked.length>=limit)break;if(!picked.includes(file.path))picked.push(file.path)}
+  return picked
+
 }
 
 function commandEntry(path: string): string | undefined {
@@ -324,21 +309,15 @@ export function planEntryOptions(snapshot: RepositorySnapshot, guide: Repository
     citation: guide.launchCitations[0]
   })
   const signals = projectSignals(snapshot)
-  for (const mode of ['train', 'evaluate'] as const) {
-    if (options.some(option => option.mode === mode)) continue
-    const entry = signals.entries.find(item => item.kind === mode)
-    if (!entry) continue
-    const command = /\.sh$/i.test(entry.path) ? `bash ${entry.path}` : `python ${entry.path}`
-    add({
-      id: `${mode}-file`,
-      mode,
-      command,
-      workingDirectory: planDirName(entry.path),
-      reason: `项目中有入口 ${entry.path}，但没有找到文档命令；这是系统建议的最小命令`,
-      origin: 'suggested'
-    })
+  for(const entry of [...signals.entries].sort((a,b)=>a.path.localeCompare(b.path))){
+    const mode=entry.kind==='train'||entry.kind==='evaluate'?entry.kind:experimentModeFromGoal(goal)
+    // A documented command already exposes this entry; don't add a redundant bare command.
+    if(options.some(option=>option.mode===mode&&(planCommandEntry(option.command)===entry.path||joinPath(option.workingDirectory,planCommandEntry(option.command)??'').replace(/^\/+/,'')===entry.path)))continue
+    const command=/\.sh$/i.test(entry.path)?`bash ${planBaseName(entry.path)}`:`python ${planBaseName(entry.path)}`
+    add({id:`${mode}-file-${entry.path}`,mode,command,workingDirectory:planDirName(entry.path),reason:`候选入口 ${entry.path}；需要核对用途和必要参数`,origin:'suggested'})
   }
-  return options.sort((a, b) => (a.mode === b.mode ? (a.origin === b.origin ? 0 : a.origin === 'documented' ? -1 : 1) : a.mode === 'train' ? -1 : 1))
+  return options.sort((a,b)=>a.command.localeCompare(b.command))
+
 }
 
 function inferArtifactPath(command: string, root: string, codePath: string, signals: ProjectSignals, now: Date): { value: string; source: PlanSource; note: string } {
@@ -366,9 +345,9 @@ function dataPathField(guide: RepositoryGuide): PlanFieldState {
   return { source: 'suggested', note: '数据目录来自分析建议，尚未在服务器核对' }
 }
 
-export function suggestPlanTitle(root: string, mode: ExperimentMode): string {
+export function suggestPlanTitle(root: string, _mode: ExperimentMode): string {
   const name = planBaseName(root) || '新实验'
-  return `${name.slice(0, 120)} · ${planModeLabels[mode]}`.slice(0, 150)
+  return name.slice(0,160)
 }
 
 export interface CreatePlanInput {
@@ -390,8 +369,8 @@ export function createExperimentPlan({ guide, goal, environments = [], now = new
     const actual = commandMode(guide.launchCommand)
     if (actual && (!entryOptions.length || entryOptions.some(option => option.mode === actual))) mode = actual
   }
-  const usableEntry = entryOptions.find(option => option.mode === mode && option.origin === 'documented')
-    ?? entryOptions.find(option => option.mode === mode)
+  const modeEntries=entryOptions.filter(option=>option.mode===mode)
+  const usableEntry=modeEntries.length===1?modeEntries[0]:undefined
   const guideCommandMode = guide.launchCommand ? commandMode(guide.launchCommand) : undefined
   const useGuideCommand = Boolean(guide.launchCommand) && (!guideCommandMode || guideCommandMode === mode || !usableEntry)
   const launchCommand = (useGuideCommand ? guide.launchCommand : usableEntry?.command) || guide.launchCommand || usableEntry?.command || ''
@@ -419,6 +398,7 @@ export function createExperimentPlan({ guide, goal, environments = [], now = new
     ...emptyDraft(),
     ...base,
     title: suggestPlanTitle(root, mode),
+    runTitle: planModeLabels[mode],
     project: projectName,
     objective: goal,
     tags: mode === 'evaluate' ? ['evaluation'] : ['baseline'],
@@ -441,7 +421,8 @@ export function createExperimentPlan({ guide, goal, environments = [], now = new
     }
   }
   const fields: PlanFields = {
-    title: { source: 'suggested', note: '根据项目目录和实验方式自动建议，可直接修改' },
+    title: { source: 'suggested', note: '按仓库名称生成，作为项目任务名称' },
+    runTitle: {source:'suggested',note:'记录本次运行的内容'},
     objective: { source: 'suggested', note: '来自最初的项目与目标描述' },
     mode: {
       source: 'suggested',
@@ -515,8 +496,8 @@ export function planGaps(plan: ExperimentPlan, context: PlanContext = {}): PlanG
     }))
     gaps.push({
       id: 'entry', kind: 'entry', field: 'launchCommand',
-      question: '这次实验从哪个入口开始？',
-      detail: '项目里可能有多个脚本，选择一个入口作为本次运行方式。',
+      question: options.length ? '这次实验从哪个入口开始？' : '请补充本次实验的启动命令',
+      detail: options.length ? '项目里可能有多个脚本，选择一个入口作为本次运行方式。' : '尚未识别到可选择的入口，请在“运行方式”中填写实际启动命令。',
       options, allowBrowse: false, allowLater: true
     })
   }
@@ -604,12 +585,14 @@ export function resolvePlanGap(plan: ExperimentPlan, gap: PlanGap, option: PlanG
 
 const fieldAccessors: { field: PlanField; label: string; get(draft: ExperimentTaskDraft): string }[] = [
   { field: 'title', label: '任务名称', get: draft => draft.title },
+  { field: 'runTitle', label: '本次运行', get: draft => draft.runTitle??'' },
   { field: 'objective', label: '实验目标', get: draft => draft.objective },
   { field: 'codePath', label: '代码目录', get: draft => draft.codePath },
   { field: 'launchCommand', label: '启动命令', get: draft => draft.launchCommand },
   { field: 'dataPath', label: '数据目录', get: draft => draft.dataPath },
   { field: 'environment', label: 'Conda 环境', get: planEnvironmentName },
-  { field: 'artifactPath', label: '输出位置', get: draft => draft.artifactPath }
+  { field: 'artifactPath', label: '输出位置', get: draft => draft.artifactPath },
+  { field: 'stdoutLogPath', label: '运行日志', get: draft => draft.stdoutLogPath??'' }
 ]
 export interface DraftFieldChange { field: PlanField; label: string; before: string; after: string }
 export function experimentDraftChanges(before: ExperimentTaskDraft, after: ExperimentTaskDraft): DraftFieldChange[] {
@@ -626,8 +609,8 @@ export function markUserFields(fields: PlanFields, changes: DraftFieldChange[], 
 let conflictSeed = 0
 const nextConflictId = (field: string): string => `${field}-${Date.now()}-${++conflictSeed}`
 function pickEntry(plan: ExperimentPlan, mode: ExperimentMode): PlanEntryOption | undefined {
-  return plan.entryOptions.find(option => option.mode === mode && option.origin === 'documented')
-    ?? plan.entryOptions.find(option => option.mode === mode)
+  const entries=plan.entryOptions.filter(option=>option.mode===mode)
+  return entries.length===1?entries[0]:undefined
 }
 function refreshDraftEvidence(draft: ExperimentTaskDraft, citations: RepositoryCitation[]): ExperimentTaskDraft {
   if (!draft.projectPreparation) return draft
@@ -643,13 +626,26 @@ function refreshDraftEvidence(draft: ExperimentTaskDraft, citations: RepositoryC
 export function switchPlanMode(plan: ExperimentPlan, mode: ExperimentMode): { draft: ExperimentTaskDraft; mode: ExperimentMode; fields: PlanFields; change?: PlanChange; conflict?: PlanConflict; note?: string } {
   if (mode === plan.mode) return { draft: plan.draft, mode: plan.mode, fields: plan.fields, note: `当前已经是${planModeLabels[mode]}` }
   const option = pickEntry(plan, mode)
-  if (!option) return { draft: plan.draft, mode: plan.mode, fields: plan.fields, note: `项目中没有发现${planModeLabels[mode]}入口，暂不能切换` }
+  if (!option) {
+    const note=`已选择${planModeLabels[mode]}，尚未识别到对应入口，请手动填写启动命令。`
+    const patch:Partial<ExperimentTaskDraft>={launchCommand:'',launchMode:'command',scriptPath:''}
+    patch.runTitle=planModeLabels[mode]
+    if(plan.fields.objective?.source!=='user')patch.objective=mode===experimentModeFromGoal(plan.goal)?plan.goal:planModeLabels[mode]
+    if(plan.draft.tags.length===1&&['baseline','evaluation'].includes(plan.draft.tags[0]))patch.tags=[mode==='evaluate'?'evaluation':'baseline']
+    const fields:PlanFields={...plan.fields,mode:{source:'user',note},launchCommand:{source:'suggested',note:'尚未识别到对应入口，请手动填写启动命令'}}
+    if(plan.fields.objective?.source!=='user')fields.objective={source:'suggested',note:`按当前实验方式更新为${planModeLabels[mode]}`}
+    if(plan.fields.launchCommand?.source==='user'&&plan.draft.launchCommand.trim())return {
+      draft:plan.draft,mode:plan.mode,fields:plan.fields,
+      conflict:{id:nextConflictId(`mode-${mode}`),label:'运行方式',current:plan.draft.launchCommand,suggested:`切换为${planModeLabels[mode]}，并手动填写对应启动命令`,suggestedDraft:patch,suggestedMode:mode,suggestedFields:fields,suggestedField:{field:'launchCommand',state:fields.launchCommand!}}
+    }
+    return {draft:refreshDraftEvidence({...plan.draft,...patch},[]),mode,fields,change:{field:'mode',label:'实验方式',summary:note}}
+  }
   const suggested: Partial<ExperimentTaskDraft> = {
     launchCommand: option.command,
     codePath: planCodePath(plan, option.workingDirectory),
     launchMode: 'command'
   }
-  if (plan.fields.title?.source !== 'user') suggested.title = suggestPlanTitle(planRootPath(plan), mode)
+  suggested.runTitle = planModeLabels[mode]
   if (plan.fields.objective?.source !== 'user') suggested.objective = mode === experimentModeFromGoal(plan.goal) ? plan.goal : planModeLabels[mode]
   const defaultTags = plan.draft.tags.length === 1 && (plan.draft.tags[0] === 'baseline' || plan.draft.tags[0] === 'evaluation')
   if (defaultTags) suggested.tags = [mode === 'evaluate' ? 'evaluation' : 'baseline']

@@ -1,3 +1,4 @@
+import { resolveStdoutLogPath } from '../shared/experiment-log-path'
 import { app, safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -600,6 +601,7 @@ export class AppStore {
 
   async saveExperimentTask(rawInput: ExperimentTaskDraft, preparationId?: string): Promise<ExperimentTask> {
     const input = experimentTaskDraftSchema.parse(rawInput)
+    resolveStdoutLogPath(input.stdoutLogPath,'preview')
     if(input.launchMode!=='script')input.launchCommand=deviceLaunchCommand(input.launchCommand,input.computeDevice??'gpu')
     if (preparationId) {
       experimentTaskDraftSchema.shape.id.parse(preparationId)
@@ -633,6 +635,8 @@ export class AppStore {
         accessRouteId: input.accessRouteId,
         computeDevice: input.computeDevice ?? 'gpu',
         ...(input.computeDevice === 'cpu' ? { gpuUuid: undefined, gpuIndex: undefined, gpuNameSnapshot: undefined } : {}),
+        runTitle: input.runTitle,
+        outputDirectories: input.outputDirectories,
         codePath: input.codePath,
         dataPath: input.dataPath,
         launchCommand: input.launchCommand,
@@ -641,7 +645,8 @@ export class AppStore {
         condaEnvironment: input.condaEnvironment ? structuredClone(input.condaEnvironment) : undefined,
         minimumFreeVramGiB: input.minimumFreeVramGiB,
         maximumGpuUtilizationPercent: input.maximumGpuUtilizationPercent,
-        artifactPath: input.artifactPath,
+        stdoutLogPath: input.stdoutLogPath,
+      artifactPath: input.artifactPath,
         notes: input.notes
       }
     }
@@ -721,6 +726,8 @@ export class AppStore {
     const index = data.experimentTasks.findIndex((task) => task.id === taskId)
     if (index < 0) throw new Error('实验任务不存在或已被删除')
     const task = data.experimentTasks[index]
+    input.stdoutLogPath ??= task.stdoutLogPath
+    resolveStdoutLogPath(input.stdoutLogPath,'preview')
     if (task.archived) throw new Error('已归档的实验任务不能启动')
     input.computeDevice ??= task.computeDevice ?? 'gpu'
     if (input.computeDevice === 'cpu') {
@@ -750,6 +757,8 @@ export class AppStore {
       id: randomUUID(),
       number: task.runs.reduce((maximum, item) => Math.max(maximum, item.number), 0) + 1,
       status: 'queued',
+      runTitle: input.runTitle?.trim() || task.runTitle?.trim() || undefined,
+      outputDirectories: structuredClone(input.outputDirectories??task.outputDirectories),
       queuedAt,
       serverId: input.serverId,
       serverNameSnapshot: server?.name,
@@ -766,6 +775,7 @@ export class AppStore {
       condaEnvironment: input.condaEnvironment ? structuredClone(input.condaEnvironment) : undefined,
       minimumFreeVramGiB: input.minimumFreeVramGiB,
       maximumGpuUtilizationPercent: input.maximumGpuUtilizationPercent,
+      stdoutLogPath: input.stdoutLogPath,
       artifactPath: input.artifactPath,
       message: input.computeDevice === 'cpu' ? '正在准备 CPU 运行' : input.gpuUuid || input.gpuIndex !== null ? `等待在指定 GPU ${input.gpuIndex ?? ''} 上立即启动` : '正在等待符合显存和利用率条件的 GPU',
       resultSummary: '',

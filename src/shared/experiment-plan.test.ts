@@ -53,6 +53,24 @@ const plan = (envs: CondaEnvironmentInfo[] = []) => createExperimentPlan({ guide
 const environments: CondaEnvironmentInfo[] = [{ name: 'vision', prefix: '/opt/conda/envs/vision' }, { name: 'torch24', prefix: '/opt/conda/envs/torch24' }]
 
 describe('project signals', () => {
+  it('provides an actionable manual-entry explanation when no entry candidates exist',()=>{
+    const value=plan()
+    value.draft.launchCommand=''
+    value.entryOptions=[]
+    const gap=planGaps(value).find(gap=>gap.kind==='entry')!
+    expect(gap.options).toEqual([])
+    expect(gap.question).toBe('请补充本次实验的启动命令')
+    expect(gap.detail).toContain('尚未识别到可选择的入口')
+    value.draft.launchCommand='python main.py'
+    expect(planGaps(value).some(gap=>gap.kind==='entry')).toBe(false)
+  })
+  it('keeps entry choices available when supported candidates exist',()=>{
+    const value=plan()
+    value.draft.launchCommand=''
+    const gap=planGaps(value).find(gap=>gap.kind==='entry')!
+    expect(gap.options.length).toBeGreaterThan(0)
+    expect(gap.question).toBe('这次实验从哪个入口开始？')
+  })
   it('reads entries, configs, dependencies, data hints and explicit metrics', () => {
     const signals = projectSignals(snapshot)
     expect(signals.entries).toEqual(expect.arrayContaining([
@@ -65,6 +83,11 @@ describe('project signals', () => {
     expect(signals.metrics.find(metric => metric.key === 'accuracy')?.citation.path).toBe('README.md')
     expect(signals.dataDirs).toEqual(expect.arrayContaining(['data/raw']))
     expect(signals.hasReadme).toBe(true)
+  })
+  it('includes common entry names equally in both reading scopes',()=>{
+    const files=['main.py','run.py','train.py','launch.py','scripts/start.sh','scripts/run_model.py'].map(path=>({path,sizeBytes:10}))
+    expect(recommendProjectFiles(files,'训练')).toEqual(recommendProjectFiles(files,'评估'))
+    for(const file of files)expect(recommendProjectFiles(files,'训练')).toContain(file.path)
   })
   it('defaults the reading scope to explanations, entry points and configs', () => {
     const many = Array.from({ length: 100 }, (_, index) => ({ path: `experiments/exp${index}/notes.md`, sizeBytes: 10 }))
@@ -88,7 +111,7 @@ describe('building the plan', () => {
     const value = plan()
     expect(value.mode).toBe('train')
     expect(value.draft).toMatchObject({
-      title: 'repo · 训练基线', project: 'repo', objective: '先跑一次基线', codePath: '/repo',
+      title: 'repo', runTitle:'训练基线', project: 'repo', objective: '先跑一次基线', codePath: '/repo',
       launchCommand: guide.launchCommand, dataPath: '/data/train', artifactPath: expect.stringContaining('/repo/runs/exp-')
     })
     expect(value.fields.launchCommand?.source).toBe('file')
@@ -109,15 +132,45 @@ describe('building the plan', () => {
     const evaluate = createExperimentPlan({ guide, goal: '评估已有权重', now })
     expect(evaluate.mode).toBe('evaluate')
     expect(evaluate.draft.launchCommand).toBe('python evaluate.py --checkpoint weights/model.pth --data /data/val')
-    expect(evaluate.draft.title).toBe('repo · 评估已有权重')
+    expect(evaluate.draft.title).toBe('repo')
+    expect(evaluate.draft.runTitle).toBe('评估已有权重')
     expect(planLaunchCitations(evaluate)[0]?.path).toBe('README.md')
+  })
+  it('allows manual mode selection without a discovered entry and preserves unrelated configuration',()=>{
+    const value=plan();value.entryOptions=[]
+    const switched=switchPlanMode(value,'evaluate')
+    expect(switched.mode).toBe('evaluate')
+    expect(switched.draft.launchCommand).toBe('')
+    expect(switched.fields.mode?.source).toBe('user')
+    expect(switched.draft.codePath).toBe(value.draft.codePath)
+    expect(switched.draft.condaEnvironment).toEqual(value.draft.condaEnvironment)
+    expect(switched.draft.dataPath).toBe(value.draft.dataPath)
+    expect(switched.draft.artifactPath).toBe(value.draft.artifactPath)
+    expect(planGaps({...value,...switched}).find(gap=>gap.kind==='entry')?.question).toBe('请补充本次实验的启动命令')
+  })
+  it('asks before replacing a manual command when switching to a mode with no entry',()=>{
+    const value=plan();value.entryOptions=[];value.fields.launchCommand={source:'user'}
+    const result=switchPlanMode(value,'evaluate')
+    expect(result.mode).toBe(value.mode)
+    expect(result.draft.launchCommand).toBe(value.draft.launchCommand)
+    expect(result.conflict?.suggestedMode).toBe('evaluate')
+    expect(result.conflict?.suggestedDraft.launchCommand).toBe('')
+  })
+  it('lists main/run/train candidates without automatically choosing the first',()=>{
+    const candidates={...snapshot,files:['main.py','run.py','train.py'].map(path=>({path,sizeBytes:10})),excerpts:[]}
+    const uncertain={...guide,snapshot:candidates,launchCommand:'',launchCitations:[],workingDirectory:''}
+    const value=createExperimentPlan({guide:uncertain,goal:'先跑一次基线',now})
+    expect(value.entryOptions.filter(option=>option.mode==='train').map(option=>option.command)).toEqual(['python main.py','python run.py','python train.py'])
+    expect(value.draft.launchCommand).toBe('')
+    expect(planGaps(value).find(gap=>gap.kind==='entry')?.options).toHaveLength(3)
   })
   it('switches between training and evaluation without a model call', () => {
     const value = plan()
     const switched = switchPlanMode(value, 'evaluate')
     expect(switched.mode).toBe('evaluate')
     expect(switched.draft.launchCommand).toBe('python evaluate.py --checkpoint weights/model.pth --data /data/train')
-    expect(switched.draft.title).toBe('repo · 评估已有权重')
+    expect(switched.draft.title).toBe('repo')
+    expect(switched.draft.runTitle).toBe('评估已有权重')
     expect(switched.draft.objective).toBe('评估已有权重')
     expect(switched.draft.projectPreparation?.configurationKey).toBe(projectConfigurationKey(switched.draft))
     expect(switched.draft.projectPreparation?.citations[0]?.startLine).toBe(10)

@@ -21,6 +21,18 @@ function setup(remote=true){
  return {tools,evidence,task,run,profile,store,ssh,monitor,conda,end}
 }
 describe('scoped read-only diagnostic tools',()=>{
+ it('permits only recorded entry and traceback source within the project root',async()=>{
+  const s=setup();s.run.launchCommand='python main.py --epoch 1'
+  s.evidence.push({id:'trace',source:'log',label:'trace',text:'File "/workspace/vision/utils/train.py", line 42\nFile "/etc/secret.py", line 1'})
+  const tools=new DiagnosticTools(s.evidence,s.task,s.run,s.store as unknown as AppStore,s.ssh as unknown as SshService,s.monitor as unknown as MonitorService,s.conda as unknown as CondaService)
+  expect(tools.context.command).toBe(s.run.launchCommand)
+  expect(tools.context.allowedProjectFiles).toContain('main.py')
+  expect(tools.context.allowedProjectFiles).toContain('utils/train.py')
+  expect(tools.context.allowedProjectFiles).not.toContain('../../etc/secret.py')
+  expect((await tools.execute(call('read_project_file',{name:'arbitrary.py'}),signal())).status).toBe('unavailable')
+  expect((await tools.execute(call('read_project_file',{name:'utils/train.py'}),signal())).status).toBe('success')
+  expect(s.ssh.exec.mock.calls[0][1]).toContain('realpath -e')
+ })
  it('allows only log search when no remote run is selected',async()=>{
   const s=setup(false);expect(s.tools.catalog.map(t=>t.name)).toEqual(['search_log'])
   const search=await s.tools.execute(call('search_log',{query:'CUSTOMPKG'}),signal());expect(search.text).toContain('log-2')

@@ -31,6 +31,17 @@ function setup(){
 }
 function editOf(view:PreparationView):PreparationEdit{return {draft:{...view.plan!.draft,dataPath:'/repo/data',launchCommand:'python train.py --data /repo/data'},mode:view.plan!.mode,fields:{...view.plan!.fields,dataPath:{source:'user'}},deferredGaps:['environment'],conflicts:[],history:[]}}
 describe('durable experiment preparation',()=>{
+  it('keeps the repository task title while successive preparations update the pending run title',async()=>{
+    const {service,tasks}=setup(),s=service(),id=randomUUID()
+    let view=await s.create(input,id)
+    for(const runTitle of ['生成 SID','训练 T5']){
+      const edit=editOf(view);edit.draft.runTitle=runTitle
+      view=await s.act(id,{kind:'edit',expectedRevision:view.revision,edit})
+      view=await s.act(id,{kind:'save',expectedRevision:view.revision})
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]).toMatchObject({title:'repo',runTitle})
+    }
+  })
   it('restores the exact plan, changes, deferred questions and trace without repeating analysis',async()=>{
     const {ops,service}=setup(),first=service(),id=randomUUID()
     const created=await first.create(input,id)

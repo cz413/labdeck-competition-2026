@@ -1,11 +1,13 @@
 import type { ResultCollectionConfig, ResultMetric, ResultFileEvidence, ProcessEvidenceState, ResultEvidenceState } from './research-results'
-import type { ExperimentTask, ExperimentTaskDraft } from './types'
+import type { ExperimentTask, ExperimentTaskDraft, ExperimentRunStartInput } from './types'
 export interface ParameterAxis { flag: string; values: string[] }
+export type ResearchRunTarget=Pick<ExperimentRunStartInput,'computeDevice'|'gpuUuid'|'gpuIndex'|'gpuNameSnapshot'|'minimumFreeVramGiB'|'maximumGpuUtilizationPercent'>
 export interface ResearchInput { taskId: string; sourceRunId?: string; objective: string; axes: ParameterAxis[]; maxRuns: number; useModel?: boolean; resultConfig?: ResultCollectionConfig; expectedBaselineCommand?: string; design?: ResearchSuggestion }
 export interface ParameterVariant { key: string; parameters: Record<string,string>; command: string; changes: string[] }
 export interface ParameterExpansion { variants: ParameterVariant[]; warnings: string[]; engine: 'cangjie' | 'typescript'; version: string }
-export interface ResearchMember extends ParameterVariant { taskId?: string; runId?: string; outputDirectory?:string }
-export interface ResearchOutputIsolation {status:'verified'|'unverified';flag?:string;template?:string;originalValue?:string;reason?:string;source?:{path:string;startLine:number;quote:string}}
+export interface ResearchMember extends ParameterVariant { taskId?: string; runId?: string; outputDirectory?:string;outputDirectories?:string[] }
+export interface ResearchOutputTarget {flag:string;template:string;kind:'file'|'directory';originalValue?:string;source?:{path:string;startLine:number;quote:string};evidence?:{path:string;startLine:number;quote:string}[]}
+export interface ResearchOutputIsolation {engine?:'model';targets?:ResearchOutputTarget[];status:'verified'|'unverified';flag?:string;template?:string;originalValue?:string;reason?:string;source?:{path:string;startLine:number;quote:string}}
 export interface RunObservation { key: string; taskId: string; runId: string; status: string; evidenceId: string; metrics: Record<string,number>; excerpt: string; exitCode?: number; diagnosisId?: string; warning?: string; metricDetails?: ResultMetric[]; files?: ResultFileEvidence[]; collectedAt?: string; processState?: ProcessEvidenceState; evidenceState?: ResultEvidenceState }
 export interface ResearchAnalysis { contentVersion?:number; engine: 'model' | 'rules'; summary: string; observations: string[]; limitations: string[]; nextSuggestion?: { objective: string; axes: ParameterAxis[] }; evidenceIds: string[] }
 export interface ResearchEvent { at: string; node: string; message: string }
@@ -13,7 +15,7 @@ export interface ResearchCampaign {
   id: string; createdAt: string; updatedAt: string; objective: string; sourceTaskId: string; sourceRunId?: string; sourceRunNumber?: number; baseline: ExperimentTaskDraft;
   axes: ParameterAxis[]; maxRuns: number; useModel: boolean; stage: 'review' | 'waiting' | 'analysis';
   members: ResearchMember[]; expansionEngine: 'cangjie' | 'typescript'; warnings: string[]; observations: RunObservation[];
-  outputIsolation?:ResearchOutputIsolation; design?: ResearchSuggestion; resultConfig?: ResultCollectionConfig; analysis?: ResearchAnalysis; events: ResearchEvent[]; approvedAt?: string;
+  retryCount?:number; retrySubmission?:{id:string;target:ResearchRunTarget;items:{index:number;taskId:string;previousRunId:string;member:ResearchMember;input:ExperimentRunStartInput}[]}; runTarget?:ResearchRunTarget; sourcePreparationId?:string; outputIsolation?:ResearchOutputIsolation; design?: ResearchSuggestion; resultConfig?: ResultCollectionConfig; analysis?: ResearchAnalysis; events: ResearchEvent[]; approvedAt?: string;
 }
 export interface ResearchView extends ResearchCampaign { busy?:boolean; paused: boolean; error?: string; pending: string[] }
 export interface ResearchDesignVariable {flag:string;baselineValue:string;source:{path:string;startLine:number;quote:string}}
@@ -31,7 +33,9 @@ export interface ResearchApi {
   removeBatch(id:string):Promise<void>;
   suggest(taskId: string, objective: string, maxRuns: number, sourceRunId?: string): Promise<ResearchSuggestion>;
   create(input: ResearchInput): Promise<ResearchView>;
-  approve(id: string, confirmed: boolean): Promise<ResearchView>;
+  approve(id: string, confirmed: boolean, target?:ResearchRunTarget): Promise<ResearchView>;
+  retryFailed(id:string,confirmed:boolean,target?:ResearchRunTarget):Promise<ResearchView>;
+  recheckOutput(id:string):Promise<ResearchView>;
   refresh(id: string): Promise<ResearchView>;
   analyze(id: string): Promise<ResearchView>;
   recollect(id: string, config?: ResultCollectionConfig): Promise<ResearchView>;
@@ -46,10 +50,10 @@ export function baselineDraft(task: ExperimentTask, sourceRunId?:string): Experi
   const run=task.runs.find(item=>item.id===sourceRunId)
   if(!run)throw new Error('所选运行记录不存在，请重新选择')
   if(!run.serverId||!run.codePath||run.launchCommand===undefined)throw new Error('该运行缺少完整配置快照，无法作为基准')
-  return {...draft,status:'planned',serverId:run.serverId,serverNameSnapshot:run.serverNameSnapshot,
+  return {...draft,runTitle:run.runTitle,outputDirectories:run.outputDirectories,status:'planned',serverId:run.serverId,serverNameSnapshot:run.serverNameSnapshot,
     accessRouteId:run.accessRouteId,computeDevice:run.computeDevice??'gpu',gpuUuid:undefined,gpuIndex:undefined,gpuNameSnapshot:undefined,
     codePath:run.codePath,dataPath:run.dataPath??'',launchCommand:run.launchCommand,launchMode:run.launchMode??'command',scriptPath:run.scriptPath??'',
-    condaEnvironment:run.condaEnvironment,artifactPath:run.artifactPath??'',
+    condaEnvironment:run.condaEnvironment,stdoutLogPath:run.stdoutLogPath,artifactPath:run.artifactPath??'',
     minimumFreeVramGiB:run.minimumFreeVramGiB??undefined,maximumGpuUtilizationPercent:run.maximumGpuUtilizationPercent??undefined,
     resultSummary:'',projectPreparation:undefined,preparationId:undefined}
 

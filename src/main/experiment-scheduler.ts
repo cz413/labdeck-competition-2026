@@ -1,6 +1,7 @@
+import { isGpuBusy } from '../shared/gpu-status'
+import { resolveStdoutLogPath } from '../shared/experiment-log-path'
 import type { CondaEnvironmentConfig, ExperimentRun, ExperimentRunStartInput, ExperimentRunStatus, ExperimentTask } from '../shared/types'
 import { applyAccessRoute, getAccessRoutes, getDefaultAccessRouteId } from '../shared/access-routes'
-import { isGpuBusy } from '../shared/gpu-status'
 import { resolveExperimentLaunch } from '../shared/experiment-launch'
 import { CondaService } from './conda-service'
 import { AppStore } from './store'
@@ -229,10 +230,9 @@ export class ExperimentScheduler {
       if (this.stopped) return false
       if (firstSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `等待服务器连接：${firstSnapshot.error ?? '当前离线'}`)
       if (!this.selectGpu(firstSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)) {
-        const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
         const message = run.gpuUuid || run.gpuIndex !== undefined
           ? `等待指定 GPU ${run.gpuIndex ?? ''} 出现在最新采样中`
-          : `当前没有符合条件的 GPU${requirement}，任务仍在队列中`
+          : this.gpuQueueReason(firstSnapshot.gpus,minimumFreeVramGiB,maximumGpuUtilizationPercent)
         return this.waitInQueue(task.id, run.id, message)
       }
     }
@@ -289,10 +289,9 @@ export class ExperimentScheduler {
       if (latestSnapshot.status === 'offline') return this.waitInQueue(task.id, run.id, `启动前服务器失联：${latestSnapshot.error ?? '当前离线'}`)
       selectedGpu = this.selectGpu(latestSnapshot.gpus, run, minimumFreeVramGiB, maximumGpuUtilizationPercent)
       if (!selectedGpu) {
-        const requirement = this.gpuRequirement(minimumFreeVramGiB, maximumGpuUtilizationPercent)
         const message = run.gpuUuid || run.gpuIndex !== undefined
           ? `启动前未找到指定 GPU ${run.gpuIndex ?? ''}，继续等待该 GPU`
-          : `启动前没有符合条件的 GPU${requirement}，继续等待`
+          : this.gpuQueueReason(latestSnapshot.gpus,minimumFreeVramGiB,maximumGpuUtilizationPercent)
         return this.waitInQueue(task.id, run.id, message)
       }
 
@@ -362,6 +361,14 @@ export class ExperimentScheduler {
         : left.utilizationPercent - right.utilizationPercent || (right.memoryTotalMiB - right.memoryUsedMiB) - (left.memoryTotalMiB - left.memoryUsedMiB))[0]
   }
 
+  private gpuQueueReason(gpus: Awaited<ReturnType<MonitorService['snapshot']>>['gpus'],minimumFreeVramGiB?:number,maximumGpuUtilizationPercent?:number):string {
+    if(!gpus.length)return '等待 GPU 状态：服务器本次未返回显卡信息'
+    const rule=maximumGpuUtilizationPercent===undefined?'自动调度默认等待空闲卡（无进程、利用率低于 10%、显存占用低于 5%）':`等待符合条件的 GPU${this.gpuRequirement(minimumFreeVramGiB,maximumGpuUtilizationPercent)}`
+    const best=[...gpus].sort((a,b)=>(b.memoryTotalMiB-b.memoryUsedMiB)-(a.memoryTotalMiB-a.memoryUsedMiB))[0]
+    const detail=`GPU ${best.index} 当前空闲显存 ${Math.max(0,(best.memoryTotalMiB-best.memoryUsedMiB)/1024).toFixed(1)} GiB、利用率 ${best.utilizationPercent}%、${best.processes.length} 个进程`
+    const extra=best.processMemoryInconsistent?'；显存数据不一致，等待重新采样':best.temperatureC>=80?'；温度偏高，等待降温':''
+    return `${rule}；${detail}${extra}。资源满足条件后会自动运行。`
+  }
   private gpuRequirement(minimumFreeVramGiB?: number, maximumGpuUtilizationPercent?: number): string {
     const requirements = [
       minimumFreeVramGiB === undefined ? undefined : `空闲显存 ≥ ${minimumFreeVramGiB} GiB`,
@@ -401,7 +408,8 @@ export class ExperimentScheduler {
     gpuIndex: number | null
   ): Promise<{ runDir: string; pid: number; logPath: string }> {
     const runDirExpr = `"${RUN_ROOT}/${run.id}"`
-    const logPathExpr = `"$run_dir/stdout.log"`
+    const customLogPath = resolveStdoutLogPath(run.stdoutLogPath,run.id)
+    const logPathExpr = customLogPath ? shellQuote(customLogPath) : `"$run_dir/stdout.log"`
     const runCommand = run.condaEnvironment
       ? this.conda.buildEnvironmentRunCommand(run.condaEnvironment, run.launchCommand)
       : `bash -lc ${shellQuote(run.launchCommand)}`
@@ -429,16 +437,18 @@ export class ExperimentScheduler {
     const command = [
       `run_dir=${runDirExpr}`,
       'mkdir -p "$run_dir"',
+      ...(run.outputDirectories?.length?[`mkdir -p -- ${run.outputDirectories.map(shellQuote).join(' ')}`]:[]),
+      ...(customLogPath ? [`log_file=${logPathExpr}`, 'mkdir -p -- "$(dirname -- "$log_file")"'] : []),
       `printf '%s' '${encoded}' | base64 -d > "$run_dir/run.sh"`,
       'chmod 700 "$run_dir/run.sh"',
-      `(if command -v setsid >/dev/null 2>&1; then nohup setsid bash "$run_dir/run.sh" > "$run_dir/stdout.log" 2>&1 < /dev/null & else nohup bash "$run_dir/run.sh" > "$run_dir/stdout.log" 2>&1 < /dev/null & fi; pid=$!; printf '%s\\n' "$pid" > "$run_dir/pid"; printf '%s\\n%s\\n' "$run_dir" "$pid")`
+      `(if command -v setsid >/dev/null 2>&1; then nohup setsid bash "$run_dir/run.sh" > ${customLogPath?'"$log_file"':'"$run_dir/stdout.log"'} 2>&1 < /dev/null & else nohup bash "$run_dir/run.sh" > ${customLogPath?'"$log_file"':'"$run_dir/stdout.log"'} 2>&1 < /dev/null & fi; pid=$!; printf '%s\\n' "$pid" > "$run_dir/pid"; printf '%s\\n%s\\n' "$run_dir" "$pid")`
     ].join(' && ')
     const output = await this.execRemote(profile, secrets, command, 20_000)
     const lines = output.trim().split(/\r?\n/)
     const pid = Number.parseInt(lines.at(-1) ?? '', 10)
     const runDir = lines.at(-2)?.trim() ?? ''
     if (!Number.isInteger(pid) || pid <= 0 || !runDir.startsWith('/')) throw new Error('服务器未返回有效的远程进程信息')
-    return { runDir, pid, logPath: `${runDir}/stdout.log` }
+    return { runDir, pid, logPath: customLogPath??`${runDir}/stdout.log` }
   }
 
   private async execRemote(

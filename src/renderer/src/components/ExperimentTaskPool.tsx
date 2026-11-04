@@ -1,3 +1,6 @@
+import { matchesTaskStatus, toggleTaskStatus } from '@shared/experiment-pool-filter'
+import { runStatusLabel, taskStatusLabel, groupStatusLabel } from '@shared/experiment-status-label'
+import { RunDeviceFields } from './RunDeviceFields'
 import { userFacingError } from '@shared/user-facing-error'
 import { RunLogPanel } from './RunLogPanel'
 import { RunFailureSummary } from './RunFailureSummary'
@@ -82,7 +85,7 @@ const initialDraft = (): ExperimentTaskDraft => ({
 
 export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.Element {
   const [tab, setTab] = useState<PoolTab>('pool')
-  const [smart, setSmart] = useState<{ serverId?: string; accessRouteId?: string; path?: string; goal?: string } | null>(null)
+  const [smart, setSmart] = useState<{ serverId?: string; accessRouteId?: string; path?: string; goal?: string; preparationId?: string } | null>(null)
   const [fullConfig, setFullConfig] = useState(false)
   const fullConfigApply = useRef<((draft: ExperimentTaskDraft) => void) | null>(null)
   const [research,setResearch]=useState<{taskId?:string;campaignId?:string}|null>(null)
@@ -98,6 +101,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   const condaRequestId = useRef(0)
   const [condaBusy, setCondaBusy] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [finishBusy,setFinishBusy]=useState(false)
   const [finishing, setFinishing] = useState<ExperimentTask | null>(null)
   const [starting, setStarting] = useState<ExperimentTask | null>(null)
   const [pendingStartId, setPendingStartId] = useState<string | null>(null)
@@ -131,7 +135,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
 
   const visibleTasks = useMemo(() => props.tasks
     .filter((task) => task.archived === showArchived)
-    .filter((task) => statusFilter === 'all' || task.status === statusFilter)
+    .filter((task) => matchesTaskStatus(task.status,statusFilter))
     .filter((task) => filterProject === 'all' || task.project === filterProject)
     .filter((task) => filterServer === 'all' || task.serverId === filterServer)
     .filter((task) => filterPriority === 'all' || task.priority === filterPriority)
@@ -155,7 +159,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   const openEditor = (task?: ExperimentTask, asNewConfig = false): void => {
     const next = task ? structuredClone({
       projectPreparation:task.projectPreparation,
-      id: task.id, title: task.title, project: task.project, objective: task.objective,
+      id: task.id, title: task.title, runTitle: task.runTitle, outputDirectories: task.outputDirectories, project: task.project, objective: task.objective,
       tags: task.tags, priority: task.priority, status: task.status, serverId: task.serverId,
       serverNameSnapshot: task.serverNameSnapshot, accessRouteId: task.accessRouteId,
       computeDevice: task.computeDevice ?? 'gpu',
@@ -164,7 +168,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       launchMode: task.launchMode ?? 'command', scriptPath: task.scriptPath ?? '',
       condaEnvironment: task.condaEnvironment, minimumFreeVramGiB: task.minimumFreeVramGiB,
       maximumGpuUtilizationPercent: task.maximumGpuUtilizationPercent,
-      artifactPath: task.artifactPath, resultSummary: task.resultSummary, notes: task.notes
+      stdoutLogPath: task.stdoutLogPath, artifactPath: task.artifactPath, resultSummary: task.resultSummary, notes: task.notes
     }) : { ...initialDraft(), serverId: props.defaultServerId }
     if (asNewConfig && task && ['queued', 'preparing', 'running'].includes(task.status)) {
       next.id = undefined
@@ -328,7 +332,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
     return () => { runGpuSnapshotRequestId.current += 1 }
   }, [starting?.id, runServer?.id, runRouteId, runDraft?.computeDevice])
   const saveTask = async (queueAfterSave = false): Promise<void> => {
-    if (!editor) return
+    if (!editor||saving) return
     setSaving(true)
     try {
       for (const [label, path] of [['代码目录', editor.codePath], ['数据目录', editor.dataPath], ['产物路径', editor.artifactPath]] as const) {
@@ -413,12 +417,12 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
     return { config, server, routeId }
   }
 
-  const detectEnvironments = async (): Promise<void> => {
+  const detectEnvironments = async (forceRefresh=false): Promise<void> => {
     const requestId = ++condaRequestId.current
     setCondaBusy(true)
     try {
       const { config, server, routeId } = requireCondaConnection()
-      const result = await performCondaRequest(() => window.labApi.experiments.listCondaEnvironments(server.id, routeId, config.manager, config.managerPath))
+      const result = await performCondaRequest(() => window.labApi.experiments.listCondaEnvironments(server.id, routeId, config.manager, config.managerPath, forceRefresh))
       if (!result || requestId !== condaRequestId.current) return
       updateConda({ managerPath: result.managerPath })
       setEnvs(result.environments)
@@ -473,6 +477,8 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       ? task.accessRouteId
       : server ? getDefaultAccessRouteId(server) : null
     setRunDraft({
+      runTitle: task.runTitle,
+      outputDirectories: task.outputDirectories,
       serverId: server?.id ?? null,
       accessRouteId: routeId,
       computeDevice: task.computeDevice ?? 'gpu',
@@ -487,7 +493,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       condaEnvironment: task.condaEnvironment ? structuredClone(task.condaEnvironment) : null,
       minimumFreeVramGiB: task.minimumFreeVramGiB ?? null,
       maximumGpuUtilizationPercent: task.maximumGpuUtilizationPercent ?? null,
-      artifactPath: task.artifactPath,
+      stdoutLogPath: task.stdoutLogPath, artifactPath: task.artifactPath,
       notes: ''
     })
     setStarting(task)
@@ -632,16 +638,17 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
   }
 
   const finishRun = async (): Promise<void> => {
-    if (!finishing) return
+    if (!finishing||finishBusy) return
     const run = activeRun(finishing)
     if (!run) return
+    setFinishBusy(true)
     try {
       props.onChanged(await window.labApi.experiments.finishRun(finishing.id, run.id, finishInput))
       props.notify('运行记录已更新')
       setFinishing(null)
     } catch (error) {
       props.notify(error instanceof Error ? error.message : '无法保存运行结果', 'error')
-    }
+    }finally{setFinishBusy(false)}
   }
 
   const taskContext = (task: ExperimentTask): { server: ServerProfile; routeId: string; codePath: string; dataPath: string; conda?: CondaEnvironmentConfig } | null => {
@@ -764,7 +771,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
             const serverNameSnapshot = run ? run.serverNameSnapshot : task.serverNameSnapshot
             return <article id={`experiment-task-details-${task.id}`} className={`experiment-task-card status-${task.status}`}>
               <header className="experiment-task-card-heading">
-                <div><h3>{taskResearchName(task)}</h3><span className={`experiment-status-pill ${task.status}`}>{task.status === 'failed' && <CircleAlert size={12} />}{statusNames[task.status]}</span><span className={`experiment-priority ${task.priority}`}>{priorityNames[task.priority]}优先级</span>{task.project && <span className="experiment-project-label">{task.project}</span>}</div>
+                <div><h3>{taskResearchName(task)}</h3><span className={`experiment-status-pill ${task.status}`}>{task.status === 'failed' && <CircleAlert size={12} />}{taskStatusLabel(task,statusNames[task.status])}</span><span className={`experiment-priority ${task.priority}`}>{priorityNames[task.priority]}优先级</span>{task.project && <span className="experiment-project-label">{task.project}</span>}</div>
                 <small>更新于 {new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
               </header>
               <div className="experiment-task-card-main">
@@ -795,11 +802,12 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                     </div>
                   </details>
                   <ProjectTaskEvidence draft={task}/>
-                  {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次 · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{run.message}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
+                  {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次{run.runTitle?` · ${run.runTitle}`:''} · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{run.message}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
                 </div>
                 <div className="experiment-task-actions">
                   {task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}
                   {task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
+                  {task.id !== props.demoTaskId && task.preparationId && <button type="button" className="secondary-button" onClick={()=>setSmart({preparationId:task.preparationId,serverId:task.serverId,accessRouteId:task.accessRouteId,path:task.codePath,goal:task.objective})}><Sparkles size={15}/>继续准备</button>}
                   {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => openEditor(task, true)}>编辑配置</button>}
                   {task.id === props.demoTaskId ? <p className="workflow-sim-note">模拟任务 · 使用上方演示控制条推进运行。</p> : <>
 
@@ -827,14 +835,14 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               </div>
               {automaticLogRun && !(openedLog?.taskId===task.id && openedLog.runId===automaticLogRun.id) && <ExperimentRunLogPanel key={automaticLogRun.id} taskId={task.id} run={automaticLogRun} enabled={props.active} />}
               <footer className="experiment-task-card-footer"><span>{task.runs.length} 次运行记录</span>{task.runs.length > 0 && <button type="button" onClick={() => setExpandedTaskId((current) => current === task.id ? null : task.id)}>{expandedTaskId === task.id ? '收起运行记录' : '查看运行记录'}</button>}</footer>
+              {expandedTaskId === task.id && <div className="experiment-run-history">{[...task.runs].reverse().map((item) => { const diagnosisKey = `${task.id}:${item.id}`; const inlineDiagnosis = inlineDiagnoses[diagnosisKey]; const linked = reportForRun(props.reports ?? [], task.id, item.id); const diagnosisAction = linked ? <button type="button" className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id, linked)}>{linked.runId === item.id ? '查看诊断' : '查看重试状态'}</button> : item.status === 'failed' && canDiagnose ? <button type="button" className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id)}>分析原因</button> : null; const runActions = diagnosisAction || item.logPath ? <div className="experiment-run-result-actions">{diagnosisAction}{item.logPath && <button type="button" className="secondary-button" onClick={() => setOpenedLog({taskId:task.id,runId:item.id})}>查看日志</button>}</div> : null; return <section data-run-id={item.id} className={`experiment-run-record ${item.status === 'failed' ? 'failed' : ''} ${selectedRunId === item.id ? 'workflow-selected-run' : ''}`} key={item.id}><header><strong>{item.status === 'failed' && <CircleAlert size={13} />}第 {item.number} 次运行{item.runTitle&&<span className="experiment-run-name" title={item.runTitle}> · {item.runTitle}</span>}</strong><span className={`experiment-status-pill ${item.status}`}>{runStatusLabel(item,statusNames[item.status])}</span><time>{item.startedAt ? new Date(item.startedAt).toLocaleString('zh-CN') : item.queuedAt ? `排队于 ${new Date(item.queuedAt).toLocaleString('zh-CN')}` : '时间未知'}{item.finishedAt ? ` — ${new Date(item.finishedAt).toLocaleString('zh-CN')}` : item.status === 'paused' ? ' — 已暂停' : item.status === 'queued' ? ` — ${runStatusLabel(item,'排队中')}` : item.status === 'preparing' ? ' — 正在启动' : item.status === 'running' ? ' — 进行中' : ''}</time></header>{item.status === 'failed' ? <RunFailureSummary run={item} report={linked} compact action={runActions} /> : (item.message || runActions) && <div className="experiment-run-result"><p className="experiment-run-message">{item.message ? userFacingError(item.message, statusNames[item.status]) : statusNames[item.status]}</p>{runActions}</div>}<div className="experiment-run-snapshot">{item.serverNameSnapshot && <span>服务器：{item.serverNameSnapshot}</span>}{item.computeDevice === 'cpu' && <span>设备：CPU</span>}{item.gpuNameSnapshot && <span>GPU：{item.gpuNameSnapshot}{item.gpuIndex !== undefined ? ` · ${item.gpuIndex}` : ''}</span>}{item.codePath && <span>代码：{item.codePath}</span>}{item.dataPath && <span>数据：{item.dataPath}</span>}{item.condaEnvironment && <span>管理器：{item.condaEnvironment.manager}</span>}{item.condaEnvironment?.environmentName && <span>Conda：{item.condaEnvironment.environmentName}</span>}{item.condaEnvironment?.environmentPrefix && <span>Conda：{item.condaEnvironment.environmentPrefix}</span>}{item.condaEnvironment?.pythonVersion && <span>Python：{item.condaEnvironment.pythonVersion}</span>}{item.condaEnvironment?.pythonInterpreterPath && <span>解释器：{item.condaEnvironment.pythonInterpreterPath}</span>}{item.condaEnvironment?.environmentFilePath && <span>环境文件：{item.condaEnvironment.environmentFilePath}</span>}{item.artifactPath && <span>日志/模型：{item.artifactPath}</span>}{item.status !== 'failed' && item.logPath && <span>运行日志：{item.logPath}</span>}</div>{item.launchMode === 'script' ? <p><strong>运行脚本：</strong>{item.scriptPath}</p> : item.launchCommand && <code className="experiment-run-command">{item.launchCommand}</code>}{item.resultSummary && <p><strong>结果：</strong>{item.resultSummary}</p>}{item.notes && <p><strong>备注：</strong>{item.notes}</p>}{inlineDiagnosis?.taskId===task.id&&inlineDiagnosis.runId===item.id&&<TaskDiagnosisPanel key={inlineDiagnosis.id} task={task} runId={inlineDiagnosis.runId} reportId={inlineDiagnosis.reportId} onClose={()=>setInlineDiagnoses(current=>{const next={...current};delete next[diagnosisKey];return next})} onChanged={props.onChanged} onEdit={()=>openEditor(task)} onOpenRun={runId=>{if(props.onOpenTask)props.onOpenTask(task,runId);else{setExpandedTaskId(task.id);setSelectedRunId(runId)}}} confirm={props.confirm}/>} {openedLog?.taskId===task.id && openedLog.runId===item.id && <RunLogPanel taskId={task.id} run={item} enabled={props.active} onClose={()=>setOpenedLog(null)}/>}</section>})}</div>}
               <TaskResearchPanel task={task} campaigns={props.campaigns ?? []} onOpenCampaign={campaign=>setResearch({taskId:campaign.sourceTaskId,campaignId:campaign.id})} />
-              {expandedTaskId === task.id && <div className="experiment-run-history">{[...task.runs].reverse().map((item) => { const diagnosisKey = `${task.id}:${item.id}`; const inlineDiagnosis = inlineDiagnoses[diagnosisKey]; const linked = reportForRun(props.reports ?? [], task.id, item.id); const diagnosisAction = linked ? <button type="button" className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id, linked)}>{linked.runId === item.id ? '查看诊断' : '查看重试状态'}</button> : item.status === 'failed' && canDiagnose ? <button type="button" className="secondary-button" onClick={() => openInlineDiagnosis(task, item.id)}>分析原因</button> : null; const runActions = diagnosisAction || item.logPath ? <div className="experiment-run-result-actions">{diagnosisAction}{item.logPath && <button type="button" className="secondary-button" onClick={() => setOpenedLog({taskId:task.id,runId:item.id})}>查看日志</button>}</div> : null; return <section data-run-id={item.id} className={`experiment-run-record ${item.status === 'failed' ? 'failed' : ''} ${selectedRunId === item.id ? 'workflow-selected-run' : ''}`} key={item.id}><header><strong>{item.status === 'failed' && <CircleAlert size={13} />}第 {item.number} 次运行</strong><span className={`experiment-status-pill ${item.status}`}>{statusNames[item.status]}</span><time>{item.startedAt ? new Date(item.startedAt).toLocaleString('zh-CN') : item.queuedAt ? `排队于 ${new Date(item.queuedAt).toLocaleString('zh-CN')}` : '时间未知'}{item.finishedAt ? ` — ${new Date(item.finishedAt).toLocaleString('zh-CN')}` : item.status === 'paused' ? ' — 已暂停' : item.status === 'queued' ? item.computeDevice === 'cpu' ? ' — 等待启动' : ' — 等待 GPU' : item.status === 'preparing' ? ' — 准备运行' : item.status === 'running' ? ' — 进行中' : ''}</time></header>{item.status === 'failed' ? <RunFailureSummary run={item} report={linked} compact action={runActions} /> : (item.message || runActions) && <div className="experiment-run-result"><p className="experiment-run-message">{item.message ? userFacingError(item.message, statusNames[item.status]) : statusNames[item.status]}</p>{runActions}</div>}<div className="experiment-run-snapshot">{item.serverNameSnapshot && <span>服务器：{item.serverNameSnapshot}</span>}{item.computeDevice === 'cpu' && <span>设备：CPU</span>}{item.gpuNameSnapshot && <span>GPU：{item.gpuNameSnapshot}{item.gpuIndex !== undefined ? ` · ${item.gpuIndex}` : ''}</span>}{item.codePath && <span>代码：{item.codePath}</span>}{item.dataPath && <span>数据：{item.dataPath}</span>}{item.condaEnvironment && <span>管理器：{item.condaEnvironment.manager}</span>}{item.condaEnvironment?.environmentName && <span>Conda：{item.condaEnvironment.environmentName}</span>}{item.condaEnvironment?.environmentPrefix && <span>Conda：{item.condaEnvironment.environmentPrefix}</span>}{item.condaEnvironment?.pythonVersion && <span>Python：{item.condaEnvironment.pythonVersion}</span>}{item.condaEnvironment?.pythonInterpreterPath && <span>解释器：{item.condaEnvironment.pythonInterpreterPath}</span>}{item.condaEnvironment?.environmentFilePath && <span>环境文件：{item.condaEnvironment.environmentFilePath}</span>}{item.artifactPath && <span>日志/模型：{item.artifactPath}</span>}{item.status !== 'failed' && item.logPath && <span>运行日志：{item.logPath}</span>}</div>{item.launchMode === 'script' ? <p><strong>运行脚本：</strong>{item.scriptPath}</p> : item.launchCommand && <code className="experiment-run-command">{item.launchCommand}</code>}{item.resultSummary && <p><strong>结果：</strong>{item.resultSummary}</p>}{item.notes && <p><strong>备注：</strong>{item.notes}</p>}{inlineDiagnosis?.taskId===task.id&&inlineDiagnosis.runId===item.id&&<TaskDiagnosisPanel key={inlineDiagnosis.id} task={task} runId={inlineDiagnosis.runId} reportId={inlineDiagnosis.reportId} onClose={()=>setInlineDiagnoses(current=>{const next={...current};delete next[diagnosisKey];return next})} onChanged={props.onChanged} onEdit={()=>openEditor(task)} onOpenRun={runId=>{if(props.onOpenTask)props.onOpenTask(task,runId);else{setExpandedTaskId(task.id);setSelectedRunId(runId)}}} confirm={props.confirm}/>} {openedLog?.taskId===task.id && openedLog.runId===item.id && <RunLogPanel taskId={task.id} run={item} enabled={props.active} onClose={()=>setOpenedLog(null)}/>}</section>})}</div>}
             </article>
   }
 
   const renderPoolTaskRow=(task:ExperimentTask,child=false):ReactNode=>(<Fragment key={task.id}><tr className={`${inspectedTaskId===task.id?'selected':''} ${child?'experiment-research-child':''}`}>
             <td><button className="wb-text-button" aria-expanded={inspectedTaskId === task.id} aria-controls={`experiment-task-details-${task.id}`} onClick={() => setInspectedTaskId((current) => current === task.id ? null : task.id)}>{taskResearchName(task)}</button>{!child&&task.project && <small>{task.project}</small>}</td>
-            <td><span className={`wb-state ${task.status}`}><i />{statusNames[task.status]}</span></td><td>{priorityNames[task.priority]}</td>
+            <td><span className={`wb-state ${task.status}`}><i />{taskStatusLabel(task,statusNames[task.status])}</span></td><td>{priorityNames[task.priority]}</td>
             <td>{props.servers.find((server) => server.id === task.serverId)?.name ?? task.serverNameSnapshot ?? '未指定'}</td><td>{task.runs.length} 次</td><td>{new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
             <td><div className="experiment-row-actions"><button className="wb-text-button" aria-expanded={inspectedTaskId === task.id} aria-controls={`experiment-task-details-${task.id}`} onClick={() => setInspectedTaskId((current) => current === task.id ? null : task.id)}>{inspectedTaskId === task.id ? '收起' : '详情'}</button>{task.id !== props.demoTaskId && <button className="icon-button small" aria-label={`删除任务 ${task.title}`} title={['preparing', 'running'].includes(task.status) ? '先取消运行，再删除任务' : '删除任务及运行记录'} disabled={deletingItemId === task.id || ['preparing', 'running'].includes(task.status) || task.runs.some((run) => run.status === 'preparing' || run.status === 'running')} onClick={() => void deleteTask(task)}><Trash2 size={13} /></button>}</div></td>
           </tr>{inspectedTaskId === task.id && <tr className="experiment-pool-detail-row"><td colSpan={7}>{renderTaskDetails(task)}</td></tr>}</Fragment>)
@@ -864,25 +872,34 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       onEditFullConfig={openFullConfig}
       notify={props.notify} confirm={props.confirm} onTrusted={props.onTrusted}
     /> : <>
+    <div className="experiment-pool-topbar">
     <div className="experiment-pool-tabs" role="tablist" aria-label="我的任务视图">
       <button type="button" role="tab" aria-selected={tab === 'pool'} className={tab === 'pool' ? 'active' : ''} onClick={() => setTab('pool')}><ListTodo size={16} />实验任务池<span>{props.tasks.filter((task) => !task.archived).length}</span></button>
       <button type="button" role="tab" aria-selected={tab === 'live'} className={tab === 'live' ? 'active' : ''} onClick={() => setTab('live')}><Cpu size={16} />GPU 实时进程<span>{props.liveTaskCount}</span></button>
     </div>
+    {tab==='pool'&&!research&&<>
+      <section className="experiment-pool-overview" aria-label="按状态筛选实验任务">
+        {([
+          ['planned','待开始',props.tasks.filter(task=>!task.archived&&task.status==='planned').length],
+          ['active','排队 / 运行 / 暂停',activeCount],
+          ['completed','已完成',props.tasks.filter(task=>!task.archived&&task.status==='completed').length],
+          ['failed','失败',props.tasks.filter(task=>!task.archived&&task.status==='failed').length],
+          ['cancelled','已取消',props.tasks.filter(task=>!task.archived&&task.status==='cancelled').length]
+        ] as const).map(([value,label,count])=><button type="button" key={value} className={`experiment-pool-stat ${value}`} aria-pressed={!showArchived&&statusFilter===value} title={!showArchived&&statusFilter===value?'取消状态筛选':`筛选${label}任务`} onClick={()=>{setShowArchived(false);setStatusFilter(current=>toggleTaskStatus(current,value))}}><span><i/>{label}</span><strong>{count}</strong></button>)}
+      </section>
+    </>}
+    </div>
     {tab === 'live' ? props.liveTasks : <>
     {research ? <section className="task-research-workspace"><header className="project-research-heading"><button type="button" className="secondary-button research-back-button" aria-label="返回实验任务" onClick={()=>setResearch(null)}><ArrowLeft size={16}/>返回</button></header><ResearchPage key={research.taskId+':'+research.campaignId} tasks={props.tasks} servers={props.servers} modelEnabled={modelEnabled} initialTaskId={research.taskId} initialCampaignId={research.campaignId} onChanged={props.onChanged} onOpenTask={(task,runId)=>{setResearch(null);setInspectedTaskId(task.id);setSelectedRunId(runId??null);props.onOpenTask?.(task,runId)}} confirm={props.confirm} notify={props.notify}/></section> : <>
 
-      <section className="experiment-pool-overview">
-        <div><div className="experiment-pool-icon"><ListTodo size={19} /></div><span>待开始<strong>{props.tasks.filter((task) => !task.archived && task.status === 'planned').length}</strong></span></div>
-        <div><div className="experiment-pool-icon running"><Play size={18} /></div><span>排队 / 运行 / 暂停<strong>{activeCount}</strong></span></div>
-        <div><div className="experiment-pool-icon done"><CheckCircle2 size={19} /></div><span>已完成<strong>{props.tasks.filter((task) => !task.archived && task.status === 'completed').length}</strong></span></div>
-      </section>
+
       <section className="panel experiment-task-panel">
         <div className="experiment-task-toolbar">
           <div><h2>{showArchived ? '已归档任务' : '实验任务池'}</h2></div>
           <div className="experiment-task-toolbar-actions">
             <input aria-label="搜索任务" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务、项目或标签" />
             <select aria-label="筛选任务状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="all">全部状态</option>{Object.entries(statusNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              <option value="all">全部状态</option><option value="active">排队 / 运行 / 暂停</option>{Object.entries(statusNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
             <select aria-label="筛选服务器" value={filterServer} onChange={(event) => setFilterServer(event.target.value)}><option value="all">全部服务器</option>{props.servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select>
             <details className="experiment-task-filters">
@@ -909,7 +926,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
             const toggle=()=>{if(expanded&&tasks.some(task=>task.id===inspectedTaskId))setInspectedTaskId(null);setExpandedResearchGroups(current=>({...current,[campaign.id]:!expanded}))}
             return <Fragment key={`research:${campaign.id}`}><tr className="experiment-research-group">
               <td><button type="button" className="wb-text-button experiment-research-group-toggle" aria-expanded={expanded} title={`${expanded?'收起':'展开'} ${researchGroupTitle(campaign)}`} onClick={toggle}><ChevronDown size={14} className={expanded?'expanded':''}/><span>{researchGroupTitle(campaign)}</span></button><small>{sourceNumber!==undefined?`基于第 ${sourceNumber} 次运行`:'基于任务配置'} · {campaign.members.length} 组{tasks.length!==campaign.members.length?` · 当前显示 ${tasks.length} 组`:''}</small></td>
-              <td><span className={`wb-state ${status}`}><i/>{statusNames[status]}</span></td><td>—</td>
+              <td><span className={`wb-state ${status}`}><i/>{groupStatusLabel(tasks,status,statusNames[status])}</span></td><td>—</td>
               <td>{props.servers.find(server=>server.id===campaign.baseline.serverId)?.name??campaign.baseline.serverNameSnapshot??'未指定'}</td><td>{tasks.reduce((count,task)=>count+task.runs.length,0)} 次</td><td>{new Date(Math.max(...tasks.map(task=>Date.parse(task.updatedAt)))).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
               <td><div className="experiment-row-actions experiment-group-actions"><button type="button" className="wb-text-button" onClick={()=>setResearch({taskId:campaign.sourceTaskId,campaignId:campaign.id})}>查看对比</button><details className="experiment-task-more experiment-group-more" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))event.currentTarget.open=false}} onKeyDown={event=>{if(event.key==='Escape')event.currentTarget.open=false}}><summary aria-label={`更多操作：${researchGroupTitle(campaign)}`} title="更多操作"><MoreHorizontal size={16}/></summary><div className="experiment-task-more-menu" style={{left: 'auto', right: 0}}><button type="button" className="secondary-button danger-button" disabled={deletingItemId===campaign.id || campaign.busy || props.tasks.some(task=>campaign.members.some(member=>member.taskId===task.id) && (['preparing','running'].includes(task.status) || task.runs.some(run=>['preparing','running'].includes(run.status))))} title="删除本批对照记录及全部子任务；有运行中的任务时请先取消运行" onClick={event=>{const details=event.currentTarget.closest('details');if(details)details.open=false;void deleteResearchBatch(campaign)}}><Trash2 size={14}/>{deletingItemId===campaign.id?'删除中…':'删除整批实验'}</button></div></details></div></td>
             </tr>{expanded&&tasks.map(task=>renderPoolTaskRow(task,true))}</Fragment>
@@ -989,12 +1006,12 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
 </div></details>}
           <section className="experiment-conda-section">
             <label className="experiment-conda-toggle"><input type="checkbox" checked={condaEnabled} disabled={condaBusy} onChange={(event) => { setCondaEnabled(event.target.checked); if (event.target.checked && !editor.condaEnvironment) updateConda({ manager: 'conda' }) }} /><span><strong>配置 Conda 环境</strong></span></label>
-            {condaEnabled && <CondaEnvironmentFields serverId={selectedServer?.id} accessRouteId={selectedRouteId} config={editor.condaEnvironment ?? {manager: 'conda'}} environments={envs} busy={condaBusy} disabled={!selectedServer || selectedServer.mode !== 'real'} onChange={patch => { if ('managerPath' in patch) setEnvs([]); updateConda(patch) }} onReload={() => void detectEnvironments()} onCheck={() => void checkEnvironment()} />}
+            {condaEnabled && <CondaEnvironmentFields serverId={selectedServer?.id} accessRouteId={selectedRouteId} config={editor.condaEnvironment ?? {manager: 'conda'}} environments={envs} busy={condaBusy} disabled={!selectedServer || selectedServer.mode !== 'real'} onChange={patch => { if ('managerPath' in patch) setEnvs([]); updateConda(patch) }} onReload={() => void detectEnvironments(true)} onCheck={() => void checkEnvironment()} />}
           </section>
           <ProjectTaskEvidence draft={{...editor,condaEnvironment:condaEnabled?editor.condaEnvironment:undefined}}/>
           <label className="field experiment-notes-field"><span>备注</span><textarea value={editor.notes ?? ''} onChange={(event) => updateDraft({ notes: event.target.value })} rows={2} placeholder="记录实验条件或注意事项" /></label>
         </div>
-        <footer className="dialog-footer app-modal-footer">{fullConfig ? <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="primary-button" onClick={finishFullConfig} disabled={condaBusy}>完成编辑</button></> : <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="secondary-button" onClick={() => void saveTask(false)} disabled={saving || condaBusy || !editor.title.trim()}>保存草稿</button><button type="button" className="primary-button" onClick={() => void saveTask(true)} disabled={saving || condaBusy || !editor.title.trim() || ['queued', 'preparing', 'running'].includes(editor.status)}>{saving ? '保存中…' : '创建并选择资源'}</button></>}</footer>
+        <footer className="dialog-footer app-modal-footer">{fullConfig ? <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="primary-button" onClick={finishFullConfig} disabled={condaBusy}>完成编辑</button></> : <><button type="button" className="secondary-button" onClick={closeEditor} disabled={condaBusy}>取消</button><button type="button" className="secondary-button" onClick={() => void saveTask(false)} disabled={saving || condaBusy || !editor.title.trim()}>保存草稿</button><button type="button" className="primary-button" onClick={() => void saveTask(true)} aria-busy={saving} disabled={saving || condaBusy || !editor.title.trim() || ['queued', 'preparing', 'running'].includes(editor.status)}>{saving ? '保存中…' : '创建并选择资源'}</button></>}</footer>
       </section>
     </div>}
 
@@ -1016,18 +1033,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               } : null
               updateRunDraft({ accessRouteId: routeId, condaEnvironment })
             }} /></div>}
-            <label className="field field-wide"><span>运行设备</span><select aria-label="本次运行设备" value={runDraft.computeDevice ?? 'gpu'} onChange={event => updateRunDraft({computeDevice: event.target.value as 'gpu' | 'cpu', gpuUuid: null, gpuIndex: null, gpuNameSnapshot: null, ...(runDraft.launchMode !== 'script' ? {launchCommand: deviceLaunchCommand(runDraft.launchCommand,event.target.value as 'gpu' | 'cpu')} : {})})}><option value="gpu">GPU</option><option value="cpu">CPU</option></select>{runDraft.computeDevice === 'cpu' && <small className="field-help">请确认启动命令或脚本支持 CPU。</small>}</label>
-            {runDraft.computeDevice !== 'cpu' && <>
-            <div className="field field-wide experiment-run-gpu-field"><div className="experiment-run-gpu-heading"><span>GPU 执行方式</span><button type="button" className="secondary-button" onClick={() => void refreshRunGpuSnapshot()} disabled={runGpuRefreshBusy || !runServer || runServer.mode !== 'real'}>{runGpuRefreshBusy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />}刷新 GPU 列表</button></div><select value={runDraft.gpuUuid ?? ''} onChange={(event) => {
-              const gpu = runServerSnapshot?.gpus.find((item) => item.uuid === event.target.value)
-              updateRunDraft({ gpuUuid: gpu?.uuid ?? null, gpuIndex: gpu?.index ?? null, gpuNameSnapshot: gpu?.name ?? null })
-            }}><option value="">自动分配（等待符合条件的 GPU）</option>{manuallySelectedGpu && runDraft.gpuUuid && (runServerSnapshot?.status === 'offline' || !runServerSnapshot?.gpus.some((gpu) => gpu.uuid === runDraft.gpuUuid)) && <option value={runDraft.gpuUuid} disabled>GPU {runDraft.gpuIndex} · 当前采样不可用</option>}{runServerSnapshot?.status !== 'offline' && runServerSnapshot?.gpus.filter((gpu) => gpu.uuid).map((gpu) => {
-              const freeGiB = Math.max(0, gpu.memoryTotalMiB - gpu.memoryUsedMiB) / 1024
-              return <option key={gpu.uuid} value={gpu.uuid}>GPU {gpu.index} · {gpu.name} · 利用率 {gpu.utilizationPercent}% · 空闲显存 {freeGiB.toFixed(1)} GiB</option>
-            })}</select><small className="field-help">{runServerSnapshot?.status === 'offline' ? '服务器最近采样为离线，手动 GPU 暂时不可选；自动队列会在服务器恢复后继续检查。' : runSelectedGpu ? `已选 GPU ${runSelectedGpu.index}，当前利用率 ${runSelectedGpu.utilizationPercent}%，空闲显存 ${(Math.max(0, runSelectedGpu.memoryTotalMiB - runSelectedGpu.memoryUsedMiB) / 1024).toFixed(1)} GiB；提交后会优先立即启动该卡。` : runGpuRefreshBusy ? '正在读取服务器 GPU 状态…' : runServerSnapshot?.sampledAt ? `自动模式将同时应用显存与利用率条件。GPU 状态采样于 ${new Date(runServerSnapshot.sampledAt).toLocaleTimeString('zh-CN')}` : '尚无 GPU 采样；可刷新列表，或使用自动队列等待服务器采样。'}</small></div>
-            <label className="field"><span>最低空闲显存（GiB）</span><input type="number" min="0.1" max="1024" step="0.5" value={runDraft.minimumFreeVramGiB ?? ''} disabled={manuallySelectedGpu} onChange={(event) => updateRunDraft({ minimumFreeVramGiB: event.target.value === '' ? null : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动模式生效；清空后不限制显存。</small></label>
-            <label className="field"><span>最高 GPU 利用率（%）</span><input type="number" min="0" max="100" step="1" value={runDraft.maximumGpuUtilizationPercent ?? ''} disabled={manuallySelectedGpu} onChange={(event) => updateRunDraft({ maximumGpuUtilizationPercent: event.target.value === '' ? null : Number(event.target.value) })} placeholder="不限制" /><small className="field-help">自动模式只选利用率不高于此值的 GPU。</small></label>
-            </>}
+            <RunDeviceFields value={runDraft} onChange={updateRunDraft} snapshot={runServerSnapshot} refreshing={runGpuRefreshBusy} onRefresh={()=>void refreshRunGpuSnapshot()} canRefresh={!!runServer&&runServer.mode==='real'}/>
             <label className="field field-wide"><span>本次启动方式</span><select aria-label="本次启动方式" value={runDraft.launchMode ?? 'command'} onChange={(event) => updateRunDraft({ launchMode: event.target.value as 'command' | 'script' })}><option value="command">输入命令</option><option value="script">运行 .sh 脚本</option></select></label>
             <label className="field field-wide"><span>{runDraft.launchMode === 'script' ? '本次代码目录（可选，默认脚本所在目录）' : '本次代码目录'}</span><input value={runDraft.codePath} onChange={(event) => updateRunDraft({ codePath: event.target.value })} placeholder={runDraft.launchMode === 'script' ? '留空使用脚本所在目录' : '/home/user/project'} /></label>
             <label className="field field-wide"><span>本次数据目录</span><input value={runDraft.dataPath} onChange={(event) => updateRunDraft({ dataPath: event.target.value })} placeholder="/mnt/nas/datasets/experiment" />{starting.projectPreparation?.questions.filter(q=>/数据|dataset/i.test(q)).map((q,i)=><small className="project-inline-warning" key={i}>{q}</small>)}</label>
@@ -1035,6 +1041,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
               ? <label className="field field-wide"><span>本次 .sh 脚本（服务器上的绝对路径）</span><input aria-label="本次脚本路径" value={runDraft.scriptPath ?? ''} onChange={(event) => updateRunDraft({ scriptPath: event.target.value })} placeholder="/home/user/project/train.sh" /></label>
               : <label className="field field-wide"><span>本次启动命令</span><textarea className="experiment-command-input" rows={3} value={runDraft.launchCommand} onChange={(event) => updateRunDraft({ launchCommand: event.target.value })} placeholder="python train.py --config configs/base.yaml" /></label>}
             <label className="field field-wide"><span>日志/模型路径</span><input value={runDraft.artifactPath} onChange={(event) => updateRunDraft({ artifactPath: event.target.value })} placeholder="/home/user/project/runs/exp-01" /></label>
+            <label className="field field-wide"><span>本次运行名称</span><input value={runDraft.runTitle??''} maxLength={160} onChange={event=>updateRunDraft({runTitle:event.target.value})} placeholder="例如：训练 T5 / 生成 SID"/></label>
             <label className="field field-wide"><span>本次参数备注</span><textarea rows={2} value={runDraft.notes} onChange={(event) => updateRunDraft({ notes: event.target.value })} placeholder="例如 batch size、随机种子或本次改动" /></label>
           </div>
           <section className="experiment-conda-section">
@@ -1050,11 +1057,11 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
             </div>}
           </section>
         </div>
-        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => { setStarting(null); setRunDraft(null) }} disabled={Boolean(startingTaskId)}>返回</button><button type="button" className="primary-button" onClick={() => void recordRun()} disabled={Boolean(startingTaskId)}><Play size={15} />{startingTaskId ? '提交中…' : runDraft.computeDevice === 'cpu' ? '在 CPU 上启动' : manuallySelectedGpu && runServerSnapshot?.status === 'offline' ? '服务器恢复后启动所选 GPU' : manuallySelectedGpu ? '在所选 GPU 上立即启动' : '加入自动队列'}</button></footer>
+        <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => { setStarting(null); setRunDraft(null) }} disabled={Boolean(startingTaskId)}>返回</button><button type="button" className="primary-button" onClick={() => void recordRun()} aria-busy={!!startingTaskId} disabled={Boolean(startingTaskId)}><Play size={15} />{startingTaskId ? '提交中…' : runDraft.computeDevice === 'cpu' ? '在 CPU 上启动' : manuallySelectedGpu && runServerSnapshot?.status === 'offline' ? '服务器恢复后启动所选 GPU' : manuallySelectedGpu ? '在所选 GPU 上立即启动' : '加入自动队列'}</button></footer>
       </section>
     </div>}
 
-    {finishing && <div className="app-modal-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setFinishing(null) }}><section className="app-modal experiment-finish-dialog" role="dialog" aria-modal="true" aria-labelledby="experiment-finish-title"><header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><CheckCircle2 size={19} /></div><div><h2 id="experiment-finish-title">结束/暂停运行记录</h2><p>{finishing.title} · 第 {activeRun(finishing)?.number ?? '—'} 次</p></div></div></header><div className="experiment-finish-body"><label className="field"><span>运行状态</span><select value={finishInput.status} onChange={(event) => setFinishInput((value) => ({ ...value, status: event.target.value as ExperimentRunFinishInput['status'] }))}><option value="completed">完成</option><option value="paused">暂停</option></select></label>{finishInput.status === 'paused' && <p className="experiment-pause-help">“暂停”只更新任务记录，不会向服务器上的进程发送暂停信号；要终止远程任务，请使用“取消运行”。</p>}<label className="field"><span>结果摘要</span><textarea rows={3} value={finishInput.resultSummary} onChange={(event) => setFinishInput((value) => ({ ...value, resultSummary: event.target.value }))} placeholder="指标、checkpoint 或异常" /></label><label className="field"><span>运行备注</span><textarea rows={3} value={finishInput.notes} onChange={(event) => setFinishInput((value) => ({ ...value, notes: event.target.value }))} placeholder="本次参数、环境或问题" /></label><label className="field"><span>日志/模型路径</span><input value={finishInput.artifactPath} onChange={(event) => setFinishInput((value) => ({ ...value, artifactPath: event.target.value }))} placeholder="/home/user/project/runs/exp-01" /></label></div><footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" onClick={() => setFinishing(null)}>取消</button><button type="button" className="primary-button" onClick={() => void finishRun()}>保存运行记录</button></footer></section></div>}
+    {finishing && <div className="app-modal-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget&&!finishBusy) setFinishing(null) }}><section className="app-modal experiment-finish-dialog" role="dialog" aria-modal="true" aria-labelledby="experiment-finish-title"><header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><CheckCircle2 size={19} /></div><div><h2 id="experiment-finish-title">结束/暂停运行记录</h2><p>{finishing.title} · 第 {activeRun(finishing)?.number ?? '—'} 次</p></div></div></header><div className="experiment-finish-body"><label className="field"><span>运行状态</span><select value={finishInput.status} onChange={(event) => setFinishInput((value) => ({ ...value, status: event.target.value as ExperimentRunFinishInput['status'] }))}><option value="completed">完成</option><option value="paused">暂停</option></select></label>{finishInput.status === 'paused' && <p className="experiment-pause-help">“暂停”只更新任务记录，不会向服务器上的进程发送暂停信号；要终止远程任务，请使用“取消运行”。</p>}<label className="field"><span>结果摘要</span><textarea rows={3} value={finishInput.resultSummary} onChange={(event) => setFinishInput((value) => ({ ...value, resultSummary: event.target.value }))} placeholder="指标、checkpoint 或异常" /></label><label className="field"><span>运行备注</span><textarea rows={3} value={finishInput.notes} onChange={(event) => setFinishInput((value) => ({ ...value, notes: event.target.value }))} placeholder="本次参数、环境或问题" /></label><label className="field"><span>日志/模型路径</span><input value={finishInput.artifactPath} onChange={(event) => setFinishInput((value) => ({ ...value, artifactPath: event.target.value }))} placeholder="/home/user/project/runs/exp-01" /></label></div><footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" disabled={finishBusy} onClick={() => setFinishing(null)}>取消</button><button type="button" className="primary-button" aria-busy={finishBusy} disabled={finishBusy} onClick={() => void finishRun()}>{finishBusy?'保存中…':'保存运行记录'}</button></footer></section></div>}
   </div>
 }
 

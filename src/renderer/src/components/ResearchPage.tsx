@@ -1,12 +1,15 @@
+import { runStatusLabel } from '@shared/experiment-status-label'
+import { deviceLaunchCommand } from '@shared/experiment-launch'
+import { RunDeviceFields } from './RunDeviceFields'
 import { userFacingError } from '@shared/user-facing-error'
 import { parameterExperimentReason } from '@shared/parameter-engine'
 import { resultConfigSchema, resultConfigForRun, resultFileSelectionPath, resolveResultPath } from '@shared/research-results'
 import { useEffect, useState } from 'react'
 import { ChevronDown, FileDown, FileText, FlaskConical, History, LoaderCircle, FolderOpen, Play, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
-import type { ExperimentTask, ServerProfile } from '@shared/types'
+import type { ExperimentTask, ServerProfile, ServerSnapshot } from '@shared/types'
 import type { ResultCollectionConfig } from '@shared/research-results'
 import { baselineDraft } from '@shared/research'
-import type { ParameterAxis, ResearchSuggestion, ResearchView } from '@shared/research'
+import type { ParameterAxis, ResearchSuggestion, ResearchView, ResearchRunTarget } from '@shared/research'
 import type { ConfirmationRequest } from './ConfirmDialog'
 import './research.css'
 import { ResearchResults } from './ResearchResults'
@@ -29,6 +32,11 @@ export function ResearchPage(props:Props):React.JSX.Element {
   const maxRuns=Number(maxRunsInput)
   const maxRunsValid=/^\d+$/.test(maxRunsInput)&&Number.isSafeInteger(maxRuns)&&maxRuns>=1&&maxRuns<=32
   const [history,setHistory]=useState<ResearchView[]>([]),[selectedId,setSelectedId]=useState(props.initialCampaignId||'')
+  const [retryMode,setRetryMode]=useState(false)
+  const [runTarget,setRunTarget]=useState<ResearchRunTarget|null>(null)
+  const [targetSnapshot,setTargetSnapshot]=useState<ServerSnapshot>()
+  const [targetRefreshing,setTargetRefreshing]=useState(false)
+  const [refreshTarget,setRefreshTarget]=useState(0)
   const [busy,setBusy]=useState(''),[error,setError]=useState('')
   const [ready,setReady]=useState(false)
   const [historyOpen,setHistoryOpen]=useState(false)
@@ -87,7 +95,15 @@ export function ResearchPage(props:Props):React.JSX.Element {
     setResultFiles(config?.resultFiles?.length?config.resultFiles:[config?.metricsFile??''])
     setRunResultFiles(config?.runResultFiles??{})
     setResultSource(config?.resultFiles?.length||config?.metricsFile||Object.keys(config?.runResultFiles??{}).length?'file':'log')
-  },[selected?.id])
+  },[selected?.id,selected?.retryCount,!!selected?.retrySubmission,selected?.events.filter(event=>event.node==='output_paths_recheck').length])
+  useEffect(()=>{
+    if(!runTarget||!selected?.baseline.serverId)return
+    let live=true
+    setTargetRefreshing(true)
+    setTargetSnapshot(undefined)
+    void window.labApi.monitor.snapshot(selected.baseline.serverId,selected.baseline.accessRouteId).then(snapshot=>{if(live)setTargetSnapshot(snapshot)}).catch(e=>{if(live)props.notify(userFacingError(e,'无法读取 GPU 列表，可重试或选择自动分配。'),'error')}).finally(()=>{if(live)setTargetRefreshing(false)})
+    return()=>{live=false}
+  },[!!runTarget,selected?.id,refreshTarget])
   async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busy)return;setBusy(name);setError('');try{await fn();setHistory(await window.labApi.research.list())}catch(e){setError(userFacingError(e,'本次操作未完成，请检查配置后重试。'))}finally{setBusy('')}}
   async function deleteRecord(campaign:ResearchView):Promise<void>{
     if(busy||deletingId)return
@@ -103,10 +119,27 @@ export function ResearchPage(props:Props):React.JSX.Element {
     finally{setDeletingId('');setBusy('')}
   }
   async function reloadTasks():Promise<void>{for(const item of await window.labApi.experiments.list())props.onChanged(item)}
-  async function approve():Promise<void>{
+  async function approve(retry=false):Promise<void>{
     if(!selected)return
-    const accepted=await props.confirm({title:'确认本批对照实验',message:`将 ${selected.members.length} 个配置加入任务队列。运行预算为 ${selected.maxRuns} 次。此确认仅针对当前批次，下一批和故障修复需要重新确认。`,details:`基准：${selected.sourceRunNumber!==undefined?'第 '+selected.sourceRunNumber+' 次运行':'任务配置'}\n服务器：${props.servers.find(s=>s.id===selected.baseline.serverId)?.name??'原服务器'}\n代码目录：${selected.baseline.codePath}\nConda：${selected.baseline.condaEnvironment?.environmentName??selected.baseline.condaEnvironment?.environmentPrefix??'未指定'}\n数据：${selected.baseline.dataPath||'未指定'}\n产物目录：${selected.baseline.artifactPath||'由训练脚本决定'}\n${selected.members.map((m,i)=>`${i+1}. ${m.command}`).join('\n')}`,confirmLabel:'确认本批加入队列'})
-    if(accepted)await action('approve',async()=>{await window.labApi.research.approve(selected.id,true);await reloadTasks();props.notify('本批实验已加入任务队列')})
+    setRetryMode(retry)
+    if(retry&&selected.retrySubmission){await action('retry',async()=>{await window.labApi.research.retryFailed(selected.id,true);await reloadTasks();props.notify('失败组已恢复提交')});return}
+    if(selected.pending.includes('queue')){
+      if(await props.confirm({title:'恢复本批提交',message:'沿用已经确认的设备和配置，继续提交尚未入队的任务。',confirmLabel:'继续提交'}))await action('approve',async()=>{await window.labApi.research.approve(selected.id,true);await reloadTasks()})
+      return
+    }
+    setTargetSnapshot(undefined)
+    const target=selected.runTarget??{computeDevice:selected.baseline.computeDevice??'gpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:selected.baseline.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:selected.baseline.maximumGpuUtilizationPercent??null}
+    setRunTarget(target)
+  }
+  async function submitBatch():Promise<void>{
+    if(!selected||!runTarget)return
+    await action('approve',async()=>{
+      if(retryMode)await window.labApi.research.retryFailed(selected.id,true,runTarget)
+      else await window.labApi.research.approve(selected.id,true,runTarget)
+      setRunTarget(null)
+      await reloadTasks()
+      props.notify(retryMode?'失败组已重新提交，成功组保持原运行':'本批实验已提交，将按所选设备运行')
+    })
   }
   function updateFiles(update:(files:string[])=>string[],runId?:string):void {
     if(runId)setRunResultFiles(current=>({...current,[runId]:update(current[runId]??[''])}))
@@ -134,13 +167,18 @@ export function ResearchPage(props:Props):React.JSX.Element {
     updateFiles(files=>files.map((item,index)=>index===pickingFile.index?value:item),pickingFile.runId)
     setPickingFile(null)
   }
+  const outputUnverified=selected?.outputIsolation?.status==='unverified'
+  const failedCount=selected?.members.filter(member=>props.tasks.find(task=>task.id===member.taskId)?.runs.find(run=>run.id===member.runId)?.status==='failed').length??0
+  const batchActive=selected?.members.some(member=>{const run=props.tasks.find(task=>task.id===member.taskId)?.runs.find(run=>run.id===member.runId);return !run||!['completed','failed','cancelled'].includes(run.status)})
+  const canRecheckOutput=selected?.stage==='review'&&!selected.members.some(member=>member.taskId)
+  const reviewWarnings=[...new Set([...(selected?.warnings??[]),...(outputUnverified?[selected?.outputIsolation?.reason??'尚未确认各组独立保存位置']:[])])]
   const currentStep=selected?.stage==='analysis'?2:selected?.stage==='waiting'?1:0
   return <section className="research-page" aria-label="对照实验工作流">
     <header className="research-heading"><div><h2>创建对照组</h2><p>沿用基准实验配置，只比较你指定的参数。</p></div><button type="button" className="secondary-button research-history-trigger" aria-haspopup="dialog" disabled={!!busy} onClick={()=>setHistoryOpen(true)}><History size={15}/>对照记录</button></header>
     {error&&<div className="intel-error" role="alert">{error}</div>}{missingRequested&&<div className="intel-error" role="alert">关联的对照批次已不存在，请在历史批次中重新选择。</div>}
     <div className="research-layout"><aside><section className="research-form"><div className="research-section-heading"><span>1</span><div><h3>基准与目标</h3></div></div>
       <label>来源实验任务<select aria-label="对照来源任务" disabled={!!busy} value={taskId} onChange={e=>{setTaskId(e.target.value);setSourceRunId('');setDesign(null)}}><option value="" disabled hidden>选择来源实验任务</option>{candidates.map(t=><option key={t.id} value={t.id} disabled={!eligible.some(item=>item.id===t.id)}>{t.title}{!eligible.some(item=>item.id===t.id)?'（无可用基准配置）':''}</option>)}</select></label>
-      {task&&<label>基准运行记录<select aria-label="基准运行记录" disabled={!!busy||!task.runs.length} value={sourceRunId} onChange={event=>{setSourceRunId(event.target.value);setDesign(null);setError('')}}><option value="" disabled hidden>{task.runs.length?'请选择一次运行':'当前任务配置（尚无运行记录）'}</option>{[...task.runs].reverse().map(run=><option key={run.id} value={run.id} disabled={!!baselineReason(task,run.id)}>第 {run.number} 次运行 · {runNames[run.status]}{run.startedAt||run.queuedAt?` · ${new Date(run.startedAt??run.queuedAt!).toLocaleString('zh-CN')}`:''}{baselineReason(task,run.id)?'（配置不支持）':''}</option>)}</select></label>}
+      {task&&<label>基准运行记录<select aria-label="基准运行记录" disabled={!!busy||!task.runs.length} value={sourceRunId} onChange={event=>{setSourceRunId(event.target.value);setDesign(null);setError('')}}><option value="" disabled hidden>{task.runs.length?'请选择一次运行':'当前任务配置（尚无运行记录）'}</option>{[...task.runs].reverse().map(run=><option key={run.id} value={run.id} disabled={!!baselineReason(task,run.id)}>第 {run.number} 次运行 · {runStatusLabel(run,runNames[run.status])}{run.startedAt||run.queuedAt?` · ${new Date(run.startedAt??run.queuedAt!).toLocaleString('zh-CN')}`:''}{baselineReason(task,run.id)?'（配置不支持）':''}</option>)}</select></label>}
       {unsupported&&<p className="research-note" role="status">{unsupported}</p>}
       {baseline&&<details className="research-baseline"><summary>{sourceRunId?`基于第 ${task?.runs.find(run=>run.id===sourceRunId)?.number} 次运行`:'查看当前基准配置'}<ChevronDown size={13}/></summary><code>{baseline.launchCommand}</code><p>{props.servers.find(s=>s.id===baseline.serverId)?.name} · {baseline.computeDevice==='cpu'?'CPU':'GPU'} · {baseline.codePath}</p>{baseline.condaEnvironment&&<p>Conda · {baseline.condaEnvironment.environmentName??baseline.condaEnvironment.environmentPrefix}</p>}</details>}
       <section className="research-goal-card" aria-labelledby="research-goal-title">
@@ -174,21 +212,22 @@ export function ResearchPage(props:Props):React.JSX.Element {
     <div className="research-output">{!selected?<div className="research-empty"><div className="research-empty-icon"><FlaskConical size={28}/></div><h2>对照方案会在这里展开</h2><ol><li><span>1</span>设置对比参数</li><li><span>2</span>预览生成的配置</li><li><span>3</span>确认并运行</li></ol></div>:<>
       <header className="research-campaign-heading"><div><h2>{selected.objective}</h2><p>{selected.baseline.title}{selected.sourceRunNumber!==undefined?` · 基于第 ${selected.sourceRunNumber} 次运行`:''} · {stageNames[selected.stage]}{selected.paused?' · 跟踪已暂停':''}</p></div><button className="secondary-button" disabled={!!busy} onClick={()=>void action('export',async()=>{if(await window.labApi.research.export(selected.id))props.notify('实验研究记录已导出')})}><FileDown size={14}/>导出</button></header>
       {selected.design&&<details className="research-design"><summary>实验假设与设计依据</summary><p>{selected.design.hypothesis}</p><p>{selected.design.rationale}</p>{(selected.design.variables??(selected.design.variable?[selected.design.variable]:[])).map(variable=><p key={variable.flag}><code>{variable.flag}</code> · 基线 {variable.baselineValue} · {variable.source.path}:{variable.source.startLine}</p>)}</details>}
-      {selected.outputIsolation&&<section className="research-output-isolation">
-        {selected.outputIsolation.status==='verified'?<><strong>各组使用独立输出目录</strong><p>已根据项目源码调整 {selected.outputIsolation.flag}，具体位置见下方配置。</p>{selected.outputIsolation.source&&<details><summary>查看输出参数依据</summary><span>{selected.outputIsolation.source.path}:{selected.outputIsolation.source.startLine}</span><pre>{selected.outputIsolation.source.quote}</pre></details>}</>:<p className="intel-error" role="alert">{selected.outputIsolation.reason} 当前方案暂不能提交。</p>}
+      {selected.outputIsolation?.status==='verified'&&<section className="research-output-isolation">
+        <><strong>各组使用独立输出目录</strong><p>已根据项目源码调整 {(selected.outputIsolation.targets??[]).map(target=>target.flag).join('、')||selected.outputIsolation.flag}，具体位置见下方配置。</p>{selected.outputIsolation.source&&<details><summary>查看输出参数依据</summary><span>{selected.outputIsolation.source.path}:{selected.outputIsolation.source.startLine}</span><pre>{selected.outputIsolation.source.quote}</pre></details>}</>
       </section>}
       <ol className="research-flow" aria-label="对照实验进度">{nodes.map(([node,label],index)=><li key={node} className={index===currentStep?'current':index<currentStep?'done':''}><i>{index+1}</i>{label}</li>)}</ol>
       <div className="research-stats"><div><span>本批配置</span><strong>{selected.members.length}<small>组</small></strong></div><div><span>已采集结果</span><strong>{selected.observations.length}<small>/ {selected.members.length}</small></strong></div><div><span>当前阶段</span><strong className="research-stage-text">{selected.paused?'跟踪已暂停':stageNames[selected.stage]}</strong></div></div>
       {selected.error&&<div className="intel-error">{userFacingError(selected.error,'本批对照实验处理遇到问题，请检查配置或稍后重试。')}<p>已有入队记录保留。处理原因后检查进度，系统会核对运行编号再继续。</p></div>}
-      {selected.warnings.length>0&&<details className="research-review-notes"><summary>本批需要核对 · {selected.warnings.length} 项</summary><ul>{selected.warnings.map((w,i)=><li key={i}>{w}</li>)}</ul></details>}
+      {(reviewWarnings.length>0||(canRecheckOutput&&!!selected.error))&&<details className="research-review-notes" open={outputUnverified||!!selected.error||undefined}><summary>本批需要核对 · {reviewWarnings.length} 项</summary><ul>{reviewWarnings.map((w,i)=><li key={i}>{w}</li>)}</ul>{(outputUnverified||!!selected.error)&&<div className="research-output-recheck">{canRecheckOutput&&<button type="button" className="secondary-button" disabled={!!busy} onClick={()=>void action('output-check',async()=>{const updated=await window.labApi.research.recheckOutput(selected.id);props.notify(updated.outputIsolation?.status==='verified'?'已更新各组保存位置，可以确认运行':'仍未确认保存位置，请查看具体原因',updated.outputIsolation?.status==='verified'?'success':'error')})}><RefreshCw size={13}/>{busy==='output-check'?'正在核对保存代码…':'重新核对输出位置'}</button>}</div>}</details>}
       <div className="research-toolbar"><span>{selected.members.length} 组配置 · {selected.stage==='review'?'确认后运行':selected.stage==='waiting'?'按记录跟踪本批任务':'本批结果已汇总'}</span><div>
-        {(selected.pending.includes('review')||selected.pending.includes('queue'))&&<button className="primary-button" disabled={!!busy||selected.paused||selected.outputIsolation?.status==='unverified'} onClick={()=>void approve()}>{selected.pending.includes('queue')?'恢复已确认的提交':'确认并运行本批'}</button>}
-        {selected.pending.length>0&&!selected.pending.includes('review')&&!selected.pending.includes('queue')&&<button className="secondary-button" disabled={!!busy||selected.paused} onClick={()=>void action('refresh',async()=>{await window.labApi.research.refresh(selected.id);await reloadTasks()})}><RefreshCw size={13}/>检查进度</button>}
+        {(selected.pending.includes('review')||selected.pending.includes('queue'))&&<button className="primary-button" aria-busy={busy==='approve'} disabled={!!busy||selected.paused||selected.outputIsolation?.status==='unverified'} title={selected.outputIsolation?.status==='unverified'?'请先重新核对各组保存位置，避免结果互相覆盖':undefined} onClick={()=>void approve()}>{selected.pending.includes('queue')?'恢复已确认的提交':'确认并运行本批'}</button>}
+        {(failedCount>0||selected.retrySubmission)&&selected.stage!=='review'&&<button type="button" className="secondary-button" disabled={!!busy||selected.paused||(!selected.retrySubmission&&batchActive)} title={batchActive&&!selected.retrySubmission?'本批全部结束后可重跑失败组':undefined} onClick={()=>void approve(true)}><RefreshCw size={13}/>{selected.retrySubmission?'继续提交失败组':`重跑失败组（${failedCount}）`}</button>}
+        {selected.pending.length>0&&!selected.pending.includes('retry')&&!selected.pending.includes('review')&&!selected.pending.includes('queue')&&<button className="secondary-button" disabled={!!busy||selected.paused} onClick={()=>void action('refresh',async()=>{await window.labApi.research.refresh(selected.id);await reloadTasks()})}><RefreshCw size={13}/>检查进度</button>}
         {selected.paused&&<button className="secondary-button" disabled={!!busy} onClick={()=>void action('resume',async()=>{await window.labApi.research.setPaused(selected.id,false)})}><Play size={13}/>恢复跟踪</button>}
       </div></div>
       <div className="research-table-wrap"><table className="research-table"><thead><tr><th>对照配置</th><th>启动命令与修改</th><th>运行</th></tr></thead><tbody>{selected.members.map((member,i)=>{
         const linked=props.tasks.find(t=>t.id===member.taskId),run=linked?.runs.find(r=>r.id===member.runId),observation=selected.observations.find(o=>o.runId===member.runId)
-        return <tr key={member.key}><td><strong>{selected.design&&i===0?'基线':`对照 ${selected.design?i:i+1}`}</strong>{Object.entries(member.parameters).map(([flag,value])=><span key={flag}>{flag} = {value}</span>)}</td><td><code>{member.command}</code>{member.outputDirectory&&<span className="research-member-output">输出：{member.outputDirectory}</span>}<details><summary>查看完整命令与修改</summary><code>{member.command}</code>{member.changes.map((change,j)=><p key={j}>{change}</p>)}</details></td><td><span>{run?runNames[run.status]??run.status:member.runId?'关联记录不可用':'尚未提交'}</span>{linked&&run&&<button className="research-text-button" onClick={()=>props.onOpenTask(linked,run.id)}>打开运行</button>}{observation?.diagnosisId&&props.onOpenDiagnosis&&<button className="research-text-button" onClick={()=>props.onOpenDiagnosis?.(observation.diagnosisId!)}>查看故障诊断</button>}</td></tr>
+        return <tr key={member.key}><td><strong>{selected.design&&i===0?'基线':`对照 ${selected.design?i:i+1}`}</strong>{Object.entries(member.parameters).map(([flag,value])=><span key={flag}>{flag} = {value}</span>)}</td><td><code>{member.command}</code>{member.outputDirectory&&<span className="research-member-output">保存目录：{member.outputDirectory}</span>}<details><summary>查看完整命令与修改</summary><code>{member.command}</code>{member.changes.map((change,j)=><p key={j}>{change}</p>)}</details></td><td><span>{run?runStatusLabel(run,runNames[run.status]??run.status):member.runId?'关联记录不可用':'尚未提交'}</span>{linked&&run&&<button className="research-text-button" onClick={()=>props.onOpenTask(linked,run.id)}>打开运行</button>}{observation?.diagnosisId&&props.onOpenDiagnosis&&<button className="research-text-button" onClick={()=>props.onOpenDiagnosis?.(observation.diagnosisId!)}>查看故障诊断</button>}</td></tr>
       })}</tbody></table></div>
       {selected.stage==='analysis'&&!selected.pending.length&&<>
       <section className="research-result-source" aria-labelledby="research-result-source-title">
@@ -238,7 +277,15 @@ export function ResearchPage(props:Props):React.JSX.Element {
     {historyOpen&&<div className="app-modal-overlay" onMouseDown={event=>{if(event.target===event.currentTarget)setHistoryOpen(false)}} onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();setHistoryOpen(false)}}}><section className="app-modal research-history-dialog" role="dialog" aria-modal="true" aria-labelledby="research-history-title"><header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><History size={18}/></div><div><h2 id="research-history-title">对照实验记录</h2></div></div><button type="button" className="icon-button" autoFocus aria-label="关闭对照实验记录" onClick={()=>setHistoryOpen(false)}><X size={16}/></button></header>
 <div className="research-history">{history.length?history.map(c=><article className="research-history-entry" key={c.id}><button type="button" className={`research-history-open ${selectedId===c.id?'active':''}`} disabled={!!busy||!!deletingId} onClick={()=>{setSelectedId(c.id);setHistoryOpen(false)}}><strong>{c.objective}</strong><span>{c.error?'需要处理':c.paused?'跟踪已暂停':stageNames[c.stage]} · {c.members.length} 项配置{c.sourceRunNumber!==undefined?` · 基于第 ${c.sourceRunNumber} 次运行`:''}</span></button><button type="button" className="icon-button" aria-label={`删除对照记录：${c.objective}`} title={c.busy?'正在处理，请稍后再删除':'删除对照记录'} disabled={!!busy||!!deletingId||c.busy} onClick={()=>void deleteRecord(c)}>{deletingId===c.id?<LoaderCircle size={15} className="spin"/>:<Trash2 size={15}/>}</button></article>):<p className="research-note">暂无对照实验记录。</p>}</div>
     </section></div>}
-  </section>
+  {runTarget&&selected&&<div className="app-modal-overlay" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget&&!busy)setRunTarget(null)}}><section className="app-modal research-run-dialog" role="dialog" aria-modal="true" aria-labelledby="research-run-title">
+      <header className="dialog-header app-modal-header"><div className="dialog-title-wrap"><span className="research-run-icon">{retryMode?<RefreshCw size={19}/>:<Play size={19}/>}</span><div><h2 id="research-run-title">{retryMode?'重跑失败组':'运行对照实验'}</h2><div className="research-run-meta"><span>{retryMode?failedCount:selected.members.length} 组{retryMode?'待重跑':'配置'}</span><span>{props.servers.find(server=>server.id===selected.baseline.serverId)?.name??'原服务器'}</span></div></div></div><button type="button" className="icon-button" aria-label="关闭运行选择" disabled={!!busy} onClick={()=>setRunTarget(null)}><X size={18}/></button></header>
+      <div className="research-run-body"><div className="research-run-notice">{retryMode?'仅重跑失败组，成功组保留。沿用原保存目录，文件按脚本逻辑写入。':'为本批各组选择运行设备，沿用已确认的命令和环境。'}</div><div className="form-grid"><RunDeviceFields compact value={runTarget} onChange={patch=>setRunTarget(current=>current?{...current,...patch}:current)} snapshot={targetSnapshot} refreshing={targetRefreshing} onRefresh={()=>setRefreshTarget(value=>value+1)} disabled={!!busy}/></div>
+      <details className="research-run-configs"><summary><span>查看{retryMode?'重跑':'本批'}配置</span><span>{retryMode?failedCount:selected.members.length} 组</span></summary><div className="research-run-config-list">{selected.members.filter(member=>!retryMode||props.tasks.find(task=>task.id===member.taskId)?.runs.find(run=>run.id===member.runId)?.status==='failed').map((member,index)=><details className="research-run-config" key={member.key}><summary><span className="research-run-config-index">{index+1}</span><span>{Object.entries(member.parameters).map(([flag,value])=>`${flag.replace(/^--/,'')}=${value}`).join(' · ')||`配置 ${index+1}`}</span></summary><div className="research-run-config-content"><pre>{deviceLaunchCommand((retryMode?props.tasks.find(task=>task.id===member.taskId)?.launchCommand:undefined)??member.command,runTarget.computeDevice??selected.baseline.computeDevice??'gpu')}</pre>{!retryMode&&member.outputDirectory&&<div className="research-run-path"><span>输出目录</span><code title={member.outputDirectory}>{member.outputDirectory}</code></div>}</div></details>)}</div></details>
+
+      {error&&<p className="intel-error" role="alert">{error}</p>}</div>
+      <footer className="dialog-footer app-modal-footer"><button type="button" className="secondary-button" disabled={!!busy} onClick={()=>setRunTarget(null)}>返回</button><button type="button" className="primary-button" aria-busy={busy==='approve'} disabled={!!busy||selected.outputIsolation?.status!=='verified'} onClick={()=>void submitBatch()}>{busy==='approve'?'正在提交…':retryMode?'确认重跑失败组':runTarget.computeDevice==='cpu'?'确认并在 CPU 运行本批':runTarget.gpuUuid||runTarget.gpuIndex!=null?'确认并在所选 GPU 运行本批':'确认加入自动队列'}</button></footer>
+    </section></div>}
+</section>
 }
 
 

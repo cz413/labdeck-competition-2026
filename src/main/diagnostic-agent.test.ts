@@ -16,6 +16,22 @@ describe('bounded evidence-driven investigation',()=>{
   expect(result.investigation.trace.map(t=>t.kind)).toEqual(['model','tool','model'])
   expect(result.findings?.[0].evidenceIds).toEqual(['check-1'])
  })
+ it('retains verified command diffs and ignores fabricated source without discarding the diagnosis',async()=>{
+  const o=options();o.context={command:'python main.py --epoch 1'}
+  const answer=final('log-1')
+  const changes=[{kind:'command',file:'启动命令',before:'python main.py --epoch 1',after:'python main.py --num_epochs 1',evidenceId:'log-1'},{kind:'file',file:'main.py',startLine:1,before:'fake',after:'new',evidenceId:'log-1'}]
+  vi.mocked(o.request).mockResolvedValue({...answer,findings:[{...answer.findings[0],changes}]})
+  const result=await investigate(o)
+  expect(result.investigation.status).toBe('completed')
+  expect(result.findings?.[0].changes).toEqual([changes[0]])
+ })
+ it('verifies a source diff after an actual file inspection',async()=>{
+  const o=options();o.tools=[{name:'read_project_file',label:'read',description:'read',arguments:{name:'main.py'}}]
+  const change={kind:'file',file:'main.py',startLine:2,before:'batch = 32',after:'batch = 16',evidenceId:'check-1'}
+  vi.mocked(o.request).mockResolvedValueOnce(inspect('read_project_file',{name:'main.py'})).mockResolvedValueOnce({...final('log-1'),findings:[{...final('log-1').findings[0],changes:[change]}]})
+  vi.mocked(o.execute).mockResolvedValue({status:'success',text:JSON.stringify({name:'main.py',content:'import torch\nbatch = 32\n'})})
+  expect((await investigate(o)).findings?.[0].changes).toEqual([change])
+ })
  it('enforces four checks and requests a final answer when the budget is exhausted',async()=>{
   const o=options();let round=0
   vi.mocked(o.request).mockImplementation(async(_system,payload)=>{

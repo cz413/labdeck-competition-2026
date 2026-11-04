@@ -14,16 +14,18 @@ vi.mock('./repository-reader',()=>({openRepositoryReadSession:vi.fn()}))
 import { openRepositoryReadSession } from './repository-reader'
 vi.mock('electron',()=>({app:{getPath:()=>globals.directory,getAppPath:()=>process.cwd(),isPackaged:false},dialog:{showSaveDialog:vi.fn()},ipcMain:{handle:vi.fn()}}))
 import { ResearchService } from './research-service'
+import { outputAnalysisPrompt } from './research-output-model'
 let tasks:ExperimentTask[],directory:string,source:ExperimentTask
 const services:ResearchService[]=[]
 const serverId=randomUUID(),requestModel=vi.fn(),diagnose=vi.fn(),save=vi.fn(),start=vi.fn(),sshExec=vi.fn()
+const outputModel=vi.fn(),preparationRepository=vi.fn()
 let store:AppStore
 function service(){
-  const s=new ResearchService(store,{requestResearchModel:requestModel,history:async()=>[],diagnose} as unknown as IntelligenceService,{connect:async()=>({client:{end(){}}}),exec:sshExec} as unknown as SshService,()=>{},()=>{},{directory,engineDirectory:resolve('artifacts/no-cangjie')});services.push(s);return s
+  const s=new ResearchService(store,{preparationRepository,requestResearchModel:(system:string,payload:unknown)=>system===outputAnalysisPrompt?outputModel(system,payload):requestModel(system,payload),history:async()=>[],diagnose} as unknown as IntelligenceService,{connect:async()=>({client:{end(){}}}),exec:sshExec} as unknown as SshService,()=>{},()=>{},{directory,engineDirectory:resolve('artifacts/no-cangjie')});services.push(s);return s
 }
 async function create(s:ResearchService,useModel=false){return s.create({taskId:source.id,objective:'比较学习率',axes:[{flag:'--lr',values:['0.001','0.0001']}],maxRuns:2,useModel})}
 beforeEach(async()=>{
-  vi.clearAllMocks();directory=await mkdtemp(join(tmpdir(),'labdeck-research-test-'));globals.directory=directory
+  vi.clearAllMocks();preparationRepository.mockReset();directory=await mkdtemp(join(tmpdir(),'labdeck-research-test-'));globals.directory=directory
   const stamp=new Date().toISOString()
   source={id:randomUUID(),title:'基准训练',project:'vision',objective:'baseline',tags:[],priority:'normal',status:'planned',serverId,accessRouteId:'direct',codePath:'/workspace/vision',dataPath:'/datasets/vision',launchCommand:'python train.py --lr 0.01 --batch-size 16',launchMode:'command',scriptPath:'',artifactPath:'',resultSummary:'',notes:'base notes',archived:false,createdAt:stamp,updatedAt:stamp,runs:[]};tasks=[source]
   save.mockImplementation(async(draft:ExperimentTaskDraft)=>{const task={...draft,id:randomUUID(),createdAt:stamp,updatedAt:stamp,archived:false,runs:[]} as ExperimentTask;tasks.push(task);return structuredClone(task)})
@@ -34,10 +36,281 @@ beforeEach(async()=>{
     const snapshot={input:{source:'remote' as const,path:source.codePath,serverId},files:[{path:'train.py',sizeBytes:300},{path:'README.md',sizeBytes:100}],excerpts:[] as import('../shared/repository-guide').RepositoryExcerpt[],warnings:[],collectedAt:stamp}
     return {snapshot,maxChars:180000,read:async(path:string)=>{const excerpt={path,startLine:1,truncated:false,text:path==='train.py'?"p.add_argument('--lr', type=float, default=0.01)\np.add_argument('--batch-size', type=int, default=16)\np.add_argument('--output_dir', default='outputs')\nos.makedirs(args.output_dir, exist_ok=True)\nf=open(os.path.join(args.output_dir, 'log.txt'), 'w')":'训练示例：python train.py --lr 0.01'};snapshot.excerpts.push(excerpt);return excerpt},find:()=>[],list:()=>({directories:[],files:[]}),close:vi.fn()}
   })
+  // A model response fixture, deliberately independent of production source inference.
+  outputModel.mockImplementation(async(_system,payload)=>{
+    const file=payload.files.find((file:{path:string})=>file.path==='train.py')
+    if(!file?.text.includes("p.add_argument('--output_dir'"))return {status:'unverified',reason:'AI 未能确认保存位置'}
+    const source={path:file.path,startLine:file.startLine,quote:file.text}
+    return {status:'verified',reason:'保存参数传递到实际写入',targets:[{flag:'--output_dir',template:'{value}',kind:'directory',originalValue:'outputs',source,evidence:[source]}]}
+  })
   requestModel.mockRejectedValue(new Error('模型离线'));diagnose.mockResolvedValue({id:randomUUID()})
 })
 afterEach(async()=>{services.forEach(s=>s.stop());services.length=0;const target=resolve(directory),parent=resolve(tmpdir());if(!target.startsWith(parent+'\\')&&!target.startsWith(parent+'/'))throw new Error('Unsafe temp path');await rm(target,{recursive:true,force:true})})
 describe('persistent experiment research graph',()=>{
+  function cachedProject(){
+    source.preparationId=randomUUID()
+    const files=[{path:'vision/train.py',startLine:1,text:"p.add_argument('--destination', default='out')\nwriter.save(args.destination)",truncated:false},{path:'rqvae/main.py',startLine:1,text:'print("sibling module")',truncated:false}]
+    const snapshot={input:{source:'remote' as const,path:'/workspace',serverId,accessRouteId:'direct'},files:files.map(file=>({path:file.path,sizeBytes:file.text.length})),excerpts:files,warnings:[],collectedAt:new Date().toISOString()}
+    preparationRepository.mockResolvedValue(snapshot)
+    const citation={path:files[0].path,startLine:1,quote:files[0].text}
+    outputModel.mockResolvedValue({status:'verified',reason:'从准备源码确认保存参数',targets:[{flag:'--destination',kind:'directory',originalValue:'out',template:'{value}',source:citation,evidence:[citation]}]})
+    return snapshot
+  }
+  it('reuses the complete preparation snapshot across working-directory changes and still calls AI',async()=>{
+    const snapshot=cachedProject(),s=service(),batch=await create(s)
+    expect(preparationRepository).toHaveBeenCalledWith(source.preparationId)
+    expect(openRepositoryReadSession).not.toHaveBeenCalled()
+    expect(outputModel).toHaveBeenCalledTimes(2)
+    expect(outputModel.mock.calls[0][1]).toMatchObject({workingDirectory:'/workspace/vision',repository:{root:'/workspace',reused:true},files:snapshot.excerpts})
+    expect(batch.sourcePreparationId).toBe(source.preparationId)
+    await s.recheckOutput(batch.id)
+    expect(outputModel).toHaveBeenCalledTimes(4)
+    expect(openRepositoryReadSession).not.toHaveBeenCalled()
+  })
+  it('supplements missing files at the preparation project root without rereading cached files',async()=>{
+    const snapshot=cachedProject();snapshot.files.push({path:'writer.py',sizeBytes:30})
+    const read=vi.fn(async(path:string)=>({path,startLine:1,text:'def save(): pass',truncated:false}))
+    vi.mocked(openRepositoryReadSession).mockResolvedValueOnce({snapshot:{...snapshot,excerpts:[]},maxChars:180000,read,find:()=>[],list:()=>({directories:[],files:[]}),close:vi.fn()})
+    await create(service())
+    expect(vi.mocked(openRepositoryReadSession).mock.calls[0][2].path).toBe('/workspace')
+    expect(read.mock.calls.map(call=>call[0])).toEqual(['writer.py'])
+    expect(outputModel.mock.calls[0][1].files.map((file:{path:string})=>file.path)).toEqual(['vision/train.py','rqvae/main.py','writer.py'])
+  })
+  it('rejects preparation context from another server and rereads the current baseline',async()=>{
+    const snapshot=cachedProject();snapshot.input.serverId=randomUUID()
+    await create(service())
+    expect(vi.mocked(openRepositoryReadSession).mock.calls[0][2].path).toBe(source.codePath)
+    expect(outputModel.mock.calls[0][1].files.some((file:{path:string})=>file.path==='rqvae/main.py')).toBe(false)
+  })
+  it('retains cached sources for AI when supplementation is unavailable',async()=>{
+    const snapshot=cachedProject();snapshot.files.push({path:'writer.py',sizeBytes:30})
+    vi.mocked(openRepositoryReadSession).mockRejectedValueOnce(new Error('offline'))
+    const batch=await create(service())
+    expect(outputModel).toHaveBeenCalledTimes(2)
+    expect(outputModel.mock.calls[0][1].warnings.join(' ')).toContain('未能连接服务器补读')
+    expect(batch.outputIsolation?.engine).toBe('model')
+  })
+  it('binds every comparison run to the explicitly selected GPU and persists the choice',async()=>{
+    const s=service(),batch=await create(s)
+    const target={computeDevice:'gpu' as const,gpuUuid:'gpu-selected',gpuIndex:2,gpuNameSnapshot:'GPU 2',minimumFreeVramGiB:8,maximumGpuUtilizationPercent:30}
+    const queued=await s.approve(batch.id,true,target)
+    expect(queued.runTarget).toEqual(target)
+    expect(start).toHaveBeenCalledTimes(2)
+    for(const call of start.mock.calls)expect(call[1]).toMatchObject(target)
+    expect((await service().list())[0].runTarget).toEqual(target)
+  })
+  it('starts the whole batch on CPU and synchronizes existing device arguments',async()=>{
+    source.launchCommand+=' --device=cuda'
+    const s=service(),batch=await create(s)
+    const queued=await s.approve(batch.id,true,{computeDevice:'cpu',gpuUuid:'stale',gpuIndex:1,gpuNameSnapshot:'stale',minimumFreeVramGiB:8,maximumGpuUtilizationPercent:30})
+    for(const call of start.mock.calls){
+      expect(call[1]).toMatchObject({computeDevice:'cpu',gpuUuid:null,gpuIndex:null,minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null})
+      expect(call[1].launchCommand).toContain('--device=cpu')
+    }
+    expect(queued.members.every(member=>member.command.includes('--device=cpu'))).toBe(true)
+    expect(source.launchCommand).toContain('--device=cuda')
+  })
+  it('preserves automatic GPU conditions when no particular card is chosen',async()=>{
+    const s=service(),batch=await create(s)
+    await s.approve(batch.id,true,{computeDevice:'gpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:10,maximumGpuUtilizationPercent:50})
+    for(const call of start.mock.calls)expect(call[1]).toMatchObject({gpuUuid:null,gpuIndex:null,minimumFreeVramGiB:10,maximumGpuUtilizationPercent:50})
+  })
+  it('resumes a partial batch with the original selected GPU and rejects changing its destination',async()=>{
+    const s=service(),batch=await create(s),implementation=start.getMockImplementation()!
+    const target={computeDevice:'gpu' as const,gpuUuid:'gpu-picked',gpuIndex:1,gpuNameSnapshot:'GPU',minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null}
+    start.mockImplementationOnce(implementation).mockRejectedValueOnce(new Error('partial failure'))
+    await expect(s.approve(batch.id,true,target)).rejects.toThrow('partial failure')
+    const reopened=service()
+    await expect(reopened.approve(batch.id,true,{...target,gpuIndex:2})).rejects.toThrow('不能更换')
+    await reopened.approve(batch.id,true)
+    expect(tasks).toHaveLength(3)
+    expect(tasks.slice(1).every(task=>task.runs[0].gpuIndex===1)).toBe(true)
+  })
+  it('does not submit invalid GPU conditions',async()=>{
+    const s=service(),batch=await create(s)
+    await expect(s.approve(batch.id,true,{computeDevice:'gpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:-1,maximumGpuUtilizationPercent:150})).rejects.toThrow()
+    expect(start).not.toHaveBeenCalled()
+  })
+  async function finishedBatch(s:ResearchService){
+    const batch=await create(s);await s.approve(batch.id,true)
+    const success=tasks.find(task=>task.id===batch.members[0]?.taskId)??tasks[1],failure=tasks[2]
+    success.status='completed';success.runs[0].status='completed'
+    failure.status='failed';failure.runs[0].status='failed'
+    const ready=await s.refresh(batch.id)
+    return {ready,success,failure}
+  }
+  it('retries only failed members, links the new run, clears stale results, and keeps successful evidence',async()=>{
+    const s=service(),{ready,success,failure}=await finishedBatch(s)
+    const oldRun=failure.runs[0].id,oldDirectory=ready.members[1].outputDirectory
+    expect(ready.analysis).toBeDefined()
+    const result=await s.retryFailed(ready.id,true,{computeDevice:'cpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null})
+    expect(start).toHaveBeenCalledTimes(3)
+    expect(success.runs).toHaveLength(1)
+    expect(failure.runs).toHaveLength(2)
+    expect(result.members[1].runId).toBe(failure.runs[1].id)
+    expect(result.members[1].runId).not.toBe(oldRun)
+    expect(result.members[0].runId).toBe(success.runs[0].id)
+    expect(result.analysis).toBeUndefined()
+    expect(result.observations.map(item=>item.runId)).toEqual([success.runs[0].id])
+    expect(result.members[1].outputDirectory).toBe(oldDirectory)
+    expect(failure.runs[1]).toMatchObject({computeDevice:'cpu',artifactPath:result.members[1].outputDirectory})
+    expect(result.pending).toEqual(['observe'])
+    expect((await service().list())[0].members[1].runId).toBe(failure.runs[1].id)
+    failure.runs[1].status='completed';failure.status='completed'
+    const completed=await s.refresh(result.id)
+    expect(completed.stage).toBe('analysis')
+    expect(completed.observations.map(item=>item.runId)).not.toContain(oldRun)
+    expect(completed.observations.map(item=>item.runId)).toContain(failure.runs[1].id)
+  })
+  it('rejects retries without confirmation, while active, or with no failed members',async()=>{
+    const s=service(),batch=await create(s);await s.approve(batch.id,true)
+    await expect(s.retryFailed(batch.id,false)).rejects.toThrow('确认')
+    await expect(s.retryFailed(batch.id,true)).rejects.toThrow('全部结束')
+    for(const task of tasks.slice(1)){task.runs[0].status='completed';task.status='completed'}
+    await expect(s.retryFailed(batch.id,true)).rejects.toThrow('没有')
+    expect(start).toHaveBeenCalledTimes(2)
+  })
+  it('recovers interrupted retry submission without duplicating an already created run',async()=>{
+    const s=service(),{ready,failure}=await finishedBatch(s)
+    const implementation=start.getMockImplementation()!
+    start.mockImplementationOnce(async(...args)=>{await implementation(...args);throw new Error('saved before interruption')})
+    await expect(s.retryFailed(ready.id,true)).rejects.toThrow('interruption')
+    expect(failure.runs).toHaveLength(2)
+    const reopened=service(),pending=(await reopened.list())[0]
+    expect(pending.retrySubmission).toBeDefined()
+    expect(pending.pending).toEqual(['retry'])
+    await reopened.refresh(ready.id)
+    const restored=await reopened.retryFailed(ready.id,true)
+    expect(failure.runs).toHaveLength(2)
+    expect(restored.retrySubmission).toBeUndefined()
+    expect(restored.members[1].runId).toBe(failure.runs[1].id)
+    expect(restored.error).toBeUndefined()
+  })
+  it('carries per-group result file selection to the replacement run and its original directory',async()=>{
+    const s=service(),{ready,failure}=await finishedBatch(s),oldId=failure.runs[0].id,oldDirectory=ready.members[1].outputDirectory!
+    await s.recollect(ready.id,{metricsFile:'',artifacts:[],resultFiles:['log.txt'],runResultFiles:{[oldId]:[oldDirectory+'/metrics.csv']}})
+    const result=await s.retryFailed(ready.id,true)
+    expect(result.resultConfig?.runResultFiles?.[oldId]).toBeUndefined()
+    expect(result.resultConfig?.runResultFiles?.[failure.runs[1].id]).toEqual([result.members[1].outputDirectory+'/metrics.csv'])
+  })
+  it('recovers a multi-group retry after the second submission fails and keeps newer results cached correctly',async()=>{
+    const s=service(),batch=await create(s);await s.approve(batch.id,true)
+    for(const task of tasks.slice(1)){task.status='failed';task.runs[0].status='failed'}
+    await s.refresh(batch.id)
+    const implementation=start.getMockImplementation()!
+    start.mockImplementationOnce(implementation).mockRejectedValueOnce(new Error('second retry failed'))
+    await expect(s.retryFailed(batch.id,true)).rejects.toThrow('second retry failed')
+    expect(tasks[1].runs).toHaveLength(2);expect(tasks[2].runs).toHaveLength(1)
+    const reopened=service(),restored=await reopened.retryFailed(batch.id,true)
+    expect(tasks[1].runs).toHaveLength(2);expect(tasks[2].runs).toHaveLength(2)
+    expect(restored.members.map(member=>member.runId)).toEqual(tasks.slice(1).map(task=>task.runs[1].id))
+  })
+  it('uses fixes to the failed task environment but rejects changing the comparison parameter',async()=>{
+    const s=service(),{ready,failure}=await finishedBatch(s)
+    failure.launchCommand='python train.py --lr 0.9 --batch-size 16'
+    await expect(s.retryFailed(ready.id,true)).rejects.toThrow('对比参数')
+    expect(failure.runs).toHaveLength(1)
+    failure.launchCommand=ready.members[1].command
+    failure.condaEnvironment={manager:'conda',environmentName:'fixed-env'}
+    await s.retryFailed(ready.id,true)
+    expect(failure.runs[1].condaEnvironment?.environmentName).toBe('fixed-env')
+  })
+  it('corrects existing completed-batch output metadata without changing commands or launching runs',async()=>{
+    source.launchCommand='python train.py --dataset=ml-1m --train_dir=default --lr 0.01'
+    const factory=vi.mocked(openRepositoryReadSession).getMockImplementation()!
+    const text="folder = args.dataset + '_' + args.train_dir\nf = open(folder + '/log.txt', 'w')"
+    vi.mocked(openRepositoryReadSession).mockImplementation(async(...args)=>{const session=await factory(...args);session.read=async path=>{const excerpt={path,startLine:1,truncated:false,text};session.snapshot.excerpts.push(excerpt);return excerpt};return session})
+    const citation={path:'train.py',startLine:1,quote:text}
+    const answer=(template:string)=>({status:'verified',reason:'保存目录含数据集前缀',targets:[{flag:'--train_dir',kind:'directory',template,originalValue:'default',source:citation,evidence:[citation]}]})
+    outputModel.mockResolvedValue(answer('{value}'))
+    const s=service(),batch=await create(s);await s.approve(batch.id,true)
+    for(const task of tasks.slice(1)){task.status='completed';task.runs[0].status='completed'}
+    await s.refresh(batch.id)
+    const commands=tasks.slice(1).map(task=>task.runs[0].launchCommand)
+    outputModel.mockResolvedValue(answer('ml-1m_{value}'))
+    const corrected=await s.recheckOutput(batch.id)
+    expect(corrected.members[0].outputDirectory).toBe('/workspace/vision/ml-1m_labdecka_g01')
+    expect(tasks.slice(1).map(task=>task.runs[0].launchCommand)).toEqual(commands)
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(corrected.observations).toEqual([])
+    expect(corrected.analysis).toBeUndefined()
+    expect(corrected.pending).toEqual([])
+    expect((await service().list())[0].members[0].outputDirectory).toBe(corrected.members[0].outputDirectory)
+  })
+  it('uses model source interpretation with nonstandard output flags and preserves source context',async()=>{
+    const factory=vi.mocked(openRepositoryReadSession).getMockImplementation()!
+    const text="parser.add_argument('--destination', default='results')\ncustom_writer(settings.destination)"
+    vi.mocked(openRepositoryReadSession).mockImplementationOnce(async(...args)=>{const session=await factory(...args);session.read=async path=>{const excerpt={path,startLine:1,truncated:false,text};session.snapshot.excerpts.push(excerpt);return excerpt};return session})
+    outputModel.mockResolvedValue({status:'verified',reason:'destination 传给结果写入模块',targets:[{flag:'--destination',kind:'directory',originalValue:'results',template:'{value}',source:{path:'train.py',startLine:1,quote:text},evidence:[{path:'train.py',startLine:1,quote:text}]}]})
+    const batch=await create(service())
+    expect(outputModel).toHaveBeenCalledTimes(2)
+    expect(outputModel.mock.calls[0][1].files[0].text).toBe(text)
+    expect(outputModel.mock.calls[0][1].files.some((file:{path:string})=>file.path==='README.md')).toBe(true)
+    expect(batch.outputIsolation?.engine).toBe('model')
+    expect(batch.outputIsolation?.flag).toBe('--destination')
+    expect(batch.members.every(member=>member.command.includes('--destination'))).toBe(true)
+  })
+  it('keeps output verification blocked if the model is unavailable',async()=>{
+    outputModel.mockRejectedValueOnce(new Error('offline'))
+    const s=service(),batch=await create(s)
+    expect(batch.outputIsolation?.status).toBe('unverified')
+    expect(batch.outputIsolation?.reason).toContain('模型连接')
+    await expect(s.approve(batch.id,true)).rejects.toThrow('模型连接')
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('requires AI rechecking for legacy verified review plans',async()=>{
+    const s=service(),batch=await create(s)
+    const graph=(s as unknown as {graph:{getState:(config:unknown)=>Promise<{values:{campaign:import('../shared/research').ResearchCampaign};next:string[]}>}}).graph
+    const original=graph.getState.bind(graph)
+    const spy=vi.spyOn(graph,'getState').mockImplementation(async config=>{const state=await original(config);const copy=structuredClone(state);delete copy.values.campaign.outputIsolation?.engine;return copy})
+    const legacy=(await s.list())[0]
+    expect(legacy.outputIsolation?.status).toBe('unverified')
+    await expect(s.approve(batch.id,true)).rejects.toThrow('AI')
+    expect(start).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+  it('recovers a failed output update, removes stale warnings and restores approval before queueing',async()=>{
+    outputModel.mockResolvedValueOnce({status:'unverified',reason:'旧保存位置引用失败'})
+    const s=service(),batch=await create(s)
+    const bridge=(s as unknown as {bridge:{expand:(...args:unknown[])=>Promise<unknown>}}).bridge
+    vi.spyOn(bridge,'expand').mockRejectedValueOnce(new Error('simulated expansion failure'))
+    await expect(s.recheckOutput(batch.id)).rejects.toThrow('expansion failure')
+    expect((await s.list())[0].error).toBeTruthy()
+    const restored=await s.recheckOutput(batch.id)
+    expect(restored.error).toBeUndefined()
+    expect(restored.pending).toEqual(['review'])
+    expect(restored.warnings).not.toContain('旧保存位置引用失败')
+    expect(restored.members.every(member=>member.command.includes('--output_dir'))).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
+    const reopened=(await service().list())[0]
+    expect(reopened.pending).toEqual(['review'])
+    expect(reopened.error).toBeUndefined()
+    await s.approve(batch.id,true)
+    expect(start).toHaveBeenCalledTimes(2)
+  })
+  it('rechecks a blocked draft in place and can approve it without recreating the campaign',async()=>{
+    const factory=vi.mocked(openRepositoryReadSession).getMockImplementation()!
+    vi.mocked(openRepositoryReadSession).mockImplementationOnce(async(...args)=>{
+      const session=await factory(...args),read=session.read
+      session.read=async path=>{const excerpt=await read(path);excerpt.text='print(1)';return excerpt}
+      return session
+    })
+    const s=service(),blocked=await create(s)
+    expect(blocked.outputIsolation?.status).toBe('unverified')
+    await expect(s.approve(blocked.id,true)).rejects.toThrow()
+    const calls=outputModel.mock.calls.length
+    const checked=await s.recheckOutput(blocked.id)
+    expect(outputModel).toHaveBeenCalledTimes(calls+2)
+    expect(checked.id).toBe(blocked.id)
+    expect(checked.outputIsolation?.status).toBe('verified')
+    expect(checked.members).toHaveLength(2)
+    await s.approve(checked.id,true)
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(tasks[1].outputDirectories).toEqual(checked.members[0].outputDirectories)
+    await expect(s.recheckOutput(checked.id)).rejects.toThrow('结束')
+  })
   it('persists and queues every combination with multi-parameter design evidence',async()=>{
     const s=service()
     const axes=[{flag:'--lr',values:['0.01','0.001']},{flag:'--batch-size',values:['16','32']}]
@@ -239,7 +512,7 @@ describe('persistent experiment research graph',()=>{
     vi.mocked(openRepositoryReadSession).mockImplementation(async(...args)=>{const session=await implementation(...args);session.read=async path=>{const excerpt={path,text:'print("training")',startLine:1,truncated:false};session.snapshot.excerpts.push(excerpt);return excerpt};return session})
     const s=service(),batch=await create(s)
     expect(batch.outputIsolation?.status).toBe('unverified')
-    await expect(s.approve(batch.id,true)).rejects.toThrow('独立输出目录')
+    await expect(s.approve(batch.id,true)).rejects.toThrow('保存位置')
     expect(save).not.toHaveBeenCalled();expect(start).not.toHaveBeenCalled()
   })
   it('deletes the entire batch including recovered children but preserves its source and remote files',async()=>{

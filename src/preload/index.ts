@@ -26,8 +26,10 @@ const api: AppApi = {
     engine: () => ipcRenderer.invoke('research:engine'),
     suggest: (id, objective, max, runId) => ipcRenderer.invoke('research:suggest', id, objective, max, runId),
     create: input => ipcRenderer.invoke('research:create', input),
-    approve: (id, confirmed) => ipcRenderer.invoke('research:approve', id, confirmed),
+    retryFailed: (id, confirmed, target) => ipcRenderer.invoke('research:retryFailed',id,confirmed,target),
+    approve: (id, confirmed, target) => ipcRenderer.invoke('research:approve', id, confirmed, target),
     refresh: id => ipcRenderer.invoke('research:refresh', id),
+    recheckOutput: id => ipcRenderer.invoke('research:recheckOutput', id),
     analyze: id => ipcRenderer.invoke('research:analyze', id),
     recollect: (id, config) => ipcRenderer.invoke('research:recollect', id, config),
     setPaused: (id, paused) => ipcRenderer.invoke('research:paused', id, paused),
@@ -193,8 +195,8 @@ const api: AppApi = {
       return () => ipcRenderer.removeListener('experiments:changed', handler)
     },
     setArchived: (taskId: string, archived: boolean) => ipcRenderer.invoke('experiments:setArchived', taskId, archived),
-    listCondaEnvironments: (serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string) =>
-      ipcRenderer.invoke('experiments:listCondaEnvironments', serverId, accessRouteId, manager, managerPath),
+    listCondaEnvironments: (serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string, forceRefresh?: boolean) =>
+      ipcRenderer.invoke('experiments:listCondaEnvironments', serverId, accessRouteId, manager, managerPath, forceRefresh),
     checkCondaEnvironment: (serverId: string, accessRouteId: string, config: CondaEnvironmentConfig) =>
       ipcRenderer.invoke('experiments:checkCondaEnvironment', serverId, accessRouteId, config),
     getCondaEnvironmentCommand: (config: CondaEnvironmentConfig, updateExisting: boolean) =>

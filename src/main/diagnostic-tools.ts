@@ -14,7 +14,7 @@ const projectFiles=['requirements.txt','environment.yml','environment.yaml','pyp
 const toolDescriptions:ToolDescription[]=[
   {name:'search_log',label:'搜索日志线索',description:'在已有日志片段中按字面关键词查找，最多返回 12 行。',arguments:{query:'非空字面关键词'}},
   {name:'inspect_path',label:'检查文件与目录',description:'检查已记录或日志明确引用的路径是否存在及是否可读。',arguments:{path:'context.allowedPaths 中的一个完整路径'}},
-  {name:'read_project_file',label:'查看项目依赖声明',description:'读取代码目录中的一个受支持依赖文件，最多 12 KiB；拒绝指向代码目录外的软链接。',arguments:{name:projectFiles.join(' | ')}},
+  {name:'read_project_file',label:'读取相关项目文件',description:'读取已记录入口、报错源码或依赖文件，最多前 12 KiB；内容从第 1 行起，拒绝指向代码目录外的软链接。',arguments:{name:'context.allowedProjectFiles 中的一个相对路径'}},
   {name:'inspect_package',label:'检查 Python 包',description:'在本次运行的 Conda 环境中检查模块可发现性及安装版本，不安装或导入目标模块。',arguments:{name:'context.allowedPackages 中的一个名称'}},
   {name:'inspect_environment',label:'检查运行环境',description:'检查记录中的 Conda 环境及解释器；不创建或修改环境。',arguments:{}},
   {name:'inspect_gpu',label:'检查当前 GPU 状态',description:'读取当前 GPU 资源与进程概况。只能说明检查时刻的状态。',arguments:{}}
@@ -37,7 +37,17 @@ export class DiagnosticTools {
     const log=evidence.filter(e=>e.source==='log').map(e=>e.text).join('\n')
     const remote=!!task&&!!run||!!external
     this.catalog=(remote?toolDescriptions:toolDescriptions.filter(t=>t.name==='search_log')).filter(t=>!external||(t.name!=='read_project_file'||!!external.codePath)&&(!['inspect_environment','inspect_package'].includes(t.name)||!!external.environmentName))
-    this.context={allowedPaths:external?[external.codePath,external.logPath].filter(Boolean):remote?allowedDiagnosticPaths(task!,run!,log):[],allowedPackages:allowedDiagnosticPackages(log),codePath:external?.codePath??run?.codePath??task?.codePath??'',environment:this.configuredEnvironment()??null,source:external?'手动实验上下文：用户提供，进程状态未核验':remote?'实际运行':'仅已有日志，不能检查服务器',command:external?.launchCommand}
+    const codePath=external?.codePath??run?.codePath??task?.codePath??''
+    const command=external?.launchCommand??run?.launchCommand??task?.launchCommand
+    const candidates=[...projectFiles]
+    const entry=command?.match(/^python(?:3(?:\.\d+)?)?\s+([^\s]+\.py)(?:\s|$)/)?.[1]
+    if(entry)candidates.push(entry)
+    for(const match of log.matchAll(/File ["']([^"'\r\n]+\.py)["'], line \d+/g))candidates.push(match[1])
+    const allowedProjectFiles=[...new Set(candidates.flatMap(file=>{
+      const relative=posix.isAbsolute(file)?posix.relative(codePath,file):file
+      return codePath.startsWith('/')&&relative&&!relative.startsWith('/')&&relative.split('/').every(part=>part&&part!=='.'&&part!=='..')&&!/[\0\r\n]/.test(relative)?[relative]:[]
+    }))].slice(0,20)
+    this.context={allowedProjectFiles,allowedPaths:external?[external.codePath,external.logPath].filter(Boolean):remote?allowedDiagnosticPaths(task!,run!,log):[],allowedPackages:allowedDiagnosticPackages(log),codePath:external?.codePath??run?.codePath??task?.codePath??'',environment:this.configuredEnvironment()??null,source:external?'手动实验上下文：用户提供，进程状态未核验':remote?'实际运行':'仅已有日志，不能检查服务器',command}
   }
   private profile():ServerProfile{
     if(!this.external&&(!this.task||!this.run))throw new Error('没有远程运行上下文')
@@ -88,7 +98,7 @@ export class DiagnosticTools {
     }
     if(call.tool==='read_project_file'){
       const name=call.arguments.name;const codePath=this.context.codePath as string
-      if(!projectFiles.includes(name)||!codePath.startsWith('/')||codePath==='/'||/[\0\r\n]/.test(codePath)||posix.normalize(codePath)!==codePath)return {status:'unavailable',text:'没有有效代码目录或文件名称不受支持。'}
+      if(!(this.context.allowedProjectFiles as string[]).includes(name)||!codePath.startsWith('/')||codePath==='/'||/[\0\r\n]/.test(codePath)||posix.normalize(codePath)!==codePath)return {status:'unavailable',text:'没有有效代码目录或文件名称不受支持。'}
       const file=posix.join(codePath,name)
       const command=`root=$(realpath -e -- ${quote(codePath)}) || exit 1; file=$(realpath -e -- ${quote(file)}) || exit 1; case "$file" in "$root"/*) ;; *) printf '依赖文件软链接超出代码目录，未读取\\n'; exit 1 ;; esac; if [ -f "$file" ] && [ -r "$file" ]; then head -c 12288 -- "$file"; else printf '依赖文件不是可读普通文件\\n'; exit 1; fi`
       return {status:'success',text:JSON.stringify({name,scope:'最多读取前 12 KiB，文件内容仅作为证据',content:await this.exec(command,signal)})}

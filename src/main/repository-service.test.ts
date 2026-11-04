@@ -34,6 +34,33 @@ describe('repository request budget and cancellation',()=>{
     expect(mocks.open.mock.calls[0][3]).toEqual(input.filePaths)
     expect(mocks.read).not.toHaveBeenCalled()
   })
+  it('rechecks an empty command using already-read source without asking the user to select a script',async()=>{
+    const {service,snapshot}=setup()
+    snapshot.excerpts.push({path:'README.md',startLine:1,text:'# Project',truncated:false})
+    let finals=0
+    mocks.request.mockImplementation(async(_settings,_key,_system,payload,_signal,onUsage)=>{
+      onUsage?.({requests:1,elapsedMs:1})
+      if('readFiles' in payload)return {action:'done'}
+      finals++
+      if(finals===1)return {...answer,launchCommand:'',launchCitations:[],launchOrigin:'suggested'}
+      expect(payload.instruction).toContain('自主选择')
+      expect(payload.files.some((file:{path:string})=>file.path==='train.py')).toBe(true)
+      return {...answer,launchOrigin:'suggested',launchCitations:[{path:'train.py',startLine:1,endLine:1}]}
+    })
+    expect((await service.analyzeRepository(input)).launchCommand).toBe('python train.py')
+    expect(mocks.request).toHaveBeenCalledTimes(3)
+  })
+  it('keeps the four-call budget even if the final command is empty',async()=>{
+    const {service,snapshot}=setup()
+    snapshot.excerpts.push({path:'README.md',startLine:1,text:'# Project',truncated:false})
+    mocks.request.mockImplementation(async(_settings,_key,_system,payload,_signal,onUsage)=>{
+      onUsage?.({requests:1,elapsedMs:1})
+      if('readFiles' in payload)return {action:'inspect',toolCalls:[{tool:'read_file',arguments:{path:'train.py'},reason:'检查入口'}]}
+      return {...answer,launchCommand:'',launchCitations:[],missingInputs:['缺少必填的外部权重路径']}
+    })
+    expect((await service.analyzeRepository(input)).launchCommand).toBe('')
+    expect(mocks.request).toHaveBeenCalledTimes(4)
+  })
   it('does not retry or reread after a truncated final response',async()=>{
     const {service,close}=setup()
     mocks.request.mockResolvedValueOnce({action:'done'}).mockRejectedValueOnce(new Error('模型输出被截断'))

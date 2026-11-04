@@ -1,3 +1,4 @@
+import { preparationTaskNames } from '../shared/experiment-names'
 import type { ModelUsage } from '../shared/model-usage'
 import { sumModelUsage } from '../shared/model-usage'
 import { projectConfigurationKey } from '../shared/project-task'
@@ -8,7 +9,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { DiskCheckpointSaver } from './research-checkpointer'
-import { createExperimentPlan, planGaps, projectSignals, recommendProjectFiles, experimentDraftChanges, planLaunchCitations } from '../shared/experiment-plan'
+import { createExperimentPlan, planGaps, projectSignals, experimentDraftChanges, planLaunchCitations } from '../shared/experiment-plan'
 import { experimentTaskDraftSchema } from '../shared/schemas'
 import { redactSecrets } from '../shared/diagnosis-engine'
 import type { AgentTraceEvent, AgentTraceObserver } from '../shared/agent-trace'
@@ -22,7 +23,7 @@ const fieldSchema=z.object({source:z.enum(['file','server','suggested','user','r
 const fieldsSchema=z.record(z.string().max(40),fieldSchema)
 const draftSchema=experimentTaskDraftSchema.extend({title:z.string().max(160)})
 const modeSchema=z.enum(['train','evaluate'])
-const editSchema=z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema,deferredGaps:z.array(z.string().max(100)).max(20),conflicts:z.array(z.object({id:z.string().max(200),label:z.string().max(1000),current:z.string().max(20000),suggested:z.string().max(20000),suggestedDraft:experimentTaskDraftSchema.partial(),suggestedFields:fieldsSchema.optional(),suggestedMode:modeSchema.optional(),suggestedField:z.object({field:z.enum(['title','objective','mode','codePath','launchCommand','dataPath','environment','artifactPath']),state:fieldSchema})})).max(30),history:z.array(z.object({id:z.number(),label:z.string().max(2000),at:z.string().max(80),before:z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema})})).max(20)})
+const editSchema=z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema,deferredGaps:z.array(z.string().max(100)).max(20),conflicts:z.array(z.object({id:z.string().max(200),label:z.string().max(1000),current:z.string().max(20000),suggested:z.string().max(20000),suggestedDraft:experimentTaskDraftSchema.partial(),suggestedFields:fieldsSchema.optional(),suggestedMode:modeSchema.optional(),suggestedField:z.object({field:z.enum(['title','objective','mode','codePath','launchCommand','dataPath','environment','artifactPath','stdoutLogPath','runTitle']),state:fieldSchema})})).max(30),history:z.array(z.object({id:z.number(),label:z.string().max(2000),at:z.string().max(80),before:z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema}),after:z.object({draft:draftSchema,mode:modeSchema,fields:fieldsSchema}).optional()})).max(20)})
 const actionSchema=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('edit'),expectedRevision:z.number().int().nonnegative(),edit:editSchema,label:z.string().max(1000).optional()}),
   z.object({kind:z.literal('save'),expectedRevision:z.number().int().nonnegative()}),
@@ -82,7 +83,7 @@ export class PreparationService {
   private buildGraph(){return new StateGraph(state)
     .addNode('scan',async({flow})=>{
       const snapshot=await this.step(flow.id,'读取项目清单',flow.input.path,()=>this.ops.scan({source:'remote',...flow.input}))
-      const files=flow.input.filePaths??recommendProjectFiles(snapshot.files,flow.input.goal)
+      const files=flow.input.filePaths??snapshot.files.map(file=>file.path)
       if(!files.length)throw new Error('没有找到可分析的文本文件，请检查目录或阅读范围')
       if(files.some(path=>!snapshot.files.some(file=>file.path===path)))throw new Error('部分勾选文件已不存在，请重新选择范围')
       const signals=projectSignals(snapshot)
@@ -133,8 +134,9 @@ export class PreparationService {
         if(!saveAsNew&&flow.taskId&&!this.ops.tasks().some(task=>task.id===flow.taskId))throw new Error('关联任务已删除，可选择“另存为新任务”保留当前方案')
         const existing=this.ops.tasks().find(task=>task.preparationId===flow.id)
         if(existing&&['queued','preparing','running'].includes(existing.status))throw new Error('任务已经进入运行流程，请从任务详情新建配置')
-        const task=await this.step(flow.id,saveAsNew?'另存为新任务':'保存实验草稿','使用准备流程标识保存，重复提交会更新同一任务',()=>this.ops.save({...flow.plan!.draft,id:saveAsNew?existing?.id:flow.taskId??existing?.id},flow.id),'user')
-        next=this.touch(flow,{taskId:task.id,savedRevision:flow.revision,plan:{...flow.plan,draft:{...flow.plan.draft,id:task.id}}})
+        const namedDraft=preparationTaskNames(flow.plan.draft,flow.input.path,flow.plan.fields.title?.source==='user')
+        const task=await this.step(flow.id,saveAsNew?'另存为新任务':'保存实验草稿','使用准备流程标识保存，重复提交会更新同一任务',()=>this.ops.save({...namedDraft,id:saveAsNew?existing?.id:flow.taskId??existing?.id},flow.id),'user')
+        next=this.touch(flow,{taskId:task.id,savedRevision:flow.revision,plan:{...flow.plan,draft:{...namedDraft,id:task.id}}})
       }
       return {flow:next,action:null}
     })

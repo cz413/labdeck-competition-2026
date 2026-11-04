@@ -487,7 +487,7 @@ function registerIpc(store: AppStore): void {
   monitor.setPollingInterval(store.getSettings().pollingIntervalSeconds)
   const sftp = new SftpService(ssh)
   const vscode = new VsCodeService(store)
-  const conda = new CondaService(ssh)
+  const conda = new CondaService(ssh, join(app.getPath('userData'),'conda-environments-cache.json'))
   const intelligence = new IntelligenceService(store, ssh, monitor, conda,()=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:changed')},(id,event)=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:repository-progress',{id,...event})},id=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('intelligence:preparation-changed',id)})
   intelligenceService=intelligence
   intelligence.registerIpc(() => { experimentScheduler?.wake(); experimentsChanged() })
@@ -738,11 +738,12 @@ function registerIpc(store: AppStore): void {
     return task
   })
   ipcMain.handle('experiments:setArchived', (_event, taskId: string, archived: boolean) => store.setExperimentTaskArchived(taskId, archived))
-  ipcMain.handle('experiments:listCondaEnvironments', (_event, serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string) => {
+  ipcMain.handle('experiments:listCondaEnvironments', (_event, serverId: string, accessRouteId: string, manager: CondaManager, managerPath?: string, forceRefresh = false) => {
+    if (typeof forceRefresh !== 'boolean') throw new Error('环境刷新选项无效')
     if (!['conda', 'mamba', 'micromamba'].includes(manager)) throw new Error('Conda 管理器无效')
     if (managerPath !== undefined && (typeof managerPath !== 'string' || managerPath.length > 4096 || managerPath.includes('\0'))) throw new Error('Conda 可执行文件路径无效')
     return withRemoteConda(store, ssh, serverId, accessRouteId, (profile, secrets) =>
-      conda.listEnvironments(profile, secrets, manager, managerPath)
+      conda.listEnvironments(profile, secrets, manager, managerPath, forceRefresh)
     )
   })
   ipcMain.handle('experiments:checkCondaEnvironment', (_event, serverId: string, accessRouteId: string, rawConfig: CondaEnvironmentConfig) => {
