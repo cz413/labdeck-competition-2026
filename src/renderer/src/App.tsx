@@ -1,3 +1,5 @@
+import { runningGpuTasks } from '@shared/live-gpu-tasks'
+import { RunningGpuTasks } from './components/RunningGpuTasks'
 import { userFacingError } from '@shared/user-facing-error'
 import { ModelSettingsPanel } from './components/ModelSettingsPanel'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -21,7 +23,6 @@ import {
   HardDrive,
   LayoutDashboard,
   ListTodo,
-  MemoryStick,
   Network,
   Minus,
   Pencil,
@@ -45,7 +46,6 @@ import { ServerDialog } from './components/ServerDialog'
 import { AccessRouteSelect } from './components/AccessRouteSelect'
 import { GpuDetailPanel } from './components/GpuDetailPanel'
 import { TaskNotificationSettings } from './components/TaskNotificationSettings'
-import { formatGpuProcessMemory } from '@shared/gpu-memory'
 import { ServerTerminalWorkspace, type ServerTerminalSession, type TerminalWorkspaceSession } from './components/ServerTerminalWorkspace'
 import { TerminalDock } from './components/TerminalDock'
 import { GpuResourcePool } from './components/GpuResourcePool'
@@ -53,7 +53,6 @@ import { ConfirmDialog, type ConfirmationRequest } from './components/ConfirmDia
 import type { DiagnosisReport } from '@shared/intelligence'
 import type { ResearchView } from '@shared/research'
 import { ExperimentTaskPool } from './components/ExperimentTaskPool'
-import { ProcessLogPanel } from './components/ProcessLogPanel'
 import { ResourceWorkbench } from './components/ResourceWorkbench'
 import { SftpPanel } from './components/SftpPanel'
 import { TunnelPage, type TunnelRequest } from './components/TunnelPage'
@@ -63,14 +62,6 @@ import labDockDarkMark from '../../../resources/labdock-mark-dark.svg'
 
 type Page = 'gpus' | 'tasks' | 'servers' | 'serverDetail' | 'gpuDetail' | 'terminals' | 'files' | 'tunnels' | 'alerts' | 'settings'
 type GpuSelection = { server: ServerProfile; gpuIndex: number } | null
-
-interface UserGpuTask {
-  server: ServerProfile
-  gpuIndex: number
-  gpuName: string
-  process: GpuProcessMetric
-  processMemoryInconsistent?: boolean
-}
 
 interface Toast {
   id: number
@@ -100,14 +91,6 @@ const formatBytes = (value: number | null | undefined): string => {
   if (value >= 1024 ** 4) return `${(value / 1024 ** 4).toFixed(1)} TB`
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(0)} GB`
   return `${(value / 1024 ** 2).toFixed(0)} MB`
-}
-
-const formatTaskDuration = (seconds: number | null): string => {
-  if (seconds === null) return '—'
-  if (seconds < 60) return `${seconds} 秒`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分`
-  return `${Math.floor(seconds / 86400)} 天 ${Math.floor(seconds % 86400 / 3600)} 小时`
 }
 
 const statusLabel = (snapshot?: ServerSnapshot): string => {
@@ -317,7 +300,7 @@ export function App(): React.JSX.Element {
         document.documentElement.dataset.theme = savedSettings.theme
         setLoading(false)
       } catch (error) {
-        notify(error instanceof Error ? error.message : '应用初始化失败', 'error')
+        notify(userFacingError(error, '应用初始化失败'), 'error')
         setLoading(false)
       }
     })()
@@ -452,14 +435,7 @@ export function App(): React.JSX.Element {
     return { online, warning, gpuCount, averageGpu }
   }, [servers, snapshots])
 
-  const myTasks = useMemo<UserGpuTask[]>(() => servers.flatMap((server) => {
-    const snapshot = snapshots[server.id]
-    if (!snapshot || snapshot.cached || snapshot.status === 'offline') return []
-    const username = server.username.trim().toLowerCase()
-    return snapshot.gpus.flatMap((gpu) => gpu.processes
-      .filter((process) => process.username.trim().toLowerCase() === username)
-      .map((process) => ({ server, gpuIndex: gpu.index, gpuName: gpu.name, process, processMemoryInconsistent: gpu.processMemoryInconsistent })))
-  }), [servers, snapshots])
+  const myTasks=useMemo(()=>runningGpuTasks(servers,experimentTasks),[servers,experimentTasks])
 
   const alerts = useMemo(() => {
     return servers.flatMap((server) => {
@@ -467,7 +443,7 @@ export function App(): React.JSX.Element {
       if (!snapshot || snapshot.cached) return []
       const items: Array<{ server: ServerProfile; level: 'critical' | 'warning'; title: string; detail: string }> = []
       if (snapshot.status === 'offline') {
-        items.push({ server, level: 'critical', title: '服务器不可达', detail: snapshot.error ?? 'SSH 连接失败' })
+        items.push({ server, level: 'critical', title: '服务器不可达', detail: userFacingError(snapshot.error,'SSH 连接未成功，请检查连接配置。') })
       }
       snapshot.fileSystems.filter((fs) => fs.usagePercent >= 80).forEach((fs) => {
         items.push({ server, level: fs.usagePercent >= 90 ? 'critical' : 'warning', title: '存储空间不足', detail: `${fs.mountPoint} 已使用 ${Math.round(fs.usagePercent)}%` })
@@ -510,7 +486,7 @@ export function App(): React.JSX.Element {
       const result = await window.labApi.vscode.openRemote(server.id, accessRouteId, remotePath)
       notify(result.message)
     } catch (error) {
-      notify(error instanceof Error ? error.message : '无法打开 VS Code 远程连接', 'error')
+      notify(userFacingError(error, '无法打开 VS Code 远程连接'), 'error')
     } finally {
       setVsCodeConnectingId(null)
     }
@@ -663,7 +639,7 @@ export function App(): React.JSX.Element {
         notify(`${server.name}：${result.message}`, 'error')
       }
     } catch (error) {
-      notify(error instanceof Error ? error.message : '连接测试失败', 'error')
+      notify(userFacingError(error, '连接测试失败'), 'error')
     } finally {
       setTestingId(null)
     }
@@ -691,7 +667,7 @@ export function App(): React.JSX.Element {
       }
       notify(`已将“${source.name}”的 SSH 路径合并到“${target.name}”`)
     } catch (error) {
-      notify(error instanceof Error ? error.message : '合并连接路径失败', 'error')
+      notify(userFacingError(error, '合并连接路径失败'), 'error')
     }
   }
 
@@ -728,7 +704,7 @@ export function App(): React.JSX.Element {
       await window.labApi.settings.save({ monitoringEnabled, pollingIntervalSeconds, maxConcurrentPolls, minimizeToTray, closeBehavior, notifyOnWarning, notifyOnTaskEnd })
       notify('设置已保存')
     } catch (error) {
-      notify(error instanceof Error ? error.message : '设置保存失败', 'error')
+      notify(userFacingError(error, '设置保存失败'), 'error')
     }
   }
 
@@ -741,7 +717,7 @@ export function App(): React.JSX.Element {
     } catch (error) {
       if (changeId !== themeChangeId.current) return
       setSettings((current) => ({ ...current, theme: previousTheme }))
-      notify(error instanceof Error ? error.message : '主题保存失败，请重试', 'error')
+      notify(userFacingError(error, '主题保存失败，请重试'), 'error')
     }
   }
 
@@ -758,7 +734,7 @@ export function App(): React.JSX.Element {
       await window.labApi.settings.save({ serverOrder: nextOrder })
     } catch (error) {
       setSettings((current) => current.serverOrder === nextOrder ? { ...current, serverOrder: settings.serverOrder } : current)
-      notify(error instanceof Error ? error.message : '服务器卡片顺序保存失败', 'error')
+      notify(userFacingError(error, '服务器卡片顺序保存失败'), 'error')
     }
   }
 
@@ -779,7 +755,7 @@ export function App(): React.JSX.Element {
       if (!alreadyWatched && server) void refreshSnapshots([server], { force: true })
     } catch (error) {
       setSettings((current) => current.gpuWatches === gpuWatches ? { ...current, gpuWatches: settings.gpuWatches } : current)
-      notify(error instanceof Error ? error.message : '关注设置保存失败', 'error')
+      notify(userFacingError(error, '关注设置保存失败'), 'error')
     }
   }
 
@@ -804,7 +780,7 @@ export function App(): React.JSX.Element {
         notify(result.skipped.length ? `SSH Config 中的服务器均已导入${demoServers.length ? `，已清除 ${demoServers.length} 个演示节点` : ''}` : `未发现可导入的具体 Host${demoServers.length ? `，已清除 ${demoServers.length} 个演示节点` : ''}`, 'error')
       }
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'SSH Config 导入失败', 'error')
+      notify(userFacingError(error, 'SSH Config 导入失败'), 'error')
     } finally {
       setImportingConfig(false)
     }
@@ -832,7 +808,7 @@ export function App(): React.JSX.Element {
       const saved = await window.labApi.windowControls.resolveCloseAction(action, rememberCloseChoice)
       setSettings((current) => ({ ...current, closeBehavior: saved.closeBehavior }))
     } catch (error) {
-      notify(error instanceof Error ? error.message : '关闭操作失败', 'error')
+      notify(userFacingError(error, '关闭操作失败'), 'error')
     }
   }
 
@@ -850,7 +826,7 @@ export function App(): React.JSX.Element {
     tasks={experimentTasks} servers={servers} snapshots={snapshots}
     reports={diagnosisHistory} campaigns={researchHistory}
     onOpenTask={openTaskRun}
-    liveTasks={<MyTasksPage tasks={myTasks} accessRouteIdFor={accessRouteIdFor} active={page === 'tasks'} onOpenGpu={(server, gpuIndex) => openGpu(server, gpuIndex)} />}
+    liveTasks={<RunningGpuTasks rows={myTasks} active={page === 'tasks'} />}
     liveTaskCount={myTasks.length} vscodeConnectingId={vscodeConnectingId}
     onChanged={updateExperimentTask} notify={notify} confirm={requestConfirmation}
     onTrusted={async () => { await loadServers() }}
@@ -977,36 +953,6 @@ function ServerTable({ servers, snapshots, ...actions }: { servers: ServerProfil
     return <tr key={server.id}><td><button className="wb-device-link" onClick={() => actions.onOverview(server)}><strong>{server.name}</strong><small>{route.username}@{route.host}:{route.port}</small></button><small className="wb-cell-secondary">{server.group || '未分组'}{server.tags.length ? ` · ${server.tags.join(' / ')}` : ''}</small></td><td><span className={`wb-state ${state}`}><i />{statusLabel(snapshot)}</span><small className="wb-cell-secondary">{monitorPolicyLabel[server.monitorPolicy]}采集</small></td><td><span>CPU {formatPercent(snapshot?.cpuUsagePercent)}</span><small className="wb-cell-secondary">{snapshot?.memoryUsedBytes == null ? '—' : formatBytes(snapshot.memoryUsedBytes)} / {snapshot?.memoryTotalBytes == null ? '—' : formatBytes(snapshot.memoryTotalBytes)}</small></td><td><div className="wb-server-gpu-links">{snapshot?.gpus.map(gpu => <button key={gpu.uuid} className={!live ? 'cached' : isGpuBusy(gpu) ? 'busy' : 'idle'} title={`${gpu.name} · ${(gpu.memoryUsedMiB / 1024).toFixed(1)} / ${(gpu.memoryTotalMiB / 1024).toFixed(0)} GiB`} aria-label={`查看 ${server.name} GPU ${gpu.index} 详情`} onClick={() => actions.onGpu(server, gpu.index)}><i />GPU {gpu.index}<small>{live ? `${Math.round(gpu.utilizationPercent)}%` : '待确认'}</small></button>) ?? null}{!snapshot?.gpus.length && <span className="wb-muted">{snapshot ? '无 GPU' : '尚未采集'}</span>}</div></td><td><span className={disk && disk.usagePercent >= 80 ? 'wb-warning' : ''}>{formatPercent(disk?.usagePercent)}</span><small className="wb-cell-secondary">{disk ? `${disk.mountPoint} · 可用 ${formatBytes(disk.availableBytes)}` : '—'}</small></td><td>{getAccessRoutes(server).length > 1 ? <AccessRouteSelect server={server} value={actions.accessRouteId(server)} compact onChange={id => actions.onAccessRouteChange(server, id)} /> : <span className="wb-muted">{route.name}</span>}</td><td><div className="wb-server-actions"><button className="secondary-button" onClick={() => actions.onTerminal(server)}><SquareTerminal size={13} />终端</button><button className="icon-button small" onClick={() => actions.onSftp(server)} aria-label={`打开 ${server.name} 文件`} title="打开文件"><FolderOpen size={14} /></button><button className="icon-button small" onClick={() => actions.onVsCode(server)} disabled={actions.vscodeConnectingId === server.id} aria-label={`打开 ${server.name} VS Code`} title="打开 VS Code"><Code2 size={14} /></button><button className="icon-button small" onClick={() => actions.onTest(server)} disabled={actions.testingId === server.id} aria-label={`测试 ${server.name} 连接`} title="测试连接"><RefreshCw size={14} className={actions.testingId === server.id ? 'spin' : ''} /></button><button className="icon-button small" onClick={() => actions.onEdit(server)} aria-label={`编辑 ${server.name}`} title="编辑服务器"><Pencil size={14} /></button>{isLegacyJumpProfile(server.name) && <button className="icon-button small" onClick={() => actions.onMerge(server)} title="合并连接路径"><GitMerge size={14} /></button>}<button className="icon-button small wb-danger" onClick={() => actions.onRemove(server)} aria-label={`删除 ${server.name}`} title="删除服务器"><Trash2 size={14} /></button></div></td></tr>
   })}</tbody></table>{!servers.length && <div className="wb-empty-inline">没有匹配的服务器。调整搜索，或从左侧添加服务器。</div>}</div></section>
 }
-function MyTasksPage({ tasks, accessRouteIdFor, onOpenGpu, active }: { active: boolean; tasks: UserGpuTask[]; accessRouteIdFor(server: ServerProfile): string; onOpenGpu(server: ServerProfile, gpuIndex: number): void }): React.JSX.Element {
-  const [logTask, setLogTask] = useState<UserGpuTask | null>(null)
-  const serverCount = new Set(tasks.map((task) => task.server.id)).size
-  const gpuCount = new Set(tasks.map((task) => `${task.server.id}:${task.gpuIndex}`)).size
-  const memoryMiB = tasks.reduce((sum, task) => sum + task.process.memoryUsedMiB, 0)
-  const memoryPending = tasks.some(task => task.processMemoryInconsistent || task.process.memoryUsageUnavailable)
-  return <section className="my-tasks-page">
-    <div className="my-task-summary">
-      <div><ListTodo size={18} /><span>运行中任务</span><strong>{tasks.length}</strong></div>
-      <div><ServerIcon size={18} /><span>涉及服务器</span><strong>{serverCount}</strong></div>
-      <div><Cpu size={18} /><span>占用 GPU</span><strong>{gpuCount}</strong></div>
-      <div><MemoryStick size={18} /><span>任务显存</span><strong>{memoryPending ? '待确认' : memoryMiB >= 1024 ? `${(memoryMiB / 1024).toFixed(1)} GiB` : `${Math.round(memoryMiB)} MiB`}</strong></div>
-    </div>
-    <div className="my-task-panel">
-      <div className="my-task-heading"><div><h2>当前 GPU 任务</h2><p>仅展示进程用户名与服务器 SSH 用户名一致的实时任务</p></div><span>{tasks.length} 个进程</span></div>
-      {tasks.length ? <div className="my-task-table">
-        <div className="my-task-table-head"><span>任务</span><span>服务器 / GPU</span><span>运行时长</span><span>显存占用</span><span>操作</span></div>
-        {tasks.map((task) => <div className="my-task-row" key={`${task.server.id}-${task.gpuIndex}-${task.process.pid}`}>
-          <button type="button" className="my-task-process" onClick={() => onOpenGpu(task.server, task.gpuIndex)}><i><ListTodo size={15} /></i><span><strong title={task.process.processName}>{task.process.processName}</strong><small>PID {task.process.pid} · {task.process.username}</small></span></button>
-          <span className="my-task-target"><strong>{task.server.name} · GPU {task.gpuIndex}</strong><small>{task.gpuName.replace('NVIDIA ', '')}</small></span>
-          <time>{formatTaskDuration(task.process.elapsedSeconds)}</time>
-          <b>{formatGpuProcessMemory(task.process, task.processMemoryInconsistent)}</b>
-          <div className="my-task-log-actions"><button type="button" className="secondary-button" disabled={task.server.mode !== 'real'} onClick={() => setLogTask(task)}><SquareTerminal size={13} />实时日志</button><button type="button" className="icon-button small" title="GPU 详情" aria-label={`PID ${task.process.pid} GPU 详情`} onClick={() => onOpenGpu(task.server, task.gpuIndex)}><ChevronRight size={16} /></button></div>
-        </div>)}
-      </div> : <div className="my-task-empty"><ListTodo size={38} /><strong>当前没有检测到你的 GPU 任务</strong><span>任务按各服务器配置的 SSH 用户名识别；点击顶部刷新可立即重新采集。</span></div>}
-    </div>
-    {logTask && <ProcessLogPanel enabled={active} key={`${logTask.server.id}:${accessRouteIdFor(logTask.server)}:${logTask.process.pid}`} serverId={logTask.server.id} accessRouteId={accessRouteIdFor(logTask.server)} pid={logTask.process.pid} processName={logTask.process.processName} onClose={() => setLogTask(null)} />}
-  </section>
-}
-
 function AlertsPage({ alerts }: { alerts: Array<{ server: ServerProfile; level: 'critical' | 'warning'; title: string; detail: string }> }): React.JSX.Element {
   return <section className="panel alerts-page"><div className="table-heading"><div><h2>当前活动告警</h2><p>仅在应用运行并能连接服务器时持续检测</p></div><span className="local-only-chip">本地监控</span></div>{alerts.length ? <div className="alert-cards">{alerts.map((alert, index) => <div className={`alert-card ${alert.level}`} key={`${alert.server.id}-${index}`}><div className="alert-icon large"><AlertTriangle size={19} /></div><div><span>{alert.level === 'critical' ? '严重' : '警告'}</span><h3>{alert.title}</h3><p>{alert.server.name} · {alert.detail}</p></div><time>{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time></div>)}</div> : <div className="healthy-state large"><CheckCircle2 size={42} /><strong>当前没有活动告警</strong><span>保持应用在后台运行可继续检测服务器状态</span></div>}</section>
 }

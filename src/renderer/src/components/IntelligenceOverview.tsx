@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { FolderOpen, Search } from 'lucide-react'
 import type { ExperimentTask } from '@shared/types'
 import type { DiagnosisReport } from '@shared/intelligence'
@@ -20,7 +21,7 @@ export function IntelligenceOverview(props:Props):React.JSX.Element {
     </div>
     <div className="intelligence-recent-grid"><section><h2>最近失败运行</h2>{!failures.length?<p>目前没有任务池失败记录。手动运行的实验可通过“指定服务器日志”诊断。</p>:failures.map(({task,run})=>{
       const report=reportForRun(props.reports,task.id,run.id)
-      return <article className="intelligence-recent-item" key={run.id}><div><strong>{task.title}</strong><span>第 {run.number} 次运行 · {task.runs.at(-1)?.id===run.id?'最近一次运行失败':'历史失败运行'}</span>{run.message&&<p>{run.message}</p>}</div><div>{report&&<button className="secondary-button" onClick={()=>props.onReport(report.id)}>查看诊断</button>}<button className="secondary-button" onClick={()=>props.onFailure(task,run.id)}>{report?'重新诊断这次运行':'诊断这次运行'}</button><button className="wb-text-button" onClick={()=>props.onTask(task,run.id)}>打开任务</button></div></article>
+      return <article className="intelligence-recent-item" key={run.id}><div><strong>{task.title}</strong><span>第 {run.number} 次运行 · {task.runs.at(-1)?.id===run.id?'最近一次运行失败':'历史失败运行'}</span>{run.message&&<p>{userFacingError(run.message,'运行遇到问题，请查看日志或诊断。')}</p>}</div><div>{report&&<button className="secondary-button" onClick={()=>props.onReport(report.id)}>查看诊断</button>}<button className="secondary-button" onClick={()=>props.onFailure(task,run.id)}>{report?'重新诊断这次运行':'诊断这次运行'}</button><button className="wb-text-button" onClick={()=>props.onTask(task,run.id)}>打开任务</button></div></article>
     })}</section><section><h2>最近诊断</h2>{!props.historyReady?<p>正在读取诊断记录…</p>:!recent.length?<p>分析后会保留报告，可以从这里继续处理。</p>:recent.map(report=><article className="intelligence-recent-item" key={report.id}><div><strong>{report.title}</strong><span>{sources[report.source]} · {new Date(report.createdAt).toLocaleString('zh-CN')}</span><p>{report.summary??report.findings[0]?.title??'查看已有证据'}</p></div><button className="secondary-button" onClick={()=>props.onReport(report.id)}>继续查看</button></article>)}</section></div>
   </section>
 }

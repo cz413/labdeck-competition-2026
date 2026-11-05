@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Download, File, Folder, RefreshCw, Upload, X } from 'lucide-react'
 import type { ServerProfile, SftpEntry, SftpTransferProgress } from '@shared/types'
@@ -25,7 +26,7 @@ export function SftpWindowApp({ serverId, accessRouteId, initialPath: requestedI
         if (!matched) throw new Error('服务器不存在或已被删除')
         setServer(matched)
       })
-      .catch((caught) => setError(caught instanceof Error ? caught.message : '文件传输窗口初始化失败'))
+      .catch((caught) => setError(userFacingError(caught, '文件传输窗口初始化失败')))
   }, [serverId])
 
   useEffect(() => window.labApi.sftp.onNavigate(setInitialPath), [])
@@ -54,7 +55,7 @@ const normalizePathInput = (value: string): string => {
 
 const transferStatusLabel = (transfer: SftpTransferProgress): string => {
   if (transfer.status === 'completed') return '已完成'
-  if (transfer.status === 'failed') return transfer.error ? `失败：${transfer.error}` : '传输失败'
+  if (transfer.status === 'failed') return transfer.error ? `失败：${userFacingError(transfer.error,'文件传输未完成，请检查连接和文件权限。')}` : '传输失败'
   return transfer.direction === 'upload' ? '上传中' : '下载中'
 }
 
@@ -94,7 +95,7 @@ export function SftpPanel({ server, accessRouteId, initialPath, onClose, onMessa
       setPath(nextPath)
       setPathInput(nextPath)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '远程目录读取失败')
+      setError(userFacingError(caught, '远程目录读取失败'))
     } finally {
       setLoading(false)
     }
@@ -141,7 +142,7 @@ export function SftpPanel({ server, accessRouteId, initialPath, onClose, onMessa
       onMessage(`已上传 ${filename}`)
       await load()
     } catch (caught) {
-      onMessage(caught instanceof Error ? caught.message : '上传失败', 'error')
+      onMessage(userFacingError(caught, '上传失败'), 'error')
     }
   }
 
@@ -151,7 +152,7 @@ export function SftpPanel({ server, accessRouteId, initialPath, onClose, onMessa
       const savedPath = await window.labApi.sftp.download(server.id, entry.path, transferId, accessRouteId)
       if (savedPath) onMessage(`已下载到 ${savedPath}`)
     } catch (caught) {
-      onMessage(caught instanceof Error ? caught.message : '下载失败', 'error')
+      onMessage(userFacingError(caught, '下载失败'), 'error')
     }
   }
 

@@ -17,7 +17,7 @@ import { RemoteResultFilePicker } from './RemoteResultFilePicker'
 interface Props {tasks:ExperimentTask[];servers:ServerProfile[];modelEnabled:boolean;initialTaskId?:string;initialCampaignId?:string;onChanged:(task:ExperimentTask)=>void;onOpenTask:(task:ExperimentTask,runId?:string)=>void;onOpenDiagnosis?:(id:string)=>void;confirm:(request:ConfirmationRequest)=>Promise<boolean>;notify:(message:string,kind?:'success'|'error')=>void}
 const stageNames={review:'待确认',waiting:'运行跟踪中',analysis:'结果已汇总'}
 const runNames:Record<string,string>={planned:'草稿',queued:'排队中',preparing:'准备中',running:'运行中',paused:'运行暂停',completed:'正常结束',failed:'运行故障',cancelled:'已取消'}
-function baselineReason(task:ExperimentTask,runId?:string):string {try{const draft=baselineDraft(task,runId);return parameterExperimentReason(draft.launchCommand,draft.launchMode)}catch(error){return error instanceof Error?error.message:'配置不可用'}}
+function baselineReason(task:ExperimentTask,runId?:string):string {try{const draft=baselineDraft(task,runId);return !draft.serverId||!draft.codePath?'缺少服务器或代码目录':''}catch(error){return userFacingError(error, '配置不可用')}}
 const collectionKey=(config?:ResultCollectionConfig):string=>JSON.stringify([config?.metricsFile??'',config?.resultFiles??[],config?.artifacts??[],Object.entries(config?.runResultFiles??{}).sort(([a],[b])=>a.localeCompare(b))])
 const nodes=[['review','确认配置'],['observe','运行跟踪'],['analyze','结果分析']]
 export function ResearchPage(props:Props):React.JSX.Element {
@@ -50,7 +50,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
   let unsupported=''
   if(task){
     if(task.runs.length&&!sourceRunId)unsupported='请选择作为基准的运行记录'
-    else try{baseline=baselineDraft(task,sourceRunId||undefined);unsupported=parameterExperimentReason(baseline.launchCommand,baseline.launchMode)}catch(cause){unsupported=cause instanceof Error?cause.message:'基准配置不可用'}
+    else try{baseline=baselineDraft(task,sourceRunId||undefined);unsupported=!baseline.serverId||!baseline.codePath?'请选择服务器和项目代码目录':''}catch(cause){unsupported=userFacingError(cause, '基准配置不可用')}
   }
   const memberSources=(selected?.members??[]).map((member,index)=>{
     const task=props.tasks.find(task=>task.id===member.taskId)
@@ -115,7 +115,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
       setHistory(await window.labApi.research.list())
       if(selectedId===campaign.id){setSelectedId('');setPickingFile(null)}
       props.notify('对照记录已删除')
-    }catch(cause){props.notify(cause instanceof Error?cause.message:'删除对照记录失败','error')}
+    }catch(cause){props.notify(userFacingError(cause, '删除对照记录失败'),'error')}
     finally{setDeletingId('');setBusy('')}
   }
   async function reloadTasks():Promise<void>{for(const item of await window.labApi.experiments.list())props.onChanged(item)}
@@ -129,6 +129,14 @@ export function ResearchPage(props:Props):React.JSX.Element {
     }
     setTargetSnapshot(undefined)
     const target=selected.runTarget??{computeDevice:selected.baseline.computeDevice??'gpu',gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:selected.baseline.minimumFreeVramGiB??null,maximumGpuUtilizationPercent:selected.baseline.maximumGpuUtilizationPercent??null}
+    if(!retry&&!selected.runTarget&&selected.design?.preferredGpuIndex!==undefined&&selected.baseline.serverId){
+      try{
+        const snapshot=await window.labApi.monitor.snapshot(selected.baseline.serverId,selected.baseline.accessRouteId)
+        const gpu=snapshot.status==='offline'?undefined:snapshot.gpus.find(gpu=>gpu.index===selected.design?.preferredGpuIndex)
+        if(!gpu){setError(`原命令指定 GPU ${selected.design.preferredGpuIndex}，当前未能读取到这张卡。请刷新服务器状态后重试。`);return}
+        setRunTarget({...target,gpuUuid:gpu.uuid,gpuIndex:gpu.index,gpuNameSnapshot:gpu.name});return
+      }catch(error){setError(userFacingError(error,'无法读取原命令指定的 GPU，请刷新服务器状态后重试。'));return}
+    }
     setRunTarget(target)
   }
   async function submitBatch():Promise<void>{
@@ -207,7 +215,9 @@ export function ResearchPage(props:Props):React.JSX.Element {
       <button className="research-text-button" disabled={!!busy||rows.length>=5} onClick={()=>{setRows([...rows,{flag:'',values:''}]);setDesign(null)}}><Plus size={13}/>添加参数</button>
       <label>运行数量上限<input aria-label="实验运行预算" type="number" min={1} max={32} step={1} inputMode="numeric" disabled={!!busy} value={maxRunsInput} aria-invalid={maxRunsInput!==''&&!maxRunsValid} onChange={event=>{setMaxRunsInput(event.target.value.replace(/^0+(?=\d)/,''));setDesign(null)}} onBlur={()=>{if(/^\d+$/.test(maxRunsInput))setMaxRunsInput(String(Number(maxRunsInput)))}}/>{maxRunsInput!==''&&!maxRunsValid&&<small>请输入 1～32 之间的整数</small>}</label>
       <p className={`research-count ${maxRunsValid&&count>maxRuns?'over':''}`}><span>将生成 <strong>{count}</strong> 组配置</span><span>{maxRunsValid?`上限 ${maxRuns} 组`:'上限需填写 1～32'}</span></p>
-      <button className="primary-button" disabled={!!busy||!ready||!taskId||!!unsupported||!objective.trim()||!count||count>maxRuns||!maxRunsValid} onClick={()=>void action('create',async()=>{const result=await window.labApi.research.create({taskId,sourceRunId:sourceRunId||undefined,objective,axes,maxRuns,expectedBaselineCommand:design?.baselineCommand,design:design?.status==='ready'?design:undefined});setSelectedId(result.id);props.notify('对照方案已生成，等待审查')})}>{busy==='create'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成对照方案</button>
+      {design?.executionCommand&&<div className="research-design"><strong>本批执行命令</strong><code style={{display:'block',overflowWrap:'anywhere',whiteSpace:'pre-wrap'}}>{design.executionCommand}</code><p className="research-note">{design.preferredGpuIndex!==undefined?`原命令指定的 GPU ${design.preferredGpuIndex} 将在运行窗口中带入。`:''}无缓冲日志由平台开启。</p></div>}
+      {baseline&&parameterExperimentReason(design?.executionCommand??baseline.launchCommand,baseline.launchMode)&&<p className="research-note">当前启动方式需要先由智能设计分析。可先查看建议，再确认可执行方案。</p>}
+      <button className="primary-button" disabled={!!busy||!ready||!taskId||!!unsupported||!objective.trim()||!count||count>maxRuns||!maxRunsValid||!!parameterExperimentReason(design?.executionCommand??baseline?.launchCommand??'',baseline?.launchMode)} onClick={()=>void action('create',async()=>{const result=await window.labApi.research.create({taskId,sourceRunId:sourceRunId||undefined,objective,axes,maxRuns,expectedBaselineCommand:design?.baselineCommand,design:design?.status==='ready'?design:undefined});setSelectedId(result.id);props.notify('对照方案已生成，等待审查')})}>{busy==='create'?<LoaderCircle size={14} className="spin"/>:<FlaskConical size={14}/>}生成对照方案</button>
     </section></aside>
     <div className="research-output">{!selected?<div className="research-empty"><div className="research-empty-icon"><FlaskConical size={28}/></div><h2>对照方案会在这里展开</h2><ol><li><span>1</span>设置对比参数</li><li><span>2</span>预览生成的配置</li><li><span>3</span>确认并运行</li></ol></div>:<>
       <header className="research-campaign-heading"><div><h2>{selected.objective}</h2><p>{selected.baseline.title}{selected.sourceRunNumber!==undefined?` · 基于第 ${selected.sourceRunNumber} 次运行`:''} · {stageNames[selected.stage]}{selected.paused?' · 跟踪已暂停':''}</p></div><button className="secondary-button" disabled={!!busy} onClick={()=>void action('export',async()=>{if(await window.labApi.research.export(selected.id))props.notify('实验研究记录已导出')})}><FileDown size={14}/>导出</button></header>

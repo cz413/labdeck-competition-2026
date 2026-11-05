@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import type { ExternalExperimentContext, ExternalDraftInput } from '@shared/external-experiment'
@@ -44,7 +45,7 @@ export function ExternalExperimentDraft(props:DraftProps):React.JSX.Element|null
     if(!accepted)return
     setSaving(true);setError('')
     try {const task=await window.labApi.intelligence.saveExternalDraft(props.report.id,draft);props.onSaved(task);props.notify('重跑草稿已保存，请检查配置后确认入队');props.onOpenTask(task)}
-    catch(e){setError(e instanceof Error?e.message:String(e))}finally{setSaving(false)}
+    catch(e){setError(userFacingError(e))}finally{setSaving(false)}
   }
   return <section className="external-draft-panel">
     <h3>接入任务池继续实验</h3><p>本份诊断来自已有日志，没有对应的任务池运行。审核配置后可以创建重跑草稿，保留日志来源与诊断关联。</p>

@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { ClipboardPaste, Copy, KeyRound, Laptop, Maximize2, RefreshCw, Server, X } from 'lucide-react'
 import { Terminal, type ITheme } from '@xterm/xterm'
@@ -395,7 +396,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     } else {
       canAutofillPasswordRef.current = false
       setStatus('offline')
-      terminal.write(`\r\n\x1b[31m${isLocal ? '启动失败' : '连接失败'}：${result.message ?? '未知错误'}\x1b[0m\r\n`)
+      terminal.write(`\r\n\x1b[31m${isLocal ? '启动失败' : '连接失败'}：${userFacingError(result.message,isLocal?'本地终端启动失败，请检查程序安装路径。':'SSH 连接未成功，请检查网络和连接设置。')}\x1b[0m\r\n`)
     }
   }
 

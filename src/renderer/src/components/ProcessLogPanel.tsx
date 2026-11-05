@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import type { ProcessLogInfo, ProcessLogTarget } from '@shared/types'
@@ -35,7 +36,7 @@ export function ProcessLogPanel({ serverId, accessRouteId, pid, processName, onC
       setPath(current => current || detected)
       setDraft(current => current || detected)
     }).catch(reason => {
-      if (!disposed) setError(reason instanceof Error ? reason.message : '无法识别进程日志')
+      if (!disposed) setError(userFacingError(reason, '无法识别进程日志'))
     }).finally(() => { if (!disposed) setBusy(false) })
     return () => { disposed = true }
   }, [enabled, serverId, accessRouteId, pid, refresh])

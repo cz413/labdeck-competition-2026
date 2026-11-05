@@ -24,4 +24,25 @@ describe('user-facing errors', () => {
     expect(userFacingError('上限为 429 组，请调整数量')).toBe('上限为 429 组，请调整数量')
     expect(userFacingError('HTTP 429 Too Many Requests')).toContain('请求过于频繁')
   })
+  it.each([
+    ['Timed out while waiting for handshake','SSH 连接握手超时'],
+    ['连接失败：Timed out while waiting for handshake','SSH 连接握手超时'],
+    ['Error invoking remote method \'monitor:snapshot\': Error: Timed out while waiting for handshake','SSH 连接握手超时'],
+    ['All configured authentication methods failed','SSH 认证失败'],
+    ['Permission denied (publickey,password)','SSH 认证失败'],
+    ['Host key verification failed','服务器身份校验未通过'],
+    ['Handshake failed: no matching key exchange algorithm','SSH 加密协商失败'],
+    ['EPIPE: write failed','连接已中断'],
+    ['No route to host','无法访问服务器'],
+    ['EnvironmentNameNotFound: Could not find conda environment: myenv','Conda 环境不存在'],
+    ['bash: conda: command not found','所需命令未找到'],
+    ['读取失败：request timed out','请求超时']
+  ])('translates operational warnings including mixed Chinese/English: %s',(raw,expected)=>{
+    expect(userFacingError(raw)).toContain(expected)
+  })
+  it('hides unknown English details even when prefixed by a Chinese error label',()=>{
+    expect(userFacingError('连接失败：Unexpected protocol failure','请检查连接配置。')).toBe('请检查连接配置。')
+    expect(userFacingError('请先安装 PyTorch，再运行 python main.py。')).toBe('请先安装 PyTorch，再运行 python main.py。')
+  })
+
 })

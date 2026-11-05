@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { DiagnosisChanges } from './DiagnosisChanges'
 import './task-diagnosis.css'
 import { AccessRouteSelect } from './AccessRouteSelect'
@@ -107,7 +108,7 @@ export function IntelligencePage(props: Props): React.JSX.Element {
       if(result.status==='host-key-required')throw new Error(result.message+'；请先在资源页确认主机指纹，再重新读取。')
       setResolvedCondaPath(result.value.managerPath);setPlanEnvs(result.value.environments);if(!result.value.environments.length)setCondaAdvanced(true)
 
-    }).catch(error=>{if(live){if(!connected){setPlanConnection('failed');setConnectionMessage(error instanceof Error?error.message:String(error))}else{setEnvError('未能读取环境');setCondaAdvanced(true)}}}).finally(()=>{if(live)setEnvLoading(false)})
+    }).catch(error=>{if(live){if(!connected){setPlanConnection('failed');setConnectionMessage(userFacingError(error))}else{setEnvError('未能读取环境');setCondaAdvanced(true)}}}).finally(()=>{if(live)setEnvLoading(false)})
     return()=>{live=false}
   },[serverId,envRouteId,envReload])
 
@@ -145,9 +146,9 @@ export function IntelligencePage(props: Props): React.JSX.Element {
   const chosenEvidence=report?.evidence.find(e=>e.id===selectedEvidence)
   useEffect(()=>{
     let live=true
-    void Promise.all([window.labApi.intelligence.settings(),window.labApi.intelligence.history()]).then(([config,reports])=>{if(live){setSettings(config);setHistory(reports);setHistoryReady(true)}}).catch(e=>{if(live){setHistoryReady(true);setError(String(e.message??e))}})
+    void Promise.all([window.labApi.intelligence.settings(),window.labApi.intelligence.history()]).then(([config,reports])=>{if(live){setSettings(config);setHistory(reports);setHistoryReady(true)}}).catch(e=>{if(live){setHistoryReady(true);setError(userFacingError(e))}})
     const unsubscribe=window.labApi.intelligence.onDiagnosisProgress(update=>{if(live&&update.requestId===activeDiagnosis.current)setProgress(update)})
-    const unsubscribeHistory=window.labApi.intelligence.onHistoryChanged(()=>{void window.labApi.intelligence.history().then(reports=>{if(live){setHistory(reports);setReport(current=>current?({...reports.find(r=>r.id===current.id)??current,...(current.cacheHit?{cacheHit:true}:{} )}):current)}}).catch(e=>{if(live)setError(String(e.message??e))})})
+    const unsubscribeHistory=window.labApi.intelligence.onHistoryChanged(()=>{void window.labApi.intelligence.history().then(reports=>{if(live){setHistory(reports);setReport(current=>current?({...reports.find(r=>r.id===current.id)??current,...(current.cacheHit?{cacheHit:true}:{} )}):current)}}).catch(e=>{if(live)setError(userFacingError(e))})})
     return()=>{live=false;unsubscribe();unsubscribeHistory();if(activeDiagnosis.current)void window.labApi.intelligence.cancelDiagnosis(activeDiagnosis.current)}
   },[])
   const previousDemoReports=useRef(new Set<string>())
@@ -193,7 +194,7 @@ export function IntelligencePage(props: Props): React.JSX.Element {
   async function action(name:string,fn:()=>Promise<void>):Promise<void>{
     if(busy)return
     setBusy(name);setError('')
-    try{await fn()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy('')}
+    try{await fn()}catch(e){setError(userFacingError(e))}finally{setBusy('')}
   }
   async function refreshHistory():Promise<void>{const reports=await window.labApi.intelligence.history();setHistory(reports);setReport(current=>current?({...reports.find(r=>r.id===current.id)??current,...(current.cacheHit?{cacheHit:true}:{} )}):current)}
   function openReport(id:string):void {
@@ -233,7 +234,7 @@ export function IntelligencePage(props: Props): React.JSX.Element {
   async function stopDiagnosis():Promise<void>{
     if(!activeDiagnosis.current||stopping)return
     setStopping(true)
-    try{await window.labApi.intelligence.cancelDiagnosis(activeDiagnosis.current)}catch(e){setStopping(false);setError(e instanceof Error?e.message:String(e))}
+    try{await window.labApi.intelligence.cancelDiagnosis(activeDiagnosis.current)}catch(e){setStopping(false);setError(userFacingError(e))}
   }
   async function retry():Promise<void>{
     if(!report?.repair)return

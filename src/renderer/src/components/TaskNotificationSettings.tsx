@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState } from 'react'
 import { Bell, Trash2 } from 'lucide-react'
 import type { AppSettings, ProcessWatch } from '@shared/types'
@@ -14,7 +15,7 @@ export function TaskNotificationSettings({ settings, onChange }: {
     let active = true
     const refresh = (): void => {
       void window.labApi.notifications.listProcessWatches().then(items => { if (active) setWatches(items) })
-        .catch(error => { if (active) { setError(true); setMessage(error instanceof Error ? error.message : '读取订阅失败') } })
+        .catch(error => { if (active) { setError(true); setMessage(userFacingError(error, '读取订阅失败')) } })
     }
     refresh()
     const unsubscribe = window.labApi.notifications.onProcessWatchesChanged(refresh)
@@ -25,7 +26,7 @@ export function TaskNotificationSettings({ settings, onChange }: {
     setMessage('')
     setError(false)
     try { await action(); setMessage(success) }
-    catch (error) { setError(true); setMessage(error instanceof Error ? error.message : '操作失败') }
+    catch (error) { setError(true); setMessage(userFacingError(error, '操作失败')) }
     finally { setBusy(false) }
   }
   return <section className="panel task-notification-settings">
@@ -35,7 +36,7 @@ export function TaskNotificationSettings({ settings, onChange }: {
     {message && <p className={`wb-notice ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{message}</p>}
     {watches.length > 0 && <div className="process-watch-list">
       {watches.map(watch => <div className="process-watch-item" key={watch.id}>
-        <div><strong>{watch.serverName} · PID {watch.pid} · {watch.processName}</strong><span>{watch.status === 'watching' ? '监控中' : watch.status === 'interrupted' ? '监控中断，等待重连' : '已结束，结果未知'} · {watch.message}</span><small>最近检查：{new Date(watch.checkedAt).toLocaleString('zh-CN')}</small></div>
+        <div><strong>{watch.serverName} · PID {watch.pid} · {watch.processName}</strong><span>{watch.status === 'watching' ? '监控中' : watch.status === 'interrupted' ? '监控中断，等待重连' : '已结束，结果未知'} · {userFacingError(watch.message,'监控连接暂时中断，请稍后重试。')}</span><small>最近检查：{new Date(watch.checkedAt).toLocaleString('zh-CN')}</small></div>
         <button type="button" className="secondary-button" disabled={busy} onClick={() => void perform(async () => setWatches(await window.labApi.notifications.unwatchProcess(watch.id)), watch.status === 'ended' ? '已移除记录' : '已取消结束提醒')}><Trash2 size={13} />{watch.status === 'ended' ? '移除记录' : '取消提醒'}</button>
       </div>)}
     </div>}

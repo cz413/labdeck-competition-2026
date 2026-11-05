@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { RemoteDirectoryPicker } from './RemoteDirectoryPicker'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, BookOpen, CheckCircle2, FileCode2, FolderOpen, LoaderCircle } from 'lucide-react'
@@ -61,7 +62,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
   }
   useEffect(()=>{
     let live=true,revision=0
-    const refresh=():void=>{const request=++revision;void window.labApi.intelligence.repositoryWorkflows().then(items=>{if(!live||request!==revision)return;setFlows(items);if(!initialized.current){initialized.current=true;const initial=props.initialTask;const item=initial?items.find(f=>f.taskId===initial.id||f.input.serverId===initial.serverId&&f.input.path===initial.codePath):undefined;if(item)fill(item)}}).catch(e=>{if(live)setError(e.message??String(e))})}
+    const refresh=():void=>{const request=++revision;void window.labApi.intelligence.repositoryWorkflows().then(items=>{if(!live||request!==revision)return;setFlows(items);if(!initialized.current){initialized.current=true;const initial=props.initialTask;const item=initial?items.find(f=>f.taskId===initial.id||f.input.serverId===initial.serverId&&f.input.path===initial.codePath):undefined;if(item)fill(item)}}).catch(e=>{if(live)setError(userFacingError(e))})}
     refresh();const unsubscribe=window.labApi.intelligence.onRepositoryChanged(refresh)
     return()=>{live=false;unsubscribe()}
   },[])
@@ -86,8 +87,8 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
   },[serverId,accessRouteId])
   useEffect(()=>{
     if(props.initialTask){setServerId(props.initialTask.serverId??'');setRouteId(props.initialTask.accessRouteId??'');setPath(props.initialTask.codePath);setGoal(props.initialTask.objective||props.initialTask.title);setSelectedId('');setSnapshot(null);setFiles([])}},[props.initialTask?.id])
-  useEffect(()=>{if(flow?.taskId&&run&&!flow.busy&&!busy)void window.labApi.intelligence.actRepositoryWorkflow(flow.id,{kind:'sync'}).then(item=>setFlows(items=>[item,...items.filter(f=>f.id!==item.id)])).catch(e=>setError(e.message??String(e)))},[flow?.id,run?.id,run?.status])
-  async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busyRef.current)return;busyRef.current=true;setBusy(name);setError('');try{await fn()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{busyRef.current=false;setBusy('')}}
+  useEffect(()=>{if(flow?.taskId&&run&&!flow.busy&&!busy)void window.labApi.intelligence.actRepositoryWorkflow(flow.id,{kind:'sync'}).then(item=>setFlows(items=>[item,...items.filter(f=>f.id!==item.id)])).catch(e=>setError(userFacingError(e)))},[flow?.id,run?.id,run?.status])
+  async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busyRef.current)return;busyRef.current=true;setBusy(name);setError('');try{await fn()}catch(e){setError(userFacingError(e))}finally{busyRef.current=false;setBusy('')}}
   function fresh(clearFiles=true):void {setSelectedId('');setProgress(null);setProgressLog([]);if(clearFiles){setSnapshot(null);setFiles([]);snapshotScope.current=''}setError('')}
   async function act(input:RepositoryWorkflowAction,updateForm=false):Promise<RepositoryWorkflowView|undefined>{
     if(!flow)return
@@ -104,7 +105,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
       const found=await window.labApi.intelligence.discoverRepositories({serverId,accessRouteId})
       setRepositories(found)
       if(!found.length)setError('未找到带 .git 或 README 的目录；请手动填写仓库路径，或确认仓库在更深层级。')
-    }catch(e){setError(e instanceof Error?e.message:String(e))}
+    }catch(e){setError(userFacingError(e))}
     finally{setDiscovering(false)}
   }
   function openBrowser(): void { setBrowserOpen(true) }
@@ -188,7 +189,7 @@ export function RepositoryGuidePage(props:Props):React.JSX.Element {
           </fieldset>
           {guide.steps.filter(step=>(step.role??'prepare')==='prepare').length>0&&<section className="repository-preparation"><h3>启动前需要完成 <button type="button" className="wb-text-button" style={{marginLeft:12,fontSize:12}} disabled={locked||!!task||dirty||guide.status==='needs_info'||!prepareIndices.length} onClick={()=>void action('steps',async()=>{await act({kind:'steps',confirmed:!allPrepared})})}>{allPrepared?'撤销全部确认':'全部确认（我已完成）'}</button></h3><p className="repository-note">以下操作由你在服务器完成。勾选表示你的确认，不代表平台已执行或验证。</p>{guide.steps.map((step,index)=>(step.role??'prepare')!=='prepare'?null:<article className="repository-step" key={index}><label className="repository-step-confirm"><input type="checkbox" checked={!!flow?.confirmedSteps.includes(index)} disabled={locked||!!task||dirty||guide.status==='needs_info'} onChange={e=>void action('step',async()=>{await act({kind:'step',index,confirmed:e.target.checked})})}/><strong>{step.title}</strong></label><p>{step.explanation}</p><p className="repository-note">目录：{guide.snapshot.input.path}{step.workingDirectory?'/'+step.workingDirectory:''}；环境：{step.environment||'未确认'}；{step.origin==='documented'?'文档中已有的操作':'AI 建议，请核对'}</p>{stepVerification(step)&&<p className="repository-note repository-verified">✓ {stepVerification(step)}</p>}{step.commands.map((line,i)=><pre key={i}><code>{line}</code></pre>)}<Citations items={step.citations}/></article>)}</section>}
           {task?<div className="repository-workflow-handoff"><button className="primary-button" onClick={()=>props.onOpenTask(task,flow?.runId)}>打开任务{flow?.runId?'与运行':''}<ArrowRight size={15}/></button>{flow?.phase==='failed'&&flow.runId&&<button className="secondary-button" onClick={()=>props.onDiagnose(task,flow.runId)}>诊断这次失败运行</button>}<button className="wb-text-button" disabled={locked} onClick={()=>void action('sync',async()=>{await act({kind:'sync'})})}>同步任务状态</button></div>:<div className="repository-save"><div className="repository-save-actions"><button className="primary-button" disabled={locked||guide.status!=='ready_for_review'||dirty||preparePending||!title.trim()} onClick={()=>void save()}>保存并选择 GPU<ArrowRight size={15}/></button>{guide.status==='needs_info'&&<button className="secondary-button" disabled={locked||dirty||preparePending||!command.trim()||!title.trim()} onClick={()=>void save(true)}>仍然保存为草稿</button>}</div><p>{guide.status==='needs_info'?'先补齐信息并检查配置；也可以先保存草稿，待确认项会写入任务备注。':dirty?'先检查修改后的配置。':preparePending?'完成并确认上方准备事项后，即可保存。':'保存后直接打开 GPU 选择；确认入队后才会运行。'}</p></div>}
-          <details className="repository-excerpts"><summary>查看核对结果、用量与阅读依据</summary><ModelUsageLine usage={guide.usage}/>{reviewed&&<p>最初分析：{guide.summary}</p>}{guide.checks.map((check,index)=><p key={index}>{check.expected==='file'?'入口文件':'启动目录'} {check.path}：{check.message}</p>)}{[...guide.snapshot.warnings,...guide.warnings,...guide.questions].map((warning,index)=><p key={index}>{warning}</p>)}{guide.snapshot.excerpts.map(file=><details key={`${file.path}-${file.startLine}`}><summary>{file.path}:{file.startLine}{file.truncated?' · 部分内容':''}</summary><pre>{file.text.split('\n').map((line,index)=>`${file.startLine+index}: ${line}`).join('\n')}</pre></details>)}<ol>{flow?.events.map((event,index)=><li key={index}>{new Date(event.at).toLocaleString('zh-CN')} · {event.message}</li>)}</ol></details>
+          <details className="repository-excerpts"><summary>查看核对结果、用量与阅读依据</summary><ModelUsageLine usage={guide.usage}/>{reviewed&&<p>最初分析：{guide.summary}</p>}{guide.checks.map((check,index)=><p key={index}>{check.expected==='file'?'入口文件':'启动目录'} {check.path}：{check.status==='unreadable'?userFacingError(check.message,'未能完成路径检查，请检查服务器连接。'):check.message}</p>)}{[...guide.snapshot.warnings,...guide.warnings,...guide.questions].map((warning,index)=><p key={index}>{warning}</p>)}{guide.snapshot.excerpts.map(file=><details key={`${file.path}-${file.startLine}`}><summary>{file.path}:{file.startLine}{file.truncated?' · 部分内容':''}</summary><pre>{file.text.split('\n').map((line,index)=>`${file.startLine+index}: ${line}`).join('\n')}</pre></details>)}<ol>{flow?.events.map((event,index)=><li key={index}>{new Date(event.at).toLocaleString('zh-CN')} · {event.message}</li>)}</ol></details>
         </>}
       </section>
     </div>

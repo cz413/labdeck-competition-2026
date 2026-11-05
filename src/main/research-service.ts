@@ -1,3 +1,4 @@
+import { reviewResearchCommand } from '../shared/research-command'
 import { ResearchOutputNames } from './research-output-names'
 import { deviceLaunchCommand } from '../shared/experiment-launch'
 import { app, dialog, ipcMain } from 'electron'
@@ -31,7 +32,7 @@ import { evidenceState, metricColumns, metricContext, metricIdentity, normalizeR
 const runTargetSchema=experimentRunStartInputSchema.pick({computeDevice:true,gpuUuid:true,gpuIndex:true,gpuNameSnapshot:true,minimumFreeVramGiB:true,maximumGpuUtilizationPercent:true}).strict()
 const campaignState=Annotation.Root({campaign:Annotation<ResearchCampaign>()})
 const designVariableSchema=z.object({flag:z.string().max(50),baselineValue:z.string().max(80),source:z.object({path:z.string().max(512),startLine:z.number().int().positive(),quote:z.string().max(1200)})})
-const designSchema=z.object({status:z.literal('ready'),axes:axesSchema,baselineCommand:z.string().max(20000),hypothesis:z.string().max(1500),rationale:z.string().max(1800).optional(),assumptions:z.array(z.string().max(500)).max(12),readFiles:z.array(z.string().max(512)).max(8).optional(),variable:designVariableSchema.optional(),variables:z.array(designVariableSchema).min(1).max(5).optional()})
+const designSchema=z.object({status:z.literal('ready'),axes:axesSchema,baselineCommand:z.string().max(20000),hypothesis:z.string().max(1500),rationale:z.string().max(1800).optional(),assumptions:z.array(z.string().max(500)).max(12),readFiles:z.array(z.string().max(512)).max(2000).optional(),executionCommand:z.string().max(20000).optional(),preferredGpuIndex:z.number().int().nonnegative().optional(),variable:designVariableSchema.optional(),variables:z.array(designVariableSchema).min(1).max(5).optional()})
 const inputSchema=z.object({taskId:z.string().uuid(),sourceRunId:z.string().uuid().optional(),objective:z.string().trim().min(1).max(2000),axes:axesSchema,maxRuns:z.number().int().min(1).max(32),useModel:z.boolean().optional(),resultConfig:resultConfigSchema.optional(),expectedBaselineCommand:z.string().max(20000).optional(),design:designSchema.optional()})
 const analysisSchema=z.object({summary:z.string().max(3000),observations:z.array(z.string().max(800)).max(10),limitations:z.array(z.string().max(800)).max(10).default([]),evidenceIds:z.array(z.string()).min(1).max(32),nextSuggestion:z.object({objective:z.string().min(1).max(2000),axes:axesSchema}).optional()})
 const capturedSchema=z.object({key:z.string(),taskId:z.string(),runId:z.string(),status:z.string(),evidenceId:z.string(),metrics:z.record(z.string(),z.number()),excerpt:z.string()}).passthrough()
@@ -163,41 +164,30 @@ export class ResearchService {
     await this.ready()
     z.string().uuid().optional().parse(sourceRunId)
     const source=this.task(taskId),task={...source,...baselineDraft(source,sourceRunId)}
-    if(task.launchMode==='script')throw new Error('智能设计暂支持 Python 命令，请选择命令模式任务')
     if(!task.serverId||!task.codePath)throw new Error('请先为基准任务配置服务器和代码目录')
     if(maxRuns<2)throw new Error('对照方案至少需要 2 次运行，包含基线和一个候选值')
-    const paths=researchReadPaths(task.launchCommand,task.codePath)
-    const session=await openRepositoryReadSession(this.store,this.ssh,{source:'remote',path:task.codePath,serverId:task.serverId,accessRouteId:task.accessRouteId})
-    try {
-      const warnings:string[]=[]
-      let bytes=0
-      const read=async(path:string):Promise<void>=>{
-        if(session.snapshot.excerpts.some(f=>f.path===path))return
-        const file=session.snapshot.files.find(f=>f.path===path)
-        if(!file)return
-        if(session.snapshot.excerpts.length>=8||file.sizeBytes>128000||bytes+file.sizeBytes>180000){warnings.push(`${path} 超出本次读取范围，请手动核对`);return}
-        try{await session.read(path);bytes+=file.sizeBytes}catch{warnings.push(`${path} 未能读取，请检查文件或连接`)}
-      }
-      await read(paths.entry)
-      const readme=session.snapshot.files.find(f=>/^readme(?:\.|$)/i.test(f.path))
-      if(readme)await read(readme.path)
-      for(const path of paths.configs)await read(path)
-      // Follow local imports from the entry, then their immediate imports, within a fixed budget.
-      for(let i=0;i<session.snapshot.excerpts.length&&i<8;i++)if(session.snapshot.excerpts[i].path.endsWith('.py'))for(const path of researchImports(session.snapshot.excerpts[i]))await read(path)
-      const files=session.snapshot.excerpts
-      const entry=files.find(f=>f.path===paths.entry)
-      if(!entry)return {axes:[],status:'needs_info',baselineCommand:task.launchCommand,hypothesis:'',assumptions:['未读取到训练入口，请检查代码目录和入口文件。',...warnings],readFiles:files.map(f=>f.path)}
-      let parameters=researchParameters(task.launchCommand,files)
-      // Configuration loading / set_defaults may override static argparse defaults.
-      if(paths.configs.length||files.some(f=>/\.set_defaults\s*\(|(?:yaml|json)\.(?:safe_)?load|parse_known_args/.test(f.text))){
-        parameters=parameters.filter(p=>new RegExp('(?:^|\\s)'+p.flag+'(?:=|\\s)').test(task.launchCommand))
-        warnings.push('配置可能覆盖默认值，仅对比启动命令中明确指定的参数。')
-      }
-      if(!parameters.some(p=>p.baselineValue!==undefined))return {axes:[],status:'needs_info',baselineCommand:task.launchCommand,hypothesis:'',assumptions:['未找到具有明确基线值的常见 argparse 参数，请手动指定变量并核对定义。',...warnings],readFiles:files.map(f=>f.path)}
-      const answer=await this.intelligence.requestResearchModel(researchDesignPrompt,{objective,maxRuns,baseline:{command:task.launchCommand,device:task.computeDevice??'gpu',dataPath:task.dataPath},parameters,files:files.map(f=>({...f,text:f.text.slice(0,60000),truncated:f.truncated||f.text.length>60000})),warnings})
-      const result=validateResearchDesign(answer,task.launchCommand,parameters,maxRuns)
-      return {...result,assumptions:[...result.assumptions,...warnings,...session.snapshot.warnings].slice(0,12),readFiles:files.map(f=>f.path)}
-    }finally{session.close()}
+    const review=reviewResearchCommand(task.launchCommand,task.launchMode)
+    const warnings=[...review.notes,...(review.issue?[review.issue]:[])]
+    let files:RepositoryExcerpt[]=[]
+    try{
+      const session=await openRepositoryReadSession(this.store,this.ssh,{source:'remote',path:task.codePath,serverId:task.serverId,accessRouteId:task.accessRouteId})
+      try{
+        let entry:string|undefined
+        if(review.command)try{entry=researchReadPaths(review.command,task.codePath).entry}catch{warnings.push('启动入口不在当前目录内，需结合文件清单核对。')}
+        const ordered=[...session.snapshot.files].sort((a,b)=>Number(b.path===entry)-Number(a.path===entry))
+        for(const file of ordered)try{await session.read(file.path)}catch{warnings.push(`${file.path} 未能读取或超过本次读取额度。`)}
+        files=session.snapshot.excerpts
+        warnings.push(...session.snapshot.warnings)
+      }finally{session.close()}
+    }catch{warnings.push('未能读取服务器项目文件；本次只能分析已知命令，不能推测参数定义或默认值。')}
+    let parameters=review.command?researchParameters(review.command,files):[]
+    if(files.some(file=>/\.set_defaults\s*\(|(?:yaml|json)\.(?:safe_)?load|parse_known_args/.test(file.text))){
+      parameters=parameters.filter(parameter=>commandParameter(review.command!,parameter.flag)!==undefined)
+      warnings.push('配置可能覆盖默认值，未确认的有效值需由模型结合源码核对。')
+    }
+    const answer=await this.intelligence.requestResearchModel(researchDesignPrompt,{objective,maxRuns,baseline:{command:task.launchCommand,device:task.computeDevice??'gpu',dataPath:task.dataPath},originalCommand:task.launchCommand,supportedCommand:review.command,commandIssue:review.issue,launchMode:task.launchMode,scriptPath:task.scriptPath,parameters,files:files.map(file=>({...file,numberedText:file.text.split('\n').map((line,index)=>`${file.startLine+index}: ${line}`).join('\n')})),warnings},{purpose:'repository'})
+    const result=validateResearchDesign(answer,task.launchCommand,parameters,maxRuns,{files,supportedCommand:review.command,issue:review.issue,preferredGpuIndex:review.preferredGpuIndex})
+    return {...result,assumptions:[...result.assumptions,...warnings].slice(0,12),readFiles:files.map(file=>file.path)}
   }
   private async inspectOutput(baseline:ExperimentTaskDraft,preparationId?:string):Promise<ResearchOutputIsolation>{
     if(!baseline.serverId)return {status:'unverified',reason:'缺少输出目录核对所需的服务器'}
@@ -237,7 +227,9 @@ export class ResearchService {
     if(input.expectedBaselineCommand!==undefined&&input.expectedBaselineCommand!==task.launchCommand)throw new Error('基准命令已变化，请重新生成对照方案')
     if(task.launchMode==='script')throw new Error('第一版对照实验仅支持命令模式，请选择 Python 命令任务')
     if(!task.serverId||this.store.getServer(task.serverId).mode!=='real')throw new Error('选择实际服务器上的实验任务；离线体验请使用演示入口')
-    const baseline=experimentTaskDraftSchema.parse({...baselineDraft(task),accessRouteId:task.accessRouteId??getDefaultAccessRouteId(this.store.getServer(task.serverId)),launchMode:'command',scriptPath:''})
+    const reviewed=reviewResearchCommand(task.launchCommand,task.launchMode)
+    if(input.design?.executionCommand&&input.design.executionCommand!==reviewed.command)throw new Error('建议命令不是原始命令的等价启动方式，请重新设计或手动确认配置')
+    const baseline=experimentTaskDraftSchema.parse({...baselineDraft(task),...(input.design?.executionCommand?{launchCommand:input.design.executionCommand}:{}),accessRouteId:task.accessRouteId??getDefaultAccessRouteId(this.store.getServer(task.serverId)),launchMode:'command',scriptPath:''})
     expandParameters(baseline.launchCommand,input.axes,input.maxRuns)
     if(Object.keys(this.book).length>=100)throw new Error('本地实验研究已达到 100 项，请导出并整理历史')
     const outputIsolation=await this.inspectOutput(baseline,source.preparationId)
@@ -291,6 +283,7 @@ export class ResearchService {
     if(current.outputIsolation?.status==='unverified')throw new Error(current.outputIsolation.reason??'尚未确认各组独立保存位置，请重新核对输出位置。')
     let target=rawTarget===undefined?current.runTarget:runTargetSchema.parse(rawTarget)
     if(target?.computeDevice==='cpu')target={...target,gpuUuid:null,gpuIndex:null,gpuNameSnapshot:null,minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null}
+    if(current.pending.includes('review')&&current.design?.preferredGpuIndex!==undefined&&!target)throw new Error('原命令指定了 GPU，请先在运行窗口选择设备')
     if(current.pending.includes('queue')&&rawTarget!==undefined&&JSON.stringify(target)!==JSON.stringify(current.runTarget))throw new Error('本批已确认，恢复提交时不能更换运行设备')
     if(current.pending.includes('review'))await this.execute(id,async()=>{
       if(target){

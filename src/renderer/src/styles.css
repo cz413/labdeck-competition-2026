@@ -2841,9 +2841,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .experiment-editor-body .field > span, .experiment-finish-body .field > span { color: var(--muted); font-size: 13px; }
 .experiment-editor-body .experiment-command-input { font-family: "Cascadia Code", "Consolas", monospace; }
 .experiment-editor-body .experiment-conda-section { margin-top: 17px; padding: 13px; background: color-mix(in srgb, var(--panel-soft) 72%, transparent); border: 1px solid var(--border); border-radius: 7px; }
-.experiment-conda-toggle { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
-.experiment-conda-toggle input { width: 14px; height: 14px; margin-top: 2px; accent-color: var(--teal); }
+.experiment-conda-toggle { display:grid; grid-template-columns:16px minmax(0,1fr); align-items:start; gap:10px; line-height:20px; cursor:pointer; }
+.experiment-conda-toggle>input[type="checkbox"] { width:16px; height:16px; min-height:0; margin:2px 0 0; padding:0; box-sizing:border-box; accent-color:var(--teal); }
 .experiment-conda-toggle span, .experiment-conda-toggle strong, .experiment-conda-toggle small { display: block; }
+.experiment-conda-toggle>span,.experiment-conda-toggle strong { line-height:20px; }
 .experiment-conda-toggle strong { color: var(--text); font-size: 14px; }
 .experiment-conda-toggle small { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .experiment-conda-fields { margin-top: 15px; }
@@ -3006,3 +3007,32 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 /* Reserve scroll space so filtering/expanding content does not shift the layout. */
 .page-content:is(.server-detail-page-content,.terminal-full-page,.ssh-terminal-page) { scrollbar-gutter:auto; }
 .research-run-body,.experiment-editor-body,.experiment-run-start-body,.experiment-finish-body { scrollbar-gutter:stable; }
+
+.running-gpu-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 700px) { .running-gpu-summary { grid-template-columns: 1fr; } }
+
+/* Running tasks share a compact, consistent table hierarchy. */
+.running-gpu-table .my-task-table-head,
+.running-gpu-table .my-task-row {
+  grid-template-columns: minmax(220px, 1.2fr) minmax(210px, 1fr) minmax(120px, .6fr) minmax(120px, .55fr);
+  min-width: 750px;
+  column-gap: 20px;
+  padding-inline: 20px;
+}
+.running-gpu-table .my-task-table-head { min-height: 36px; font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.running-gpu-table .my-task-table-head > span:nth-child(4) { display: block; }
+.running-gpu-table .my-task-row { min-height: 72px; padding-block: 12px; font-size: 13px; line-height: 1.5; cursor: default; }
+.running-gpu-table .my-task-row:last-child { border-bottom: 0; }
+.running-gpu-table .my-task-row .my-task-process { cursor: default; gap: 10px; }
+.running-gpu-table .my-task-process > i { width: 28px; height: 28px; border-radius: 7px; }
+.running-gpu-table .my-task-process > span,
+.running-gpu-table .my-task-target { gap: 3px; }
+.running-gpu-table .my-task-process strong { font-size: 14px; font-weight: 600; }
+.running-gpu-table .my-task-target strong { font-size: 13px; font-weight: 500; }
+.running-gpu-table .my-task-process small,
+.running-gpu-table .my-task-target small { font-size: 12px; font-weight: 400; }
+.running-gpu-table .my-task-row time { font: inherit; color: var(--muted); font-variant-numeric: tabular-nums; }
+.running-gpu-table .my-task-log-actions { justify-content: flex-start; }
+.running-gpu-table .my-task-log-actions .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; min-height: 30px; padding: 0 9px; border: 1px solid transparent; border-radius: 5px; background: var(--surface-subtle); color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; box-shadow: none; }
+.running-gpu-table .my-task-log-actions .secondary-button:hover { background: var(--accent-surface); color: var(--accent-text); }
+.running-gpu-table .my-task-log-actions .secondary-button:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }

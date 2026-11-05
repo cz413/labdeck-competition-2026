@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, ArrowLeft, Bell, Cpu, Gauge, MemoryStick, Play, RefreshCw, SquareTerminal, Thermometer, UserRound, Zap } from 'lucide-react'
 import type { GpuHistoryPoint, GpuHistoryRange, GpuMetric, GpuWatchTarget, ProcessWatch, ServerProfile, ServerSnapshot } from '@shared/types'
@@ -66,7 +67,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
     const refresh = (): void => {
       void window.labApi.notifications.listProcessWatches()
         .then(items => { if (active) setProcessWatches(items) })
-        .catch(error => { if (active) setWatchError(error instanceof Error ? error.message : '无法读取结束提醒') })
+        .catch(error => { if (active) setWatchError(userFacingError(error, '无法读取结束提醒')) })
     }
     refresh()
     const unsubscribe = window.labApi.notifications.onProcessWatchesChanged(refresh)
@@ -83,7 +84,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
         : await window.labApi.notifications.watchProcess({ serverId: server.id, accessRouteId: route.id, pid, processName, gpuIndex: selected.index })
       setProcessWatches(items)
     } catch (error) {
-      setWatchError(error instanceof Error ? error.message : '设置结束提醒失败')
+      setWatchError(userFacingError(error, '设置结束提醒失败'))
     } finally {
       setWatchingPid(null)
     }
@@ -108,7 +109,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
     setHistoryError('')
     void window.labApi.monitor.gpuHistory(server.id, selected.uuid, historyRange)
       .then((points) => { if (active) setHistory(points) })
-      .catch((error: unknown) => { if (active) setHistoryError(error instanceof Error ? error.message : '读取历史失败') })
+      .catch((error: unknown) => { if (active) setHistoryError(userFacingError(error, '读取历史失败')) })
       .finally(() => { if (active) setHistoryLoading(false) })
     return () => { active = false }
   }, [server.id, selected?.uuid, historyRange, snapshot?.sampledAt])
@@ -117,7 +118,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
     <div className="wb-device-workspace">
       <div className="wb-device-breadcrumb"><button className="wb-text-button" onClick={onClose} aria-label="返回 GPU 来源页面"><ArrowLeft size={14} />返回</button><span>{server.name} / GPU {selected?.index ?? initialGpuIndex}</span><time>{snapshot ? `${live ? '采集于' : '上次采集于'} ${new Date(snapshot.sampledAt).toLocaleTimeString('zh-CN')}` : '尚未采集'}</time></div>
       <header className="wb-device-header"><div><h1>{server.name} / GPU {selected?.index ?? initialGpuIndex}</h1><p>{route.username}@{route.host}:{route.port}</p></div><div><button className="secondary-button" onClick={onTerminal}><SquareTerminal size={14} />连接终端</button><button className="secondary-button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />刷新设备</button>{selected && <button className="primary-button" disabled={server.mode !== 'real' || !live} onClick={() => onRun(selected)}><Play size={14} />在此 GPU 新建任务</button>}</div></header>
-      {!live && <div className="wb-notice">{snapshot?.status === 'offline' ? `服务器离线：${snapshot.error ?? '检查 SSH 连接后刷新。'}` : '当前显示上次采集数据，请刷新后确认设备状态。'}</div>}
+      {!live && <div className="wb-notice">{snapshot?.status === 'offline' ? `服务器离线：${userFacingError(snapshot.error,'检查 SSH 连接后刷新。')}` : '当前显示上次采集数据，请刷新后确认设备状态。'}</div>}
 
       {!selected ? <div className="gpu-empty"><Cpu size={38} /><strong>没有检测到 NVIDIA GPU</strong><span>请确认服务器已安装驱动并可执行 nvidia-smi。</span></div> : <div className="gpu-detail-layout">
         <aside className="gpu-selector">
@@ -163,7 +164,7 @@ export function GpuDetailPanel({ server, snapshot, initialGpuIndex, watches, onT
                 const watch = processWatches.find(item => item.serverId === server.id && item.pid === process.pid && item.status !== 'ended')
                 return <div className="gpu-process-row" key={`${process.pid}-${process.processName}`}>
                 <span className="gpu-user"><UserRound size={15} />{process.username}</span><code>{process.pid}</code><time>{formatDuration(process.elapsedSeconds)}</time><span title={process.processName}>{process.processName}</span><strong>{formatGpuProcessMemory(process, selected.processMemoryInconsistent)}</strong>
-                <div className="gpu-process-actions"><button type="button" className="secondary-button gpu-log-action" disabled={!live || server.mode !== 'real'} onClick={() => setLogProcess({ pid: process.pid, processName: process.processName })}><SquareTerminal size={13} />实时日志</button><button type="button" className={`gpu-watch-action ${watch ? 'active' : ''}`} disabled={watchingPid !== null || (!watch && (!live || server.mode !== 'real'))} title={watch ? `${watch.message}；点击取消提醒` : '进程结束后通知，不代表任务运行成功；多进程任务请关注主进程'} onClick={() => void toggleProcessWatch(process.pid, process.processName)}><Bell size={13} />{watchingPid === process.pid ? '处理中…' : watch?.status === 'interrupted' ? '监控中断' : watch ? '已订阅' : '结束时提醒'}</button></div>
+                <div className="gpu-process-actions"><button type="button" className="secondary-button gpu-log-action" disabled={!live || server.mode !== 'real'} onClick={() => setLogProcess({ pid: process.pid, processName: process.processName })}><SquareTerminal size={13} />实时日志</button><button type="button" className={`gpu-watch-action ${watch ? 'active' : ''}`} disabled={watchingPid !== null || (!watch && (!live || server.mode !== 'real'))} title={watch ? `${userFacingError(watch.message,'监控连接暂时中断，请稍后刷新。')}；点击取消提醒` : '进程结束后通知，不代表任务运行成功；多进程任务请关注主进程'} onClick={() => void toggleProcessWatch(process.pid, process.processName)}><Bell size={13} />{watchingPid === process.pid ? '处理中…' : watch?.status === 'interrupted' ? '监控中断' : watch ? '已订阅' : '结束时提醒'}</button></div>
               </div>})}
             </div> : <div className="gpu-idle-state"><CheckIcon /><div><strong>{!live ? '上次采集时没有进程' : '未发现计算进程'}</strong><span>{!live ? '请刷新以确认当前状态。' : '提交任务前仍会检查显存和 GPU 负载。'}</span></div></div>}
           </section>

@@ -168,7 +168,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         if(!live.current||id!==preparationId.current||revision!==fetchRevision.current)return
         setPreparation(view)
         if(analysisPending.current&&!view.busy){analysisPending.current=false;hydratePreparation(view)}
-      }).catch(cause=>{if(live.current)setError(cause instanceof Error?cause.message:String(cause))})
+      }).catch(cause=>{if(live.current)setError(userFacingError(cause))})
     })
     return()=>{live.current=false;unsubscribe();revision.current++}
   },[])
@@ -178,7 +178,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   },[props.seed?.preparationId])
 
   function currentEdit(value:ExperimentPlan):PreparationEdit{return {draft:value.draft,mode:value.mode,fields:value.fields,deferredGaps,conflicts,history}}
-  async function refreshSessions():Promise<void>{try{const items=await window.labApi.intelligence.preparations.list();if(live.current)setSessions(items)}catch(cause){if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))}}
+  async function refreshSessions():Promise<void>{try{const items=await window.labApi.intelligence.preparations.list();if(live.current)setSessions(items)}catch(cause){if(live.current)setSyncError(userFacingError(cause))}}
   function hydratePreparation(view:PreparationView):void{
     preparationId.current=view.id;preparationRevision.current=view.revision
     setPreparation(view);setServerId(view.input.serverId);setRouteId(view.input.accessRouteId);setRoot(view.input.path);setGoal(view.input.goal)
@@ -186,7 +186,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     setPlan(view.plan??null);setInitialPlan(view.initialPlan??null);setSavedTask(view.task??null)
     setDirty(!!view.plan&&view.savedRevision!==view.revision);setStage(view.plan?'review':view.busy?'analyzing':'start');setBusy(view.busy&&!view.plan)
     setHistory(view.edit?.history??[]);setConflicts(view.edit?.conflicts??[]);setDeferredGaps(view.edit?.deferredGaps??[])
-    setRecheckResult(view.checks??null);setError(view.error??'');setSyncError('')
+    setRecheckResult(view.checks??null);setError(view.error?userFacingError(view.error,'实验准备未完成，请检查连接或稍后重试。'):'');setSyncError('')
     const edit=view.plan?{draft:view.plan.draft,mode:view.plan.mode,fields:view.plan.fields,deferredGaps:view.edit?.deferredGaps??[],conflicts:view.edit?.conflicts??[],history:view.edit?.history??[]}:null
     lastSynced.current=edit?JSON.stringify(edit):'';pendingEdit.current=null
     if(view.edit?.history.length)historyId.current=Math.max(...view.edit.history.map(item=>item.id))
@@ -212,7 +212,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     })()
     pumpPromise.current=operation
     let succeeded=false
-    try{await operation;succeeded=true}finally{pumpPromise.current=null;if(succeeded&&pendingEdit.current)void pumpEdits().catch(cause=>{if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))})}
+    try{await operation;succeeded=true}finally{pumpPromise.current=null;if(succeeded&&pendingEdit.current)void pumpEdits().catch(cause=>{if(live.current)setSyncError(userFacingError(cause))})}
   }
   async function flushEdits(edit?:PreparationEdit):Promise<void>{
     if(edit){const signature=JSON.stringify(edit);if(signature!==lastSynced.current)pendingEdit.current={edit,signature}}
@@ -224,7 +224,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     const edit=currentEdit(plan),signature=JSON.stringify(edit)
     if(signature===lastSynced.current)return
     pendingEdit.current={edit,signature}
-    void pumpEdits().catch(cause=>{if(live.current)setSyncError(cause instanceof Error?cause.message:String(cause))})
+    void pumpEdits().catch(cause=>{if(live.current)setSyncError(userFacingError(cause))})
   },[plan,history,conflicts,deferredGaps,stage])
   async function deletePreparation(item:PreparationSummary):Promise<void>{
     if(deletingId||busy||saving)return
@@ -239,7 +239,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       if(active){resetSession();setStage('start');setSavedTask(null)}
       await refreshSessions()
       props.notify('实验准备记录已删除')
-    }catch(cause){if(active)preparationId.current=item.id;props.notify(cause instanceof Error?cause.message:'无法删除准备记录','error')}
+    }catch(cause){if(active)preparationId.current=item.id;props.notify(userFacingError(cause, '无法删除准备记录'),'error')}
     finally{setDeletingId(null)}
   }
   async function resumePreparation(id:string):Promise<void>{
@@ -334,7 +334,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     try{
       const view=await window.labApi.intelligence.preparations.create({serverId:server.id,accessRouteId,path:root.trim(),goal:goal.trim(),filePaths:scope?.files},id)
       if(live.current&&token===revision.current&&preparationId.current===id){analysisPending.current=false;hydratePreparation(view)}
-    }catch(cause){if(live.current&&token===revision.current){setError(cause instanceof Error?cause.message:String(cause));setStage('start');setBusy(false);analysisPending.current=false}}
+    }catch(cause){if(live.current&&token===revision.current){setError(userFacingError(cause));setStage('start');setBusy(false);analysisPending.current=false}}
     finally{void refreshSessions()}
   }
   function cancelAnalysis():void{
@@ -438,7 +438,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       if(view.error)throw new Error(view.error)
       preparationRevision.current=view.revision;setPreparation(view);setRecheckResult(view.checks??null)
       setNotice('路径核对完成。')
-    }catch(cause){setError(cause instanceof Error?cause.message:String(cause))}finally{setRechecking(false)}
+    }catch(cause){setError(userFacingError(cause))}finally{setRechecking(false)}
   }
   function answerGap(gap: PlanGap, option: PlanGap['options'][number]): void {    if (!plan) return
     const resolved = resolvePlanGap(plan, gap, option)
@@ -585,7 +585,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
       props.notify(start ? '实验草稿已保存，正在打开资源选择' : '实验草稿已保存；继续修改会更新这份草稿')
       if (start) props.onCreated(saved, true)
     } catch (caught) {
-      props.notify(caught instanceof Error ? caught.message : '无法保存实验草稿', 'error')
+      props.notify(userFacingError(caught, '无法保存实验草稿'), 'error')
     } finally {
       setSaving(null)
     }
@@ -595,7 +595,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     try{
       if(plan)await flushEdits(currentEdit(plan))
       props.onExit()
-    }catch(cause){setSyncError(cause instanceof Error?cause.message:String(cause))}
+    }catch(cause){setSyncError(userFacingError(cause))}
   }
   const recommendedMode = plan ? experimentModeFromGoal(plan.goal) : 'train'
   const launchCitations = plan ? planLaunchCitations(plan) : []
@@ -709,7 +709,7 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
               {launchCitations.map((citation, index) => <div className="smart-citation" key={index}><strong>{citation.path}:{citation.startLine}–{citation.endLine}</strong><pre>{citation.quote}</pre></div>)}
               {!launchCitations.length && <p className="smart-note">这条命令来自系统建议，没有可直接引用的原文。</p>}
               <p className="smart-note">以下为分析时的路径核对；切换入口或修改目录后，请在运行前重新确认。</p>
-              <div className="smart-checks">{plan.guide.checks.map((check, index) => <p key={index}><span className={check.status}>{check.status === 'confirmed' ? '已核对' : check.status === 'missing' ? '未找到' : check.status === 'outside' ? '超出范围' : '未核对'}</span>{check.expected === 'file' ? '入口文件' : '启动目录'} {check.path} · {check.message}</p>)}</div>
+              <div className="smart-checks">{plan.guide.checks.map((check, index) => <p key={index}><span className={check.status}>{check.status === 'confirmed' ? '已核对' : check.status === 'missing' ? '未找到' : check.status === 'outside' ? '超出范围' : '未核对'}</span>{check.expected === 'file' ? '入口文件' : '启动目录'} {check.path} · {check.status==='unreadable'?userFacingError(check.message,'未能完成路径检查，请检查服务器连接。'):check.message}</p>)}</div>
             </details>
           </article>
 

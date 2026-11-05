@@ -311,7 +311,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       }
     } catch (error) {
       if (requestId === runGpuSnapshotRequestId.current) {
-        const message = error instanceof Error ? error.message : '刷新 GPU 状态失败'
+        const message = userFacingError(error, '刷新 GPU 状态失败')
         const cached = props.snapshots[runServer.id]
         setRunGpuSnapshot(cached ? { ...cached, status: 'offline', error: message } : null)
         if (!quiet) props.notify(message, 'error')
@@ -377,7 +377,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       props.notify('实验草稿已保存')
       if (queueAfterSave) await startTask(saved)
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法保存实验任务', 'error')
+      props.notify(userFacingError(error, '无法保存实验任务'), 'error')
     } finally {
       setSaving(false)
     }
@@ -454,7 +454,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       } else props.notify(`没有找到环境 ${result.name}`, 'error')
     } catch (error) {
       updateConda({ lastCheckStatus: 'unknown', lastCheckedAt: new Date().toISOString() })
-      props.notify(error instanceof Error ? error.message : '检查 Conda 环境失败', 'error')
+      props.notify(userFacingError(error, '检查 Conda 环境失败'), 'error')
     } finally {
       setCondaBusy(false)
     }
@@ -536,7 +536,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       if(issue)throw new Error(issue)
       resolveExperimentLaunch(runDraft)
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '启动配置无效', 'error')
+      props.notify(userFacingError(error, '启动配置无效'), 'error')
       return
     }
     for (const [label, path] of [['代码目录', runDraft.codePath], ['数据目录', runDraft.dataPath], ['产物路径', runDraft.artifactPath]] as const) {
@@ -558,7 +558,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       setStarting(null)
       setRunDraft(null)
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法创建运行记录', 'error')
+      props.notify(userFacingError(error, '无法创建运行记录'), 'error')
     } finally {
       setStartingTaskId(null)
     }
@@ -579,7 +579,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       props.onChanged(await window.labApi.experiments.cancelRun(task.id, run.id))
       props.notify('任务已取消')
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法取消远程任务', 'error')
+      props.notify(userFacingError(error, '无法取消远程任务'), 'error')
     } finally {
       setCancelingRunId(null)
     }
@@ -593,7 +593,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       if (updated) props.onChanged(updated)
       props.notify('排队项已删除')
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法删除排队项', 'error')
+      props.notify(userFacingError(error, '无法删除排队项'), 'error')
     } finally {
       setDeletingItemId(null)
     }
@@ -614,7 +614,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       if (inspectedTaskId === task.id) setInspectedTaskId(null)
       props.notify('任务已删除')
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法删除任务', 'error')
+      props.notify(userFacingError(error, '无法删除任务'), 'error')
     } finally {
       setDeletingItemId(null)
     }
@@ -633,7 +633,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       setExpandedResearchGroups(current => { const next = {...current}; delete next[campaign.id]; return next })
       props.notify('整批实验已删除')
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法删除整批实验', 'error')
+      props.notify(userFacingError(error, '无法删除整批实验'), 'error')
     } finally { setDeletingItemId(null) }
   }
 
@@ -647,7 +647,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       props.notify('运行记录已更新')
       setFinishing(null)
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法保存运行结果', 'error')
+      props.notify(userFacingError(error, '无法保存运行结果'), 'error')
     }finally{setFinishBusy(false)}
   }
 
@@ -741,7 +741,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
       props.onChanged(copy)
       props.notify('已复制实验任务')
     } catch (error) {
-      props.notify(error instanceof Error ? error.message : '无法复制实验任务', 'error')
+      props.notify(userFacingError(error, '无法复制实验任务'), 'error')
     }
   }
 
@@ -805,8 +805,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                   {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次{run.runTitle?` · ${run.runTitle}`:''} · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{run.message}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
                 </div>
                 <div className="experiment-task-actions">
-                  {task.id !== props.demoTaskId && <button className="secondary-button" disabled={!!parameterExperimentReason(task.launchCommand,task.launchMode)} title={parameterExperimentReason(task.launchCommand,task.launchMode)} onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}
-                  {task.id !== props.demoTaskId && parameterExperimentReason(task.launchCommand,task.launchMode) && <p className="repository-note">{parameterExperimentReason(task.launchCommand,task.launchMode)}</p>}
+                  {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}
                   {task.id !== props.demoTaskId && task.preparationId && <button type="button" className="secondary-button" onClick={()=>setSmart({preparationId:task.preparationId,serverId:task.serverId,accessRouteId:task.accessRouteId,path:task.codePath,goal:task.objective})}><Sparkles size={15}/>继续准备</button>}
                   {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => openEditor(task, true)}>编辑配置</button>}
                   {task.id === props.demoTaskId ? <p className="workflow-sim-note">模拟任务 · 使用上方演示控制条推进运行。</p> : <>
@@ -823,10 +822,10 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                   {server?.mode === 'real' && routeId && dataPath && <button type="button" className="secondary-button" onClick={() => props.onOpenFiles(server, routeId, dataPath)} disabled={serverOffline} title={serverOffline ? '服务器离线，远程操作暂不可用' : undefined}><FolderOpen size={15} />数据目录</button>}
                   {server?.mode === 'real' && routeId && condaConfig && (condaConfig.environmentName || condaConfig.environmentPrefix) && <button type="button" className="secondary-button" onClick={() => openTaskTerminal(task, true)} disabled={serverOffline} title={serverOffline ? '服务器离线，远程操作暂不可用' : undefined}><SquareTerminal size={15} />激活 Conda</button>}
                   {!showArchived && run && (run.status === 'paused' || (run.status === 'running' && !run.remoteRunDir)) && <button type="button" className="secondary-button" onClick={() => { setFinishing(task); setFinishInput({ status: run.status === 'paused' ? 'completed' : 'paused', resultSummary: run.resultSummary, notes: run.notes, artifactPath: run.artifactPath ?? '' }) }}><CheckCircle2 size={15} />结束/暂停</button>}
-                  {!showArchived && !run && task.status === 'planned' && <button type="button" className="secondary-button" onClick={() => void window.labApi.experiments.setStatus(task.id, 'completed').then(props.onChanged).catch((error: unknown) => props.notify(error instanceof Error ? error.message : '无法完成任务', 'error'))}><CheckCircle2 size={15} />完成</button>}
-                  {!showArchived && !run && task.status === 'planned' && <button type="button" className="secondary-button" onClick={() => void window.labApi.experiments.setStatus(task.id, 'cancelled').then(props.onChanged).catch((error: unknown) => props.notify(error instanceof Error ? error.message : '无法取消任务', 'error'))}>取消</button>}
+                  {!showArchived && !run && task.status === 'planned' && <button type="button" className="secondary-button" onClick={() => void window.labApi.experiments.setStatus(task.id, 'completed').then(props.onChanged).catch((error: unknown) => props.notify(userFacingError(error, '无法完成任务'), 'error'))}><CheckCircle2 size={15} />完成</button>}
+                  {!showArchived && !run && task.status === 'planned' && <button type="button" className="secondary-button" onClick={() => void window.labApi.experiments.setStatus(task.id, 'cancelled').then(props.onChanged).catch((error: unknown) => props.notify(userFacingError(error, '无法取消任务'), 'error'))}>取消</button>}
                   {!showArchived && <button type="button" className="secondary-button" onClick={() => void copyTask(task)}>复制</button>}
-                  <button type="button" className="secondary-button" disabled={!task.archived && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled'} title={!task.archived && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled' ? '完成、失败或取消任务后可归档' : undefined} onClick={() => void window.labApi.experiments.setArchived(task.id, !task.archived).then(props.onChanged).catch((error: unknown) => props.notify(error instanceof Error ? error.message : '归档失败', 'error'))}>{task.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{task.archived ? '恢复' : '归档'}</button>
+                  <button type="button" className="secondary-button" disabled={!task.archived && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled'} title={!task.archived && task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled' ? '完成、失败或取消任务后可归档' : undefined} onClick={() => void window.labApi.experiments.setArchived(task.id, !task.archived).then(props.onChanged).catch((error: unknown) => props.notify(userFacingError(error, '归档失败'), 'error'))}>{task.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{task.archived ? '恢复' : '归档'}</button>
                     </div>
                   </details>
                   <button type="button" className="secondary-button danger-button experiment-delete-task" disabled={deletingItemId === task.id || ['preparing', 'running'].includes(task.status) || task.runs.some((item) => item.status === 'preparing' || item.status === 'running')} title={['preparing', 'running'].includes(task.status) ? '先取消运行，再删除任务' : '删除任务及运行记录'} onClick={() => void deleteTask(task)}><Trash2 size={14} />{deletingItemId === task.id ? '删除中…' : '删除任务'}</button>
@@ -875,7 +874,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
     <div className="experiment-pool-topbar">
     <div className="experiment-pool-tabs" role="tablist" aria-label="我的任务视图">
       <button type="button" role="tab" aria-selected={tab === 'pool'} className={tab === 'pool' ? 'active' : ''} onClick={() => setTab('pool')}><ListTodo size={16} />实验任务池<span>{props.tasks.filter((task) => !task.archived).length}</span></button>
-      <button type="button" role="tab" aria-selected={tab === 'live'} className={tab === 'live' ? 'active' : ''} onClick={() => setTab('live')}><Cpu size={16} />GPU 实时进程<span>{props.liveTaskCount}</span></button>
+      <button type="button" role="tab" aria-selected={tab === 'live'} className={tab === 'live' ? 'active' : ''} onClick={() => setTab('live')}><Cpu size={16} />GPU 运行任务<span>{props.liveTaskCount}</span></button>
     </div>
     {tab==='pool'&&!research&&<>
       <section className="experiment-pool-overview" aria-label="按状态筛选实验任务">

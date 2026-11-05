@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Eye, EyeOff, KeyRound, Server, X } from 'lucide-react'
 import type { AuthType, MonitorPolicy, ServerProfile, ServerProfileInput } from '@shared/types'
@@ -130,7 +131,7 @@ export function ServerDialog({ server, onClose, onSaved }: ServerDialogProps): R
       const saved = await window.labApi.servers.save(input)
       onSaved(saved)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '保存服务器失败')
+      setError(userFacingError(caught, '保存服务器失败'))
     } finally {
       setSaving(false)
     }

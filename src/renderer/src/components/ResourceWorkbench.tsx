@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState } from 'react'
 import { Bell, Code2, FolderOpen, MoreHorizontal, Network, Play, Plus, RefreshCw, SquareTerminal } from 'lucide-react'
 import type { ExperimentTask, GpuHistoryPoint, GpuHistoryRange, GpuMetric, GpuWatchTarget, ServerProfile, ServerSnapshot } from '@shared/types'
@@ -71,7 +72,7 @@ export function ResourceWorkbench(props: ResourceWorkbenchProps): React.JSX.Elem
     setHistory([])
     void window.labApi.monitor.gpuHistory(server.id, selectedGpu.uuid, historyRange)
       .then((points) => { if (active) setHistory(points) })
-      .catch((error: unknown) => { if (active) setHistoryError(error instanceof Error ? error.message : '读取历史失败') })
+      .catch((error: unknown) => { if (active) setHistoryError(userFacingError(error, '读取历史失败')) })
       .finally(() => { if (active) setHistoryLoading(false) })
     return () => { active = false }
   }, [tab, server.id, selectedGpu?.uuid, historyRange, snapshot?.sampledAt])
@@ -98,7 +99,7 @@ export function ResourceWorkbench(props: ResourceWorkbenchProps): React.JSX.Elem
     <section className="wb-host-summary" aria-label="服务器资源摘要"><div><span>CPU</span><strong>{pct(snapshot?.cpuUsagePercent)}</strong><i><b style={{ width: `${snapshot?.cpuUsagePercent ?? 0}%` }} /></i><small>负载 {snapshot?.loadAverage?.map(value => value.toFixed(2)).join(' / ') ?? '—'}</small></div><div><span>内存</span><strong>{gb(snapshot?.memoryUsedBytes)}<em>/ {gb(snapshot?.memoryTotalBytes)}</em></strong><i><b style={{ width: `${Math.min(100, memoryPercent)}%` }} /></i><small>{Math.round(memoryPercent)}% 已用</small></div><div><span>GPU 资源</span><strong>{live ? gpus.length - busyCount : '—'}<em>空闲 / {gpus.length} 张</em></strong><i><b style={{ width: `${gpus.length ? busyCount / gpus.length * 100 : 0}%` }} /></i><small>{live ? `${busyCount} 张使用中` : '等待实时状态确认'}</small></div><div><span>系统存储</span><strong>{pct(primaryDisk?.usagePercent)}</strong><i><b style={{ width: `${primaryDisk?.usagePercent ?? 0}%` }} /></i><small>{primaryDisk ? `${primaryDisk.mountPoint} · 可用 ${gb(primaryDisk.availableBytes)}` : '尚无存储数据'}</small></div></section>
     <nav className="wb-tabs" aria-label="服务器工作区" role="tablist">{([['gpu', 'GPU'], ['tasks', '任务'], ['connection', '连接与存储'], ['history', '历史']] as const).map(([value, label]) => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}<button className="wb-refresh" onClick={props.onRefresh} disabled={props.refreshing} aria-label="刷新当前服务器"><RefreshCw size={14} className={props.refreshing ? 'spin' : ''} /></button></nav>
     {snapshot?.cached && <div className="wb-notice">当前显示上次采集结果（{new Date(snapshot.sampledAt).toLocaleString('zh-CN')}），刷新后确认可用资源。</div>}
-    {snapshot?.status === 'offline' && <div className="wb-notice error">连接失败：{snapshot.error ?? '检查网络和 SSH 连接路径后刷新。'}</div>}
+    {snapshot?.status === 'offline' && <div className="wb-notice error">连接失败：{userFacingError(snapshot.error,'检查网络和 SSH 连接路径后刷新。')}</div>}
     {tab === 'gpu' && <>
       <section className="wb-gpu-section">
         <header className="wb-section-heading"><h2>{gpus.length} 张 GPU</h2><label className="wb-checkbox"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} />只看可用</label><span className="wb-section-hint">{snapshot ? `采集于 ${new Date(snapshot.sampledAt).toLocaleTimeString('zh-CN')}` : '尚未采集'}</span></header>

@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, Copy, ExternalLink, Network, Pencil, Play, Plus, RefreshCw, Square, Trash2, X } from 'lucide-react'
 import type { ServerProfile, TunnelConfigInput, TunnelView } from '@shared/types'
@@ -69,7 +70,7 @@ export function TunnelPage(props: Props): React.JSX.Element {
   const run = async (key: string, operation: () => Promise<void>): Promise<void> => {
     setBusy(current => new Set(current).add(key))
     try { await operation(); await props.onChanged() }
-    catch (error) { props.notify(error instanceof Error ? error.message : '隧道操作失败', 'error') }
+    catch (error) { props.notify(userFacingError(error, '隧道操作失败'), 'error') }
     finally { setBusy(current => { const next = new Set(current); next.delete(key); return next }) }
   }
   const start = async (tunnel: TunnelView): Promise<void> => {
@@ -95,7 +96,7 @@ export function TunnelPage(props: Props): React.JSX.Element {
       setDraft(null)
       if (startNow) await run(`start:${saved.id}`, () => start(saved))
       else props.notify('隧道配置已保存')
-    } catch (error) { setEditorError(error instanceof Error ? error.message : '保存隧道失败') }
+    } catch (error) { setEditorError(userFacingError(error, '保存隧道失败')) }
     finally { setBusy(current => { const next = new Set(current); next.delete('save'); return next }) }
   }
   const patch = (value: Partial<TunnelConfigInput>): void => setDraft(current => current ? { ...current, ...value } : null)
@@ -111,7 +112,7 @@ export function TunnelPage(props: Props): React.JSX.Element {
       const isActive = active(tunnel)
       return <tr key={tunnel.id}><td><strong>{tunnel.name}</strong><small className="wb-cell-secondary">{server?.name ?? '服务器已删除'} · {routeExists ? routeLabel(server!, tunnel.accessRouteId) : '路径已删除'}</small>{tunnel.autoStart && <small className="wb-cell-secondary">随应用启动</small>}</td>
         <td><div className="tunnel-mapping"><span>{tunnel.type === 'local' ? '本机' : server?.name ?? '远程'} {address(tunnel.bindAddress, tunnel.bindPort)}</span><ArrowRight size={13} /><span>{tunnel.type === 'local' ? '远程目标' : '本机目标'} {address(tunnel.targetHost, tunnel.targetPort)}</span></div><small className="wb-cell-secondary">{tunnel.type === 'local' ? '本地转发' : '远程转发'}{tunnel.autoReconnect ? ' · 断线重连' : ''}</small></td>
-        <td><span className={`wb-state ${tunnel.status === 'running' ? 'running' : tunnel.status === 'error' ? 'failed' : tunnel.status === 'reconnecting' ? 'queued' : 'paused'}`}><i />{statusNames[tunnel.status]}</span>{tunnel.status === 'running' && <small className="wb-cell-secondary">{tunnel.serviceStatus === 'reachable' ? '目标端口可达' : tunnel.serviceStatus === 'unreachable' ? '目标端口不可达' : '目标服务尚未检测'} · {tunnel.connectionCount} 个连接</small>}{tunnel.message && <small className="tunnel-error" title={tunnel.message}>{tunnel.message}</small>}</td>
+        <td><span className={`wb-state ${tunnel.status === 'running' ? 'running' : tunnel.status === 'error' ? 'failed' : tunnel.status === 'reconnecting' ? 'queued' : 'paused'}`}><i />{statusNames[tunnel.status]}</span>{tunnel.status === 'running' && <small className="wb-cell-secondary">{tunnel.serviceStatus === 'reachable' ? '目标端口可达' : tunnel.serviceStatus === 'unreachable' ? '目标端口不可达' : '目标服务尚未检测'} · {tunnel.connectionCount} 个连接</small>}{tunnel.message && <small className="tunnel-error" title={userFacingError(tunnel.message,'隧道暂不可用，请检查连接设置。')}>{userFacingError(tunnel.message,'隧道暂不可用，请检查连接设置。')}</small>}</td>
         <td><div className="tunnel-actions">{isActive ? <button className="wb-text-button" aria-label={`停止隧道 ${tunnel.name}`} onClick={() => void run(`stop:${tunnel.id}`, () => window.labApi.tunnels.stop(tunnel.id))}><Square size={13} />停止</button> : <button className="wb-text-button" disabled={!routeExists || busy.has(`start:${tunnel.id}`)} aria-label={`启动隧道 ${tunnel.name}`} onClick={() => void run(`start:${tunnel.id}`, () => start(tunnel))}><Play size={13} />启动</button>}
           {tunnel.type === 'local' && tunnel.browserProtocol !== 'none' && <button className="icon-button small" title="打开浏览器" aria-label={`打开 ${tunnel.name}`} disabled={tunnel.status !== 'running'} onClick={() => void run(`open:${tunnel.id}`, () => window.labApi.tunnels.openBrowser(tunnel.id))}><ExternalLink size={14} /></button>}
           <button className="icon-button small" title={tunnel.type === 'local' ? '复制本机访问地址' : '复制服务器监听地址'} aria-label={`复制隧道地址 ${tunnel.name}`} onClick={() => void run(`copy:${tunnel.id}`, async () => { await window.labApi.clipboard.writeText(copyAddress(tunnel)); props.notify(tunnel.type === 'local' ? '已复制本机访问地址' : '已复制服务器监听地址') })}><Copy size={14} /></button>

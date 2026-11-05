@@ -613,11 +613,55 @@ describe('persistent experiment research graph',()=>{
     expect(tasks[1].title).toContain('基线');expect(tasks[1].launchCommand).toContain('--lr 0.01')
     expect(tasks[2].title).toBe('lr=0.001')
   })
-  it('returns missing information without calling a model when parameter definitions are unavailable',async()=>{
+  it('asks AI for actionable guidance even when static parameter definitions are unavailable',async()=>{
     const implementation=vi.mocked(openRepositoryReadSession).getMockImplementation()!
     vi.mocked(openRepositoryReadSession).mockImplementation(async(...args)=>{const session=await implementation(...args);session.read=async path=>{const excerpt={path,text:'print("no parameter definitions")',startLine:1,truncated:false};session.snapshot.excerpts.push(excerpt);return excerpt};return session})
+    requestModel.mockResolvedValue({axes:[],hypothesis:'',rationale:'未发现可比较的参数定义',assumptions:['请先确认脚本是否支持学习率配置']})
     const result=await service().suggest(source.id,'比较学习率',2)
-    expect(result.status).toBe('needs_info');expect(result.axes).toEqual([]);expect(requestModel).not.toHaveBeenCalled();expect(start).not.toHaveBeenCalled()
+    expect(result.status).toBe('needs_info');expect(result.axes).toEqual([]);expect(requestModel).toHaveBeenCalledTimes(1);expect(start).not.toHaveBeenCalled()
+  })
+  it('sends CUDA-prefixed unbuffered commands to AI and creates equivalent executable plans',async()=>{
+    source.launchCommand='CUDA_VISIBLE_DEVICES=1 python -u train.py --lr 0.01 --batch-size 16'
+    requestModel.mockResolvedValue({axes:[{flag:'--lr',values:['0.001']}],hypothesis:'比较学习率',rationale:'保留其他条件',assumptions:[]})
+    const s=service(),design=await s.suggest(source.id,'比较学习率',2)
+    expect(requestModel).toHaveBeenCalledTimes(1)
+    expect(requestModel.mock.calls[0][1]).toMatchObject({originalCommand:source.launchCommand,supportedCommand:'python train.py --lr 0.01 --batch-size 16'})
+    expect(design).toMatchObject({status:'ready',baselineCommand:source.launchCommand,executionCommand:'python train.py --lr 0.01 --batch-size 16',preferredGpuIndex:1})
+    const batch=await s.create({taskId:source.id,objective:'比较学习率',axes:design.axes,maxRuns:2,design,expectedBaselineCommand:design.baselineCommand})
+    expect(batch.members.every(member=>!member.command.includes('CUDA_VISIBLE_DEVICES'))).toBe(true)
+    await expect(s.approve(batch.id,true)).rejects.toThrow('运行窗口选择设备')
+    await s.approve(batch.id,true,{computeDevice:'gpu',gpuUuid:'GPU-1',gpuIndex:1,gpuNameSnapshot:'GPU 1',minimumFreeVramGiB:null,maximumGpuUtilizationPercent:null})
+    expect(start.mock.calls[0][1].gpuIndex).toBe(1)
+    expect(source.launchCommand).toContain('CUDA_VISIBLE_DEVICES=1 python -u')
+  })
+  it('lets AI advise on shell and script launches without permitting unreviewed execution',async()=>{
+    source.launchCommand='cd /workspace/vision && python train.py --lr 0.01'
+    requestModel.mockResolvedValue({axes:[],hypothesis:'',rationale:'应把目录放入代码目录配置，命令保留 Python 入口',assumptions:['启动前需要确认 cd 对应的工作目录']})
+    const s=service(),suggestion=await s.suggest(source.id,'比较学习率',2)
+    expect(requestModel).toHaveBeenCalledTimes(1)
+    expect(suggestion.status).toBe('needs_info')
+    expect(suggestion.rationale).toContain('代码目录')
+    source.launchMode='script';source.scriptPath='/workspace/vision/run.sh'
+    await s.suggest(source.id,'比较评估效果',2)
+    expect(requestModel).toHaveBeenCalledTimes(2)
+    expect(start).not.toHaveBeenCalled()
+  })
+  it('can use a source-grounded parameter supplied by AI when static argparse extraction misses it',async()=>{
+    const factory=vi.mocked(openRepositoryReadSession).getMockImplementation()!
+    const text="defaults = dict(temperature=0.5)\ncli = custom_parser(defaults)"
+    vi.mocked(openRepositoryReadSession).mockImplementation(async(...args)=>{const session=await factory(...args);session.read=async path=>{const excerpt={path,startLine:1,text,truncated:false};session.snapshot.excerpts.push(excerpt);return excerpt};return session})
+    requestModel.mockResolvedValue({axes:[{flag:'--temperature',values:['0.7']}],hypothesis:'温度对评估结果的影响',rationale:'自定义参数入口',assumptions:[],parameterDefinitions:[{flag:'--temperature',type:'float',baselineValue:'0.5',source:{path:'train.py',startLine:1,quote:text}}]})
+    const result=await service().suggest(source.id,'比较评估温度',2)
+    expect(result.status).toBe('ready')
+    expect(result.axes[0].values).toEqual(['0.5','0.7'])
+  })
+  it('does not execute an AI suggestion that discards shell steps or changes unrelated baseline arguments',async()=>{
+    source.launchCommand='CUDA_VISIBLE_DEVICES=1 python -u train.py --lr 0.01'
+    requestModel.mockResolvedValue({axes:[{flag:'--lr',values:['0.001']}],hypothesis:'',rationale:'',assumptions:[],executionCommand:'python train.py --lr 0.01 --batch-size 999'})
+    const result=await service().suggest(source.id,'比较学习率',2)
+    expect(result.status).toBe('needs_info')
+    expect(result.assumptions.join(' ')).toContain('改变了原始配置')
+    expect(start).not.toHaveBeenCalled()
   })
   it('checks suggestion budget before exposing model-generated axes',async()=>{
     requestModel.mockResolvedValue({axes:[{flag:'--lr',values:['1','2','3']}],assumptions:[],hypothesis:'compare',rationale:'compare learning rates'})

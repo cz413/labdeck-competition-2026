@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import {
   Activity,
   Code2,
@@ -71,7 +72,7 @@ export function ServerDetailPage(props: ServerDetailPageProps): React.JSX.Elemen
 
       <div className="server-detail-panel overview active">
         {snapshot?.status === 'offline' && !snapshot.cached ? (
-          <div className="server-detail-offline"><WifiOff size={28} /><div><strong>无法连接这台服务器</strong><span>{snapshot.error ?? '检查网络、端口转发或 SSH 配置后重试。'}</span></div></div>
+          <div className="server-detail-offline"><WifiOff size={28} /><div><strong>无法连接这台服务器</strong><span>{userFacingError(snapshot.error,'检查网络、端口转发或 SSH 配置后重试。')}</span></div></div>
         ) : (
           <>
             <div className="server-detail-metrics">

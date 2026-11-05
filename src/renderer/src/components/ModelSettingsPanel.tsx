@@ -1,3 +1,4 @@
+import { userFacingError } from '@shared/user-facing-error'
 import { useEffect, useState } from 'react'
 import type { ModelSettings } from '@shared/intelligence'
 
@@ -9,7 +10,7 @@ export function ModelSettingsPanel(): React.JSX.Element {
     if(!settings)return
     setBusy(true);setMessage('')
     try{const saved=await window.labApi.intelligence.saveSettings({...settings,apiKey:apiKey||undefined,clearApiKey:clearKey});setSettings(saved);setApiKey('');setClearKey(false);setMessage(test?await window.labApi.intelligence.testModel():'模型配置已保存')}
-    catch(e){setMessage(e instanceof Error?e.message:String(e))}finally{setBusy(false)}
+    catch(e){setMessage(userFacingError(e))}finally{setBusy(false)}
   }
   return <section className="panel settings-panel project-model-settings"><div className="panel-title"><div><h3>模型服务</h3><p>用于从项目生成配置与对照实验分析，调用由你主动发起。</p></div></div>
     {!settings?<p role="status">{message||'正在读取模型配置…'}</p>:<fieldset disabled={busy}><label className="experiment-conda-toggle"><input type="checkbox" checked={settings.enabled} onChange={e=>setSettings({...settings,enabled:e.target.checked})}/><span>启用模型辅助</span></label><div className="form-grid">

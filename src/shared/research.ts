@@ -21,7 +21,7 @@ export interface ResearchView extends ResearchCampaign { busy?:boolean; paused: 
 export interface ResearchDesignVariable {flag:string;baselineValue:string;source:{path:string;startLine:number;quote:string}}
 export interface ResearchSuggestion {
   axes: ParameterAxis[]; assumptions: string[]; hypothesis: string
-  status?: 'ready' | 'needs_info'; baselineCommand?: string; rationale?: string
+  status?: 'ready' | 'needs_info'; baselineCommand?: string; executionCommand?:string; preferredGpuIndex?:number; rationale?: string
   variable?: ResearchDesignVariable
   variables?: ResearchDesignVariable[]
   readFiles?: string[]
