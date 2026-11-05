@@ -525,7 +525,7 @@ function registerIpc(store: AppStore): void {
   ipcMain.handle('notifications:listProcessWatches', () => processWatches.list())
   ipcMain.handle('notifications:watchProcess', (_event, input: ProcessWatchInput) => processWatches.watch(input))
   ipcMain.handle('notifications:unwatchProcess', (_event, id: string) => processWatches.remove(id))
-  ipcMain.handle('notifications:test', () => showTaskNotification({ title: 'Windows 通知测试', serverName: 'LabDock', outcome: 'completed', message: '任务结束后将在这里提醒。请保持应用运行或留在系统托盘。' }))
+  ipcMain.handle('notifications:test', () => showTaskNotification({ title: 'Windows 通知测试', serverName: 'LabDeck', outcome: 'completed', message: '任务结束后将在这里提醒。请保持应用运行或留在系统托盘。' }))
 
   ipcMain.on('window:minimize', (event) => {
     const targetWindow = BrowserWindow.fromWebContents(event.sender)

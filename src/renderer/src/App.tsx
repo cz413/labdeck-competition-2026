@@ -971,7 +971,7 @@ function ClosePrompt({ remember, onRememberChange, onChoose }: { remember: boole
       <header className="dialog-header app-modal-header close-choice-header">
         <div className="dialog-title-wrap app-modal-title">
           <div className="dialog-icon close-choice-icon"><Power size={19} /></div>
-          <div><h2 id="close-choice-title">关闭 LabDock？</h2><p>你可以让监控继续运行，或者完全退出应用。</p></div>
+          <div><h2 id="close-choice-title">关闭 LabDeck？</h2><p>你可以让监控继续运行，或者完全退出应用。</p></div>
         </div>
         <button type="button" className="icon-button" onClick={() => onChoose('cancel')} aria-label="取消关闭"><X size={18} /></button>
       </header>

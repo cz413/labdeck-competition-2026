@@ -568,8 +568,8 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
     const accepted = await props.confirm({
       title: '取消正在准备/运行的任务？',
       message: run.status === 'running'
-        ? 'LabDock 会向服务器上的任务进程组发送终止信号，等待 3 秒后仍未退出则强制终止。'
-        : '任务会立即标记为已取消；如果远程启动命令正在返回，LabDock 会在检测到后清理该进程。',
+        ? 'LabDeck 会向服务器上的任务进程组发送终止信号，等待 3 秒后仍未退出则强制终止。'
+        : '任务会立即标记为已取消；如果远程启动命令正在返回，LabDeck 会在检测到后清理该进程。',
       confirmLabel: '取消任务',
       tone: 'danger'
     })
