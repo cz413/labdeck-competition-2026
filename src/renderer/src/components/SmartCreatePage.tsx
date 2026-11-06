@@ -601,6 +601,9 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
   const launchCitations = plan ? planLaunchCitations(plan) : []
   const envState = plan?.fields.environment
   const activeGap = gaps[0]
+  const showResumeNote=!!preparation&&!taskDeleted&&(preparation.phase==='paused'||preparation.phase==='failed')
+  const duplicatePreparationError=showResumeNote&&!!preparation?.error&&error===userFacingError(preparation.error,'实验准备未完成，请检查连接或稍后重试。')
+  const showPageError=!!error&&!duplicatePreparationError&&!(taskDeleted&&/关联任务已删除/.test(error))
 
   return <section ref={pageRoot} className="smart-create" aria-label="智能创建实验">
     <header className="smart-create-head">
@@ -614,7 +617,8 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
     </header>
 
     {syncError&&<div className="intel-error" role="alert">准备进度保存失败：{syncError}<button type="button" className="secondary-button" onClick={()=>void flushEdits(plan?currentEdit(plan):undefined).then(()=>setSyncError('')).catch(cause=>setSyncError(String(cause)))}>重试保存进度</button></div>}
-    {preparation&&!taskDeleted&&(preparation.phase==='paused'||preparation.phase==='failed')&&<div className="preparation-resume-note"><span>{preparation.error||'上次准备尚未完成'}，可继续准备。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
+    {showResumeNote&&preparation&&<div className="preparation-resume-note"><span>{userFacingError(preparation.error,'上次准备尚未完成').replace(/[。；，,;.!！]+$/,'')}。可继续准备。</span><button type="button" className="secondary-button" disabled={busy} onClick={()=>void resumePreparation(preparation.id)}>继续未完成步骤</button></div>}
+    {showPageError&&<div className="intel-error" role="alert">{error}</div>}
     {sessionsOpen && <div className="app-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) setSessionsOpen(false) }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSessionsOpen(false) } }}>
       <section className="app-modal preparation-sessions-dialog" role="dialog" aria-modal="true" aria-labelledby="preparation-sessions-title">
         <header className="dialog-header app-modal-header"><div className="dialog-title-wrap app-modal-title"><div className="dialog-icon"><History size={18} /></div><div><h2 id="preparation-sessions-title">实验准备记录</h2><p>查看已保存的准备进度，继续补充和审阅方案。</p></div></div><button type="button" className="icon-button" aria-label="关闭实验准备记录" autoFocus onClick={() => setSessionsOpen(false)}><X size={16} /></button></header>
@@ -644,7 +648,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
         </section>
       </fieldset>
       {props.modelEnabled === false && <div className="smart-model-warning"><AlertTriangle size={15} /><span>模型尚未启用，系统无法完成项目理解。</span><button type="button" className="wb-text-button" onClick={props.onModelSettings}>前往模型设置</button><button type="button" className="wb-text-button" onClick={props.onManualCreate}>改为手动创建</button></div>}
-      {error && !(taskDeleted && /关联任务已删除/.test(error)) && <div className="intel-error" role="alert">{error}</div>}
       {notice && <p className="smart-note" role="status">{notice}</p>}
       <footer className="smart-start-footer">
         <div><button type="button" className="primary-button smart-analyze" disabled={!canAnalyze} onClick={() => void analyze()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}{stage === 'analyzing' ? '正在分析项目…' : '分析项目并准备实验'}</button></div>
@@ -667,7 +670,6 @@ export function SmartCreatePage(props: Props): React.JSX.Element {
           <div className="smart-scope-list">{snapshot.files.map(file => <label key={file.path}><input type="checkbox" disabled={busy} checked={files.includes(file.path)} onChange={event => setFiles(current => event.target.checked ? [...current, file.path] : current.filter(path => path !== file.path))} /><span>{file.path}</span></label>)}</div>
           {snapshot.warnings.map((warning, index) => <p key={index} className="smart-note">{warning}</p>)}
         </details>}
-        {error && !(taskDeleted && /关联任务已删除/.test(error)) && <div className="intel-error" role="alert">{error}</div>}
         {stage === 'analyzing' && notice && <p className="smart-note" role="status">{notice}</p>}
       </section>
 

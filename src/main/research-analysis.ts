@@ -2,7 +2,8 @@ import type { ResearchCampaign } from '../shared/research'
 import { observationMetrics, resultConfigForRun } from '../shared/research-results'
 import { researchModelEvidence } from './result-collector'
 
-export const resultAnalysisPrompt=`只返回 JSON {summary,observations:[字符串],evidenceIds:[输入提供的evidenceId]}。
+export const resultAnalysisPrompt=`建议返回 JSON {summary,observations:[字符串],evidenceIds:[输入提供的evidenceId]}，也可直接返回分析正文。
+summary 必须为不超过3000字的字符串；observations 必须为字符串数组，每项不超过800字，不能返回对象；evidenceIds 必须为非空字符串数组，只能逐字复制本次输入各组的 evidenceId，不能使用组名、文件名或自编编号。不返回 Markdown 代码块。
 你只负责科研实验的结果比较。围绕 objective 比较不同参数下的指标、训练变化、评估表现，并给出有依据的比较结论，不生成下一批实验建议。
 summary 用一小段话回答对比目标；observations 最多6项，每项提供配置和相关数值，不重复总结；影响比较结论的关键限制直接简短写入 summary，不另列比较说明，不重复罗列限制或通用免责声明。
 严格禁止在任何面向用户的文字中出现退出码、exitCode、进程状态、运行状态、evidenceState、resultSource、sizeBytes、truncated、association、excerpt、内部引用编号、运行UUID等后台信息，也不要汇报程序执行成功与否或讲解平台规则。
@@ -32,4 +33,19 @@ export function resultAnalysisPayload(campaign:ResearchCampaign) {
 }
 export function hasInternalAnalysisText(value:{summary:string;observations:string[];limitations:string[];nextSuggestion?:{objective:string}}):boolean {
   return [value.summary,...value.observations,...value.limitations,value.nextSuggestion?.objective??''].some(text=>/退出码|exit.?code|进程状态|运行状态|evidenceState|resultSource|sizeBytes|truncated|association[=:]|\bexcerpt\b|run-[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(text))
+}
+
+
+/** Adapt replies for display; do not reject model content. */
+export function displayResultAnalysis(raw:unknown):{summary:string;observations:string[];evidenceIds:string[];limitations:string[]} {
+  if(typeof raw==='string'){
+    try{return displayResultAnalysis(JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')))}catch{return {summary:raw,observations:[],evidenceIds:[],limitations:[]}}
+  }
+  const text=(value:unknown):string=>typeof value==='string'?value:value==null?'':typeof value==='object'?JSON.stringify(value):String(value)
+  const list=(value:unknown):string[]=>value==null?[]:(Array.isArray(value)?value:[value]).map(text)
+  if(raw&&typeof raw==='object'&&!Array.isArray(raw)){
+    const result=raw as Record<string,unknown>
+    return {summary:result.summary==null?text(raw):text(result.summary),observations:list(result.observations),evidenceIds:list(result.evidenceIds),limitations:list(result.limitations)}
+  }
+  return {summary:text(raw),observations:[],evidenceIds:[],limitations:[]}
 }

@@ -5,8 +5,11 @@ export function userFacingError(error: unknown, fallback = '操作未完成，�
     .replace(/^Error invoking remote method\s+['"][^'"]+['"]:\s*/i, '')
     .replace(/^(?:Error|TypeError|RangeError):\s*/i, '').trim()
   if (!text) return fallback
+  const statusNotice=/^(运行中 · 状态暂不可读：)(.*)$/s.exec(text)
+  if(statusNotice)return statusNotice[1]+userFacingError(statusNotice[2],'暂时无法读取远程进程状态，请检查连接后重试。')
   // Validation payloads and stacks are implementation details, not instructions.
   if (/"(?:code|expected|received|unrecognized_keys|invalid_type)"\s*:|\bat\s+\S+\s*\([^\n]+:\d+:\d+\)|Traceback \(most recent call last\)/.test(text)) return fallback
+  if (/connection (?:lost|closed|ended) before handshake/i.test(text)) return 'SSH 连接在握手完成前中断，请检查网络、SSH 端口及跳板机连接后重试。'
   if (/timed out while waiting for handshake|handshake (?:timed out|timeout)|握手.*超时/i.test(text)) return 'SSH 连接握手超时，请检查网络、SSH 端口及跳板机连接后重试。'
   if (/host key (?:verification failed|mismatch)|hostkey verification failed|remote host identification has changed|fingerprint mismatch/i.test(text)) return '服务器身份校验未通过，请在连接设置中核对 SSH 主机指纹。'
   if (/no matching (?:key exchange|host key|cipher)|handshake failed|key exchange failed/i.test(text)) return 'SSH 加密协商失败，请检查客户端与服务器的 SSH 配置是否兼容。'

@@ -5,7 +5,7 @@ import type { SshService } from './ssh-service'
 import type { ExperimentRun } from '../shared/types'
 import type { RunObservation } from '../shared/research'
 import type { ResultCollectionConfig } from '../shared/research-results'
-import { MAX_RESULT_BYTES, evidenceState, legacyMetricValues, normalizeResultConfig, parseStructuredMetrics, processEvidenceState, resolveResultPath } from '../shared/research-results'
+import { MAX_RESULT_BYTES, evidenceState, legacyMetricValues, normalizeResultConfig, observationMetrics, parseStructuredMetrics, processEvidenceState, resolveResultPath } from '../shared/research-results'
 import { parseMetricLog } from '../shared/parameter-engine'
 import { redactSecrets } from '../shared/diagnosis-engine'
 
@@ -79,21 +79,26 @@ const fileMessages: Record<string,string> = {
   unsupported: '结果须为普通文件；不读取目录、符号链接或特殊文件', too_large: '指标文件超过 128 KiB 限制',
   changed: '采集期间文件发生变化，请重新采集', invalid: '指标内容不符合 JSON 协议'
 }
-export async function collectRunResults(ssh: SshService, client: Client, run: ExperimentRun, observation: RunObservation, rawConfig?: ResultCollectionConfig,outputDirectory?:string): Promise<RunObservation> {
+export async function collectRunResults(ssh: SshService, client: Client, run: ExperimentRun, observation: RunObservation, rawConfig?: ResultCollectionConfig,outputDirectory?:string,previous?:RunObservation): Promise<RunObservation> {
   const config = normalizeResultConfig(rawConfig)
   observation.collectedAt = new Date().toISOString()
   observation.metricDetails = []
   observation.files = []
-  if (run.logPath?.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.logPath)) {
+  if(previous?.runId===run.id){
+    observation.excerpt=previous.excerpt
+    observation.exitCode=previous.exitCode
+    observation.metricDetails=structuredClone(observationMetrics(previous))
+  }else previous=undefined
+  if (!observation.excerpt.trim() && run.logPath?.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.logPath)) {
     try {
       const log = await ssh.exec(client, `if [ -f ${quote(run.logPath)} ]; then tail -n 240 -- ${quote(run.logPath)} | tail -c 65536; fi`,15000)
       observation.excerpt = redactSecrets(log).slice(-16000)
       if (!config.metricsFile&&!config.resultFiles?.length) observation.metricDetails = Object.entries(parseMetricLog(log.slice(-65536))).map(([name,value]) => ({name,value,source:'log',sourcePath:run.logPath!}))
       if (!log.trim()) addWarning(observation,'本次未取得日志片段')
     } catch (error) { addWarning(observation,`日志：${message(error)}`) }
-  } else addWarning(observation,'未记录可读取的远程日志路径')
+  } else if(!observation.excerpt.trim()) addWarning(observation,'未记录可读取的远程日志路径')
   // Exit code and configured evidence are independent of whether a log is available.
-  if (run.remoteRunDir?.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.remoteRunDir)) {
+  if (observation.exitCode===undefined && run.remoteRunDir?.startsWith('/') && !/[\x00-\x1f\x7f]/.test(run.remoteRunDir)) {
     try {
       const path = run.remoteRunDir + '/exit-code'
       const raw = await ssh.exec(client, `if [ -f ${quote(path)} ]; then printf '__LABDECK_EXIT__'; cat -- ${quote(path)}; fi`,10000)
@@ -108,6 +113,8 @@ export async function collectRunResults(ssh: SshService, client: Client, run: Ex
     if (!template) continue
     try {
       const path = resolveResultPath(template,{...run,codePath:outputDirectory??run.codePath})
+      const cached=previous?.files?.find(file=>file.path===path&&file.role===role&&file.status==='available'&&(role!=='result'||!!file.text?.trim()))
+      if(cached){observation.files.push(structuredClone(cached));continue}
       requests.push({path,metrics:role==='metrics',text:role==='result'})
       observation.files.push({path,role,status:'unreadable'})
     } catch (error) { observation.files.push({path:template,role,status:'invalid',message:message(error)}); addWarning(observation,message(error)) }

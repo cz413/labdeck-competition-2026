@@ -174,7 +174,7 @@ export class IntelligenceService {
     const view=await this.preparations().get(id)
     return view.plan?.guide.snapshot
   }
-  async requestResearchModel(system: string, payload: unknown, options: {purpose?:'repository'} = {}): Promise<unknown> {
+  async requestResearchModel(system: string, payload: unknown, options: {purpose?:'repository';format?:'text'} = {}): Promise<unknown> {
     await this.ready()
     return requestModel({ ...this.config }, this.key(), system, payload, undefined, undefined, options)
   }

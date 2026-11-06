@@ -20,11 +20,17 @@ describe('user-facing errors', () => {
     expect(userFacingError('connect ECONNREFUSED 127.0.0.1:7897')).toContain('连接未成功')
     expect(userFacingError('EACCES: permission denied')).toContain('没有权限')
   })
+  it('translates stored running notices while preserving their status context',()=>{
+    expect(userFacingError('运行中 · 状态暂不可读：Connection lost before handshake')).toBe('运行中 · 状态暂不可读：SSH 连接在握手完成前中断，请检查网络、SSH 端口及跳板机连接后重试。')
+    expect(userFacingError('运行中 · 状态暂不可读：Unexpected protocol failure')).not.toContain('Unexpected')
+  })
   it('does not mistake an experiment value for an HTTP error', () => {
     expect(userFacingError('上限为 429 组，请调整数量')).toBe('上限为 429 组，请调整数量')
     expect(userFacingError('HTTP 429 Too Many Requests')).toContain('请求过于频繁')
   })
   it.each([
+    ['Connection lost before handshake','SSH 连接在握手完成前中断'],
+    ['连接失败：Connection lost before handshake','SSH 连接在握手完成前中断'],
     ['Timed out while waiting for handshake','SSH 连接握手超时'],
     ['连接失败：Timed out while waiting for handshake','SSH 连接握手超时'],
     ['Error invoking remote method \'monitor:snapshot\': Error: Timed out while waiting for handshake','SSH 连接握手超时'],

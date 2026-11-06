@@ -1,3 +1,5 @@
+import { userFacingError } from '../shared/user-facing-error'
+import { preserveCollectedResults } from './research-recollection'
 import { reviewResearchCommand } from '../shared/research-command'
 import { ResearchOutputNames } from './research-output-names'
 import { deviceLaunchCommand } from '../shared/experiment-launch'
@@ -13,7 +15,7 @@ import type { SshService } from './ssh-service'
 import type { ExperimentTask, ExperimentTaskDraft } from '../shared/types'
 import type { ResearchAnalysis, ResearchCampaign, ResearchInput, ResearchRunTarget, ResearchOutputIsolation, ResearchSuggestion, ResearchView, RunObservation } from '../shared/research'
 import { baselineDraft } from '../shared/research'
-import { resultAnalysisPayload, resultAnalysisPrompt, hasInternalAnalysisText } from './research-analysis'
+import { resultAnalysisPayload, resultAnalysisPrompt, displayResultAnalysis } from './research-analysis'
 import { isolateResearchVariants, reuseResearchOutput, researchOutputLocations } from './research-output'
 import { analyzeResearchOutput } from './research-output-model'
 import type { RepositorySnapshot, RepositoryExcerpt } from '../shared/repository-guide'
@@ -34,7 +36,6 @@ const campaignState=Annotation.Root({campaign:Annotation<ResearchCampaign>()})
 const designVariableSchema=z.object({flag:z.string().max(50),baselineValue:z.string().max(80),source:z.object({path:z.string().max(512),startLine:z.number().int().positive(),quote:z.string().max(1200)})})
 const designSchema=z.object({status:z.literal('ready'),axes:axesSchema,baselineCommand:z.string().max(20000),hypothesis:z.string().max(1500),rationale:z.string().max(1800).optional(),assumptions:z.array(z.string().max(500)).max(12),readFiles:z.array(z.string().max(512)).max(2000).optional(),executionCommand:z.string().max(20000).optional(),preferredGpuIndex:z.number().int().nonnegative().optional(),variable:designVariableSchema.optional(),variables:z.array(designVariableSchema).min(1).max(5).optional()})
 const inputSchema=z.object({taskId:z.string().uuid(),sourceRunId:z.string().uuid().optional(),objective:z.string().trim().min(1).max(2000),axes:axesSchema,maxRuns:z.number().int().min(1).max(32),useModel:z.boolean().optional(),resultConfig:resultConfigSchema.optional(),expectedBaselineCommand:z.string().max(20000).optional(),design:designSchema.optional()})
-const analysisSchema=z.object({summary:z.string().max(3000),observations:z.array(z.string().max(800)).max(10),limitations:z.array(z.string().max(800)).max(10).default([]),evidenceIds:z.array(z.string()).min(1).max(32),nextSuggestion:z.object({objective:z.string().min(1).max(2000),axes:axesSchema}).optional()})
 const capturedSchema=z.object({key:z.string(),taskId:z.string(),runId:z.string(),status:z.string(),evidenceId:z.string(),metrics:z.record(z.string(),z.number()),excerpt:z.string()}).passthrough()
 const bookSchema=z.record(z.string().uuid(),z.object({paused:z.boolean(),error:z.string().optional(),deleted:z.boolean().optional(),captured:z.array(capturedSchema).optional()}))
 const now=():string=>new Date().toISOString()
@@ -402,7 +403,7 @@ export class ResearchService {
   async analyze(id:string):Promise<ResearchView>{
     await this.ready();const current=await this.view(z.string().uuid().parse(id));if(current.stage!=='analysis'||current.pending.length)throw new Error('等待本批运行结束后再分析')
     if(current.paused)throw new Error('先恢复流程，再分析结果')
-    if(current.events.filter(e=>e.node==='result_analysis').length>=2)throw new Error('本批 AI 分析已达到次数上限，已有结果仍可查看和导出')
+
     await this.execute(id,async()=>this.graph.updateState(this.config(id),{campaign:event({...current,analysis:await this.analysis(current,true)},'result_analysis','用户请求 AI 分析结果')},'analyze'))
     return this.view(id)
   }
@@ -416,8 +417,13 @@ export class ResearchService {
     if(fromFiles&&current.members.some(member=>{const config=resultConfigForRun(collection.resultConfig,member.runId??'');return !config.metricsFile&&!config.resultFiles?.length}))throw new Error('部分对照组尚未配置结果文件，请填写共用文件或为各组单独选择')
     // Explicit read-only refresh; it does not queue, retry or repair remote experiments.
     await this.execute(id,async()=>{
-      const observations=await this.collect(collection,{force:true})
-      for(const observation of observations)observation.diagnosisId=current.observations.find(old=>old.runId===observation.runId)?.diagnosisId
+      const observations=await this.collect(collection,{force:true,previousConfig:current.resultConfig})
+      for(const observation of observations){
+        const previous=current.observations.find(old=>old.runId===observation.runId)
+        const before=resultConfigForRun(current.resultConfig,observation.runId),after=resultConfigForRun(collection.resultConfig,observation.runId)
+        if(JSON.stringify(normalizeResultConfig(before))===JSON.stringify(normalizeResultConfig(after)))preserveCollectedResults(observation,previous)
+        observation.diagnosisId=previous?.diagnosisId
+      }
       const updated=event({...collection,observations,analysis:undefined},'recollect','用户重新采集结果文件、产物和退出码；未启动新运行')
       // Preserve the model call budget: refreshing evidence itself never calls the model.
       const analysis=await this.analysis({...updated,useModel:false})
@@ -425,7 +431,7 @@ export class ResearchService {
     })
     return this.view(id)
   }
-  private async collect(c:ResearchCampaign,options:{onlyFinished?:boolean;force?:boolean}={}):Promise<RunObservation[]>{
+  private async collect(c:ResearchCampaign,options:{onlyFinished?:boolean;force?:boolean;previousConfig?:ResultCollectionConfig}={}):Promise<RunObservation[]>{
     const observations:RunObservation[]=[]
     for(const member of c.members){
       const task=this.task(member.taskId!),run=task.runs.find(r=>r.id===member.runId)
@@ -433,6 +439,12 @@ export class ResearchService {
       if(options.onlyFinished&&!['completed','failed','cancelled'].includes(run.status))continue
       const captured=this.book[c.id]?.captured?.find(item=>item.runId===run.id)
       if(!options.force&&captured&&(captured.excerpt.trim()||captured.exitCode!==undefined||captured.status==='cancelled')){observations.push(structuredClone(captured));continue}
+      const config=resultConfigForRun(c.resultConfig,run.id)
+      const sameSources=options.force&&JSON.stringify(normalizeResultConfig(resultConfigForRun(options.previousConfig,run.id)))===JSON.stringify(normalizeResultConfig(config))
+      const previous=sameSources?c.observations.find(item=>item.runId===run.id):undefined
+      const hasFiles=!!(config.metricsFile||config.resultFiles?.length||config.artifacts.length)
+      const alreadyCollected=previous&&(hasFiles?!!previous.files?.length&&previous.files.every(file=>file.status==='available'&&(file.role!=='result'||!!file.text?.trim())):!!previous.excerpt.trim())
+      if(alreadyCollected){observations.push(structuredClone(previous));continue}
       const observation:RunObservation={key:member.key,taskId:task.id,runId:run.id,status:run.status,evidenceId:`run-${run.id}`,metrics:{},excerpt:'',metricDetails:[],files:[],collectedAt:now()}
       if(run.status==='cancelled')observation.warning='运行已取消，未作为科学结果比较'
       else try{
@@ -441,7 +453,7 @@ export class ResearchService {
         const profile=applyAccessRoute(server,routeId)
         if(!profile.hostFingerprint||(profile.jumpHost&&!profile.jumpHost.hostFingerprint))throw new Error('主机指纹尚未确认')
         const connected=await this.ssh.connect(profile,this.store.getSecrets(server.id))
-        try{await collectRunResults(this.ssh,connected.client,{...run,codePath:run.codePath??task.codePath},observation,resultConfigForRun(c.resultConfig,run.id),member.outputDirectory)}
+        try{await collectRunResults(this.ssh,connected.client,{...run,codePath:run.codePath??task.codePath},observation,config,member.outputDirectory,previous)}
         finally{connected.client.end()}
       }catch(error){observation.warning=this.errorMessage(error)}
       observation.processState=processEvidenceState(observation);observation.evidenceState=evidenceState(observation)
@@ -467,12 +479,14 @@ export class ResearchService {
     const fallback:ResearchAnalysis={engine:'rules',contentVersion:2,summary:columns.length?'已采集指标，可选择 AI 分析比较各组差异。':hasFiles?'已采集结果文件，可选择 AI 分析比较各组差异。':'尚未读取到可比较的结果，请检查所选结果内容。',observations,limitations,evidenceIds:c.observations.map(o=>o.evidenceId)}
     if(!useModel)return fallback
     try{
-      const result=analysisSchema.parse(await this.intelligence.requestResearchModel(resultAnalysisPrompt,resultAnalysisPayload(c)))
-      if(hasInternalAnalysisText(result))throw new Error('模型结果包含不适合展示的后台信息')
-      const valid=new Set(c.observations.map(o=>o.evidenceId))
-      if(result.evidenceIds.some(id=>!valid.has(id)))throw new Error('模型引用了不存在的运行证据')
-      return {summary:result.summary,observations:result.observations,evidenceIds:result.evidenceIds,engine:'model',contentVersion:2,limitations:[]}
-    }catch(error){console.warn('对照实验结果分析失败',this.errorMessage(error));return {...fallback,summary:'本次 AI 结果分析未完成，请重新分析。',observations:[],limitations:[]}}
+      const raw=await this.intelligence.requestResearchModel(resultAnalysisPrompt,resultAnalysisPayload(c),{format:'text'})
+      return {...displayResultAnalysis(raw),engine:'model',contentVersion:2}
+    }catch(error){
+      console.warn('对照实验结果分析失败',this.errorMessage(error))
+      const message=this.errorMessage(error)
+      const reason=error instanceof z.ZodError?'模型服务返回的数据格式不符合接口要求，请检查模型接口配置。':userFacingError(message,'模型请求未完成，请检查模型服务、网络及配置后重试。')
+      return {...fallback,summary:`本次 AI 结果分析未完成：${reason}`,observations:[],limitations:[]}
+    }
   }
   async setPaused(id:string,paused:boolean):Promise<ResearchView>{await this.ready();z.string().uuid().parse(id);z.boolean().parse(paused);await this.view(id);if(this.running.has(id))throw new Error('当前节点正在处理，请完成后暂停');this.book[id].paused=paused;await this.persistBook();this.changed();if(!paused)this.wake();return this.view(id)}
   async start():Promise<void>{await this.ready();this.wake()}

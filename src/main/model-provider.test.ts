@@ -12,6 +12,13 @@ describe('model transport',()=>{
     expect(parseModelJson('```json\n{"ok":true}\n```')).toEqual({ok:true})
     expect(()=>parseModelJson('Here is the answer: {"ok":true}')).toThrow()
   })
+  it('accepts prose for result analysis without enforcing JSON output',async()=>{
+    const fetch=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'直接比较实验结果'}}]}),{status:200}))
+    vi.stubGlobal('fetch',fetch)
+    expect(await requestModel(settings,'','分析结果',{},undefined,undefined,{format:'text'})).toBe('直接比较实验结果')
+    const body=JSON.parse((fetch.mock.calls[0] as unknown as [string,RequestInit])[1].body as string)
+    expect(body.messages[0].content).toBe('分析结果')
+  })
   it('sends redacted evidence and never follows redirects',async()=>{
     const fetch=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:'{"ok":true}'}}]}),{status:200}))
     vi.stubGlobal('fetch',fetch)

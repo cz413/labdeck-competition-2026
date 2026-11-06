@@ -89,7 +89,7 @@ export function RemoteLogPanel({ label, logPath, running, readLog, enabled = tru
     </header>
     {expanded && <>
       {log?.processIdentityChanged && <div className="process-log-help" role="status">服务器已重启或 PID 已被其他进程复用，已停止刷新并保留原日志。</div>}
-      {error && <div className="experiment-log-error" role="status">读取失败：{error}{active && !paused ? ' · 将自动重试' : ''}</div>}
+      {error && <div className="experiment-log-error" role="status">读取失败：{error}{active && !paused ? ' 将自动重试。' : ''}</div>}
       <pre className="experiment-log-output" ref={viewport} tabIndex={0} aria-label="日志内容" onScroll={(event) => {
         const element = event.currentTarget
         setFollowing(element.scrollHeight - element.clientHeight - element.scrollTop < 24)

@@ -14,7 +14,7 @@ export function parseModelJson(text: string): unknown {
   const clean = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   return JSON.parse(clean)
 }
-export interface ModelRequestOptions { purpose?: 'repository' }
+export interface ModelRequestOptions { purpose?: 'repository'; format?: 'text' }
 export async function requestModel(settings: ModelSettingsInput, apiKey: string, system: string, payload: unknown, signal?: AbortSignal, onUsage?:(usage:ModelUsage)=>void, options:ModelRequestOptions={}): Promise<unknown> {
   if (!settings.enabled || !settings.model.trim()) throw new Error('请先启用并配置模型')
   const endpoint = validateEndpoint(settings.endpoint)
@@ -26,8 +26,8 @@ export async function requestModel(settings: ModelSettingsInput, apiKey: string,
   const started = Date.now()
   let usage:Partial<ModelUsage> = {}
   const body = JSON.stringify({ model: settings.model.trim(), temperature: 0.1, ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
-    ...(deepseek ? { thinking: { type: 'disabled' }, response_format: { type: 'json_object' } } : {}),
-    messages: [{ role: 'system', content: `${system}\n仅返回完整 JSON 对象，不输出 Markdown 围栏或对象外的解释。` }, { role: 'user', content: redactSecrets(JSON.stringify(payload)) }] })
+    ...(deepseek ? { thinking: { type: 'disabled' }, ...(options.format==='text'?{}:{response_format: { type: 'json_object' }}) } : {}),
+    messages: [{ role: 'system', content: options.format==='text'?system:`${system}\n仅返回完整 JSON 对象，不输出 Markdown 围栏或对象外的解释。` }, { role: 'user', content: redactSecrets(JSON.stringify(payload)) }] })
   const bodyMegabytes = (Buffer.byteLength(body, 'utf8') / 1024 / 1024).toFixed(2)
   if (repository) console.log(`[model] 仓库分析请求体约 ${bodyMegabytes} MB`)
   try {
@@ -58,6 +58,6 @@ export async function requestModel(settings: ModelSettingsInput, apiKey: string,
       : `模型输出被截断（本次上限 ${maxTokens} tokens），没有生成完整方案。本次未自动重试。`)
     if (choice.finish_reason === 'content_filter') throw new Error('模型服务未返回完整分析内容，未自动重试')
     if (!choice.message.content?.trim()) throw new Error('模型没有返回可用的 JSON 结果。本次未自动重试，请检查模型是否只返回了思考内容。')
-    return parseModelJson(choice.message.content)
+    return options.format==='text'?choice.message.content:parseModelJson(choice.message.content)
   } finally { onUsage?.({requests:1,elapsedMs:Date.now()-started,...usage}) }
 }

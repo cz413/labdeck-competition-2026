@@ -802,7 +802,7 @@ export function ExperimentTaskPool(props: ExperimentTaskPoolProps): React.JSX.El
                     </div>
                   </details>
                   <ProjectTaskEvidence draft={task}/>
-                  {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次{run.runTitle?` · ${run.runTitle}`:''} · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{run.message}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
+                  {run && <div className={`experiment-run-active ${run.status}`}><span>第 {run.number} 次{run.runTitle?` · ${run.runTitle}`:''} · {run.startedAt ? `启动于 ${new Date(run.startedAt).toLocaleString('zh-CN')}` : `排队于 ${new Date(run.queuedAt ?? task.updatedAt).toLocaleString('zh-CN')}`}</span>{run.message && <span>{userFacingError(run.message,statusNames[run.status])}</span>}{run.logPath && <span className="experiment-path" title={run.logPath}>日志 · {run.logPath}</span>}</div>}
                 </div>
                 <div className="experiment-task-actions">
                   {task.id !== props.demoTaskId && <button className="secondary-button" onClick={() => setResearch({taskId:task.id})}>创建对照组</button>}

@@ -1,3 +1,4 @@
+import { userFacingError } from '../shared/user-facing-error'
 import { isGpuBusy } from '../shared/gpu-status'
 import { resolveStdoutLogPath } from '../shared/experiment-log-path'
 import type { CondaEnvironmentConfig, ExperimentRun, ExperimentRunStartInput, ExperimentRunStatus, ExperimentTask } from '../shared/types'
@@ -163,7 +164,7 @@ export class ExperimentScheduler {
           }, 'running')
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : '暂时无法读取远程进程状态'
+        const message = userFacingError(error,'暂时无法读取远程进程状态，请检查连接后重试。')
         await this.updateRun(task.id, run.id, { message: `运行中 · 状态暂不可读：${message}` }, 'running')
       }
     }

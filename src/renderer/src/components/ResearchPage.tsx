@@ -76,6 +76,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
   })
   const sharedResultPaths=[...new Set(resolvedGroups.flatMap(source=>source.paths.filter(path=>path.startsWith('/'))))].filter(path=>resolvedGroups.filter(source=>source.paths.includes(path)).length>1)
   const resultConfigDirty=!!selected&&collectionKey(resultConfig)!==collectionKey(selected.resultConfig)
+  const analysisDisabledReason=busy?'当前操作尚未完成，请稍候':selected?.paused?'请先恢复流程，再分析结果':resultConfigDirty?'结果来源已修改，请先检查并采集':!props.modelEnabled?'请先在设置中启用并配置 AI 模型':''
   const designVariables=design?.variables??(design?.variable?[design.variable]:[])
   const count=axes.reduce((n,a)=>n*new Set(a.values).size,axes.length?1:0)
   useEffect(()=>{if(props.initialTaskId&&candidates.some(t=>t.id===props.initialTaskId)){setTaskId(props.initialTaskId);setSourceRunId('');setDesign(null)}},[props.initialTaskId])
@@ -104,7 +105,7 @@ export function ResearchPage(props:Props):React.JSX.Element {
     void window.labApi.monitor.snapshot(selected.baseline.serverId,selected.baseline.accessRouteId).then(snapshot=>{if(live)setTargetSnapshot(snapshot)}).catch(e=>{if(live)props.notify(userFacingError(e,'无法读取 GPU 列表，可重试或选择自动分配。'),'error')}).finally(()=>{if(live)setTargetRefreshing(false)})
     return()=>{live=false}
   },[!!runTarget,selected?.id,refreshTarget])
-  async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busy)return;setBusy(name);setError('');try{await fn();setHistory(await window.labApi.research.list())}catch(e){setError(userFacingError(e,'本次操作未完成，请检查配置后重试。'))}finally{setBusy('')}}
+  async function action(name:string,fn:()=>Promise<void>):Promise<void>{if(busy)return;setBusy(name);setError('');try{await fn();setHistory(await window.labApi.research.list())}catch(e){const message=userFacingError(e,'本次操作未完成，请检查配置后重试。');setError(message);props.notify(message,'error')}finally{setBusy('')}}
   async function deleteRecord(campaign:ResearchView):Promise<void>{
     if(busy||deletingId)return
     const confirmed=await props.confirm({title:'删除对照记录？',message:'删除这条对照记录及已保存的结果和分析内容，无法恢复。实验任务、运行记录和服务器文件将保留；已提交的训练任务会继续运行。',details:campaign.objective,detailsLabel:'对照实验',confirmLabel:'删除记录',tone:'danger'})
@@ -273,12 +274,14 @@ export function ResearchPage(props:Props):React.JSX.Element {
         {!resultConfigCheck.success&&<p className="intel-error" role="alert">{userFacingError(resultConfigCheck.error.issues[0]?.message,'结果文件路径有问题，请检查填写内容。')}</p>}
         {missingMetricsPath&&<p className="research-note">请至少填写一个结果文件路径。</p>}
         <div className="research-result-actions">
-        <button className="secondary-button" disabled={!!busy||selected.paused||missingMetricsPath||!resultConfigCheck.success} onClick={()=>void action('recollect',async()=>{const result=await window.labApi.research.recollect(selected.id,resultConfig);const issues=result.observations.flatMap(o=>o.files??[]).filter(file=>file.status!=='available').length;props.notify(issues?`采集完成，${issues} 项文件存在问题，请查看下方详情`:'检查与采集完成',issues?'error':'success')})}>{busy==='recollect'?<LoaderCircle size={13} className="spin"/>:<RefreshCw size={13}/>}{busy==='recollect'?'检查并采集中…':'检查并采集'}</button>
-        <button className="secondary-button" disabled={!!busy||selected.paused||resultConfigDirty||!props.modelEnabled||selected.events.filter(e=>e.node==='result_analysis').length>=2} title={resultConfigDirty?'请先检查并采集当前结果来源':!props.modelEnabled?'请先在设置中启用模型':selected.events.filter(e=>e.node==='result_analysis').length>=2?'已达到本批分析次数上限':undefined} onClick={()=>void action('analysis',async()=>{const result=await window.labApi.research.analyze(selected.id);if(result.analysis?.engine!=='model')props.notify('AI 分析未完成，已保留结果汇总','error')})}>{busy==='analysis'?<LoaderCircle size={13} className="spin"/>:<FlaskConical size={13}/>}{busy==='analysis'?'正在分析…':selected.analysis?.engine==='model'?'重新进行 AI 分析':'AI 分析结果'}</button></div>
-        {resultConfigDirty&&<p className="research-note" role="status">结果来源已修改，请先检查并采集，再进行 AI 分析。</p>}
+        <button className="secondary-button" disabled={!!busy||selected.paused||missingMetricsPath||!resultConfigCheck.success} onClick={()=>void action('recollect',async()=>{const result=await window.labApi.research.recollect(selected.id,resultConfig);const retained=result.observations.some(o=>o.warning?.includes('保留上次采集结果'));const issues=result.observations.flatMap(o=>o.files??[]).filter(file=>file.status!=='available').length;props.notify(issues?`采集完成，${issues} 项文件存在问题，请查看下方详情`:retained?'部分内容读取失败，已保留上次采集结果':'检查完成，已成功采集的内容已跳过，仅补采未成功项',issues||retained?'error':'success')})}>{busy==='recollect'?<LoaderCircle size={13} className="spin"/>:<RefreshCw size={13}/>}{busy==='recollect'?'检查并采集中…':'检查并采集'}</button>
+        <button className="secondary-button" disabled={!!analysisDisabledReason} title={analysisDisabledReason||undefined} onClick={()=>void action('analysis',async()=>{const result=await window.labApi.research.analyze(selected.id);if(result.analysis?.engine!=='model')props.notify(result.analysis?.summary??'AI 分析未完成，请重试','error');else props.notify('AI 结果分析完成','success')})}>{busy==='analysis'?<LoaderCircle size={13} className="spin"/>:<FlaskConical size={13}/>}{busy==='analysis'?'正在分析…':selected.analysis?.engine==='model'?'重新进行 AI 分析':'AI 分析结果'}</button></div>
+        {error&&<p className="intel-error" role="alert">{error}</p>}
+      {analysisDisabledReason&&<p className="research-note" role="status">{analysisDisabledReason}</p>}
       </section>
       </>}
       {resultConfigDirty&&selected.observations.length>0&&<p className="research-note">{selected.resultConfig?.resultFiles?.length||selected.resultConfig?.metricsFile||Object.keys(selected.resultConfig?.runResultFiles??{}).length?'下方为本次运行按原文件配置采集的内容，重新采集后更新。':'下方为本次运行自动保存的控制台输出，检查并采集后将按当前结果来源更新。'}</p>}
+      {selected.observations.some(o=>o.warning?.includes('保留上次采集结果'))&&<p className="research-path-warning" role="status">部分内容使用此前成功采集的结果；已成功项会跳过重复读取，展开各组可查看详情。</p>}
       {selected.observations.length>0&&<ResearchResults observations={selected.observations} config={selected.resultConfig}/>}
       {selected.analysis&&selected.analysis.contentVersion!==2&&<p className="research-note">结果分析已更新，请点击 AI 分析结果重新生成。</p>}
       {selected.analysis?.contentVersion===2&&<section className="research-analysis"><header><h3>结果分析</h3></header><p>{selected.analysis.summary}</p><ul>{selected.analysis.observations.map((item,i)=><li key={i}>{item}</li>)}</ul></section>}

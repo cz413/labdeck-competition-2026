@@ -16,6 +16,17 @@ function metricFile(content=JSON.stringify({runId:run.id,dataset:'vision-v1',spl
 function mockSsh(files:unknown[]){return {exec:vi.fn(async(_client,command:string)=>command.includes('__LABDECK_RESULT_FILES__')?'__LABDECK_RESULT_FILES__'+JSON.stringify(files):command.includes('__LABDECK_EXIT__')?'__LABDECK_EXIT__0':'epoch=1 val_accuracy=0.99')} as unknown as SshService}
 const config={metricsFile:'{runDir}/metrics.json',artifacts:[]}
 describe('independent bounded result evidence collection',()=>{
+  it('only requests unsuccessful files on subsequent collection',async()=>{
+    const previous={...observation(),excerpt:'cached log',exitCode:0,files:[{path:'/runs/run-1/a.txt',role:'result' as const,status:'available' as const,text:'cached A'},{path:'/runs/run-1/b.txt',role:'result' as const,status:'unreadable' as const}]}
+    const ssh=mockSsh([{path:'/runs/run-1/b.txt',resolvedPath:'/runs/run-1/b.txt',status:'available',kind:'file',content:Buffer.from('new B').toString('base64')}])
+    const result=await collectRunResults(ssh,{} as Client,run,observation(),{metricsFile:'',artifacts:[],resultFiles:['{runDir}/a.txt','{runDir}/b.txt']},undefined,previous)
+    expect(result.files?.map(file=>file.text)).toEqual(['cached A','new B'])
+    expect(ssh.exec).toHaveBeenCalledTimes(1)
+    const command=vi.mocked(ssh.exec).mock.calls[0][1]
+    expect(command).toContain('/runs/run-1/b.txt')
+    expect(command).not.toContain('/runs/run-1/a.txt')
+    expect(result.warning).toBeUndefined()
+  })
   it('collects multiple arbitrary text result formats without imposing a JSON protocol',async()=>{
     const files=[{...metricFile(),path:'/runs/run-1/log.txt',resolvedPath:'/runs/run-1/log.txt',content:Buffer.from('epoch 5\nrecall=0.61').toString('base64')},{...metricFile(),path:'/runs/run-1/results.csv',resolvedPath:'/runs/run-1/results.csv',content:Buffer.from('metric,value\nndcg,0.42').toString('base64')}]
     const result=await collectRunResults(mockSsh(files),{} as Client,run,observation(),{metricsFile:'',artifacts:[],resultFiles:['{runDir}/log.txt','{runDir}/results.csv']})
